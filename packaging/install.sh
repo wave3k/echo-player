@@ -26,7 +26,7 @@ sed "s|@BIN@|$BIN_DIR/echo-player|" "$ROOT/packaging/echo.desktop.in" > "$APP_DI
 
 # Ancien nom de commande : « echo » se confondait avec la commande système echo.
 # On ne retire que le binaire d'Écho (il contient son identifiant), jamais autre chose.
-if [ -f "$BIN_DIR/echo" ] && grep -aq "com.echo.player" "$BIN_DIR/echo" 2>/dev/null; then
+if [ -f "$BIN_DIR/echo" ] && grep -aqE "com.echo.player|echo::AppSettings" "$BIN_DIR/echo" 2>/dev/null; then
   rm -f "$BIN_DIR/echo"
   echo "L'ancienne commande « echo » a été retirée : elle masquait la commande système."
 fi
