@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions par defaut de MusicApp",
+  "description": "Permissions par defaut d'Echo",
   "windows": ["main"],
   "permissions": [
     "core:default",

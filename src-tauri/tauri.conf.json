@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "MusicApp",
-  "version": "0.1.0",
-  "identifier": "com.musicapp.player",
+  "productName": "Echo",
+  "version": "1.0.0",
+  "identifier": "com.echo.player",
   "build": {
     "frontendDist": "../src"
   },
@@ -10,11 +10,11 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "MusicApp",
-        "width": 1100,
-        "height": 720,
-        "minWidth": 880,
-        "minHeight": 560,
+        "title": "Écho",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 980,
+        "minHeight": 620,
         "theme": "Dark",
         "center": true
       }
@@ -39,6 +39,6 @@
     ],
     "category": "AudioVideo",
     "shortDescription": "Lecteur de musique local",
-    "longDescription": "Lecteur de musique et de videos locales, leger, sans pub ni compte."
+    "longDescription": "Écho, lecteur de musique et de vidéos locales : léger, sans publicité, sans compte et sans connexion."
   }
 }

@@ -3,34 +3,62 @@ use souvlaki::{
     SeekDirection,
 };
 use std::time::Duration;
+use tauri::{Emitter, Manager};
 
 /// Petite enveloppe autour des controles media du systeme (MPRIS sur Linux).
 /// Si le systeme ne repond pas, l'app continue normalement sans eux.
+/// On peut les eteindre et les rallumer depuis les reglages.
 pub struct Mpris {
     controls: Option<MediaControls>,
+    handle: tauri::AppHandle,
+}
+
+fn platform_config() -> PlatformConfig<'static> {
+    #[cfg(not(target_os = "windows"))]
+    let hwnd = None;
+
+    PlatformConfig {
+        dbus_name: "echo",
+        display_name: "Écho",
+        hwnd,
+    }
 }
 
 impl Mpris {
-    pub fn new() -> Self {
-        #[cfg(not(target_os = "windows"))]
-        let hwnd = None;
-
-        let config = PlatformConfig {
-            dbus_name: "musicapp",
-            display_name: "MusicApp",
-            hwnd,
+    pub fn new(handle: &tauri::AppHandle) -> Self {
+        let mut mpris = Self {
+            controls: None,
+            handle: handle.clone(),
         };
-
-        let controls = MediaControls::new(config).ok();
-        Self { controls }
+        mpris.set_enabled(true);
+        mpris
     }
 
-    pub fn attach<F>(&mut self, handler: F)
-    where
-        F: Fn(MediaControlEvent) + Send + 'static,
-    {
-        if let Some(controls) = self.controls.as_mut() {
-            let _ = controls.attach(handler);
+    /// Allume ou eteint les touches media du clavier.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        if !enabled {
+            self.controls = None;
+            return;
+        }
+        if self.controls.is_some() {
+            return;
+        }
+        if let Ok(mut controls) = MediaControls::new(platform_config()) {
+            let handle = self.handle.clone();
+            let _ = controls.attach(move |event| {
+                if let Some(label) = describe(&event) {
+                    // Un clic sur le widget du bureau ramene la fenetre au premier plan.
+                    if label == "raise" {
+                        if let Some(window) = handle.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.unminimize();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    let _ = handle.emit("media-control", label);
+                }
+            });
+            self.controls = Some(controls);
         }
     }
 

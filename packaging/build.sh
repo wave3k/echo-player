@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compile MusicApp. Aucun droit administrateur necessaire.
+# Compile Écho. Aucun droit administrateur nécessaire.
 
 set -euo pipefail
 
@@ -16,6 +16,6 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 cd "$ROOT/src-tauri"
-cargo build --release
+cargo build --release --features custom-protocol
 echo
-echo "C'est compilé : $ROOT/src-tauri/target/release/musicapp"
+echo "C'est compilé : $ROOT/src-tauri/target/release/echo"

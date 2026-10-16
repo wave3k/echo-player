@@ -1,12 +1,17 @@
 [package]
-name = "musicapp"
-version = "0.1.0"
-description = "Lecteur de musique local, leger"
+name = "echo"
+version = "1.0.0"
+description = "Écho, lecteur de musique et de vidéos locales"
 edition = "2021"
 rust-version = "1.77"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[features]
+# Embarque l'interface dans le binaire. Sans cette option, Tauri lit les
+# fichiers de src/ au démarrage (mode développement).
+custom-protocol = ["tauri/custom-protocol"]
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }

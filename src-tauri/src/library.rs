@@ -23,10 +23,7 @@ pub struct Track {
     pub is_video: bool,
 }
 
-const AUDIO_EXTS: &[&str] = &[
-    "mp3", "m4a", "mp4a", "aac", "flac", "ogg", "oga", "opus", "wav", "wv", "aiff", "aif", "m4b",
-    "ape", "mpc", "wma",
-];
+const AUDIO_EXTS: &[&str] = &["mp3", "m4a", "mp4a", "aac", "flac", "ogg", "oga", "opus", "wav", "wv", "aiff", "aif", "m4b", "ape", "mpc", "wma"];
 const VIDEO_EXTS: &[&str] = &["mp4", "m4v", "webm", "mkv", "mov", "avi", "ogv"];
 
 fn ext_of(path: &Path) -> String {
@@ -44,56 +41,76 @@ fn is_video(ext: &str) -> bool {
     VIDEO_EXTS.contains(&ext)
 }
 
-/// Balaye un dossier et en extrait la liste des morceaux lisibles.
-/// Les fichiers non media sont ignores en silence.
-pub fn scan(folder: &Path, covers_dir: &Path) -> (Vec<Track>, HashMap<String, PathBuf>) {
+/// Vrai si l'extension fait partie des formats autorises dans les reglages.
+fn allowed(ext: &str, formats: &[String]) -> bool {
+    formats.iter().any(|f| f.eq_ignore_ascii_case(ext))
+}
+
+/// Balaye les dossiers choisis et en extrait la liste des morceaux lisibles.
+/// Les fichiers non media (ou des formats decoaches) sont ignores en silence.
+pub fn scan(
+    folders: &[PathBuf],
+    covers_dir: &Path,
+    formats: &[String],
+) -> (Vec<Track>, HashMap<String, PathBuf>) {
     let mut tracks: Vec<Track> = Vec::new();
     let mut covers: HashMap<String, PathBuf> = HashMap::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for entry in WalkDir::new(folder)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let path = entry.path();
-        let ext = ext_of(path);
-        let video = is_video(&ext);
-        if !video && !is_audio(&ext) {
-            continue;
-        }
-
-        let fallback_title = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Sans titre")
-            .to_string();
-
-        let mut track = Track {
-            id: path.to_string_lossy().to_string(),
-            path: path.to_string_lossy().to_string(),
-            title: fallback_title.clone(),
-            artist: String::new(),
-            album: String::new(),
-            duration_ms: 0,
-            kind: if video { "video".into() } else { "audio".into() },
-            cover: None,
-            is_video: video,
-        };
-
-        if let Some(meta) = read_metadata(path, covers_dir, &mut covers) {
-            if !meta.title.is_empty() {
-                track.title = meta.title;
+    for folder in folders {
+        for entry in WalkDir::new(folder)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if !entry.file_type().is_file() {
+                continue;
             }
-            track.artist = meta.artist;
-            track.album = meta.album;
-            track.duration_ms = meta.duration_ms;
-            track.cover = meta.cover;
-        }
+            let path = entry.path();
+            let ext = ext_of(path);
+            let video = is_video(&ext);
+            if !video && !is_audio(&ext) {
+                continue;
+            }
+            if !allowed(&ext, formats) {
+                continue;
+            }
 
-        tracks.push(track);
+            let id = path.to_string_lossy().to_string();
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+
+            let fallback_title = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Sans titre")
+                .to_string();
+
+            let mut track = Track {
+                id: id.clone(),
+                path: id,
+                title: fallback_title.clone(),
+                artist: String::new(),
+                album: String::new(),
+                duration_ms: 0,
+                kind: if video { "video".into() } else { "audio".into() },
+                cover: None,
+                is_video: video,
+            };
+
+            if let Some(meta) = read_metadata(path, covers_dir, &mut covers) {
+                if !meta.title.is_empty() {
+                    track.title = meta.title;
+                }
+                track.artist = meta.artist;
+                track.album = meta.album;
+                track.duration_ms = meta.duration_ms;
+                track.cover = meta.cover;
+            }
+
+            tracks.push(track);
+        }
     }
 
     tracks.sort_by(|a, b| {

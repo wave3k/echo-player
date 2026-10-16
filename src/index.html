@@ -1,101 +1,121 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="fr" data-text="normal">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MusicApp</title>
+  <title>Écho</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body>
-  <div class="app">
+<body data-theme="dark" data-palette="nuit" data-font="space" data-mode="normal" data-anim="on">
+  <div class="app" id="app">
 
-    <aside class="sidebar">
+    <!-- ================= mode normale ================= -->
+    <aside class="sidebar" id="sidebar">
       <div class="brand">
-        <div class="brand-mark">
-          <svg viewBox="0 0 24 24" class="icon icon-note"><path d="M10.2 17.1a2.9 2.9 0 1 1-2.9-2.9 2.9 2.9 0 0 1 2.9 2.9Z"/><rect x="11.6" y="4.6" width="1.9" height="12.5" rx="0.9"/><path d="M12.5 5.4c2.6.5 4.6 1.8 5.4 3.9-1.6-1.3-3.3-1.9-5.4-2.3Z"/></svg>
-        </div>
-        <span>MusicApp</span>
+        <span class="brand-mark" data-icon="waveform" data-size="16"></span>
+        <span class="brand-name">Écho</span>
       </div>
 
-      <nav class="nav">
-        <button class="nav-item is-active" data-view="listen">
-          <span class="nav-icon">
-            <svg viewBox="0 0 24 24" class="icon"><path d="M8 5.5 18 12 8 18.5Z"/></svg>
-          </span>
-          Écouter
+      <nav class="nav" id="nav">
+        <button class="nav-item" data-view="listen">
+          <span data-icon="home" data-size="17"></span><span>Écouter</span>
         </button>
         <button class="nav-item" data-view="library">
-          <span class="nav-icon">
-            <svg viewBox="0 0 24 24" class="icon icon-stroke"><path d="M4 6h16M4 12h16M4 18h11"/></svg>
-          </span>
-          Bibliothèque
+          <span data-icon="library" data-size="17"></span><span>Bibliothèque</span>
         </button>
         <button class="nav-item" data-view="videos">
-          <span class="nav-icon">
-            <svg viewBox="0 0 24 24" class="icon icon-stroke"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M10 9.5 15 12l-5 2.5Z" class="icon-fill"/></svg>
-          </span>
-          Vidéos
+          <span data-icon="video" data-size="17"></span><span>Vidéos</span>
+        </button>
+        <button class="nav-item" data-view="settings">
+          <span data-icon="settings" data-size="17"></span><span>Réglages</span>
         </button>
       </nav>
 
       <div class="sidebar-bottom">
         <div class="count" id="track-count">Aucun morceau</div>
-        <button class="ghost-btn" id="btn-rescan">Actualiser</button>
-        <button class="ghost-btn" id="btn-folder">Changer de dossier</button>
+        <button class="ghost-btn" id="btn-rescan">
+          <span data-icon="refresh" data-size="15"></span>Actualiser
+        </button>
+        <button class="ghost-btn" id="btn-add-folder">
+          <span data-icon="plus" data-size="15"></span>Ajouter un dossier
+        </button>
       </div>
     </aside>
 
-    <main class="main">
+    <main class="main" id="main">
 
-      <section class="view is-active" id="view-listen">
-        <h2>Écouter</h2>
+      <!-- Écouter -->
+      <section class="view" id="view-listen">
+        <h2 class="view-title">Écouter</h2>
         <div class="listen-card">
           <div class="listen-cover" id="listen-cover"></div>
           <div class="listen-info">
+            <div class="listen-kicker">En cours de lecture</div>
             <div class="listen-title" id="listen-title">Rien en cours</div>
             <div class="listen-artist" id="listen-artist">Choisis un morceau dans ta bibliothèque</div>
-            <button class="play-big" id="btn-play-big" title="Lecture">
-              <svg viewBox="0 0 24 24" class="icon i-play"><path d="M8 5.5 18 12 8 18.5Z"/></svg>
-              <svg viewBox="0 0 24 24" class="icon i-pause"><path d="M8.5 5.5h3v13h-3zM12.5 5.5h3v13h-3z"/></svg>
-            </button>
+            <div class="listen-actions">
+              <button class="play-big" id="btn-play-big" title="Lecture">
+                <span data-icon="play" data-size="20" class="i-play"></span>
+                <span data-icon="pause" data-size="20" class="i-pause"></span>
+              </button>
+              <button class="ghost-btn" id="btn-shuffle-listen">
+                <span data-icon="shuffle" data-size="15"></span>Aléatoire
+              </button>
+            </div>
           </div>
         </div>
-        <h3>File d'attente</h3>
+        <div class="section-head">
+          <h3>File d'attente</h3>
+          <span class="muted" id="queue-count"></span>
+        </div>
         <div class="queue" id="queue"></div>
       </section>
 
+      <!-- Bibliothèque -->
       <section class="view" id="view-library">
-        <div class="view-head">
-          <h2>Bibliothèque</h2>
-          <div class="controls">
-            <input type="search" id="search" class="search" placeholder="Rechercher un titre, un artiste…" />
-            <select id="sort" class="select">
-              <option value="title">Titre</option>
-              <option value="artist">Artiste</option>
-              <option value="album">Album</option>
-              <option value="duration">Durée</option>
-            </select>
+        <div class="library-panel" id="library-panel">
+          <div class="view-head">
+            <h2 class="view-title">Bibliothèque</h2>
+            <div class="controls">
+              <label class="search">
+                <span data-icon="search" data-size="15"></span>
+                <input type="search" id="search" placeholder="Rechercher un titre, un artiste…" />
+              </label>
+              <label class="select-wrap">
+                <select id="sort" class="select">
+                  <option value="title">Titre</option>
+                  <option value="artist">Artiste</option>
+                  <option value="album">Album</option>
+                  <option value="duration">Durée</option>
+                </select>
+                <span data-icon="arrow_down" data-size="14"></span>
+              </label>
+            </div>
           </div>
+          <div class="list-head">
+            <span></span><span>Titre</span><span>Album</span><span class="ta-r">Durée</span>
+          </div>
+          <div class="list" id="list"></div>
         </div>
-        <div class="list-head">
-          <span>#</span><span>Titre</span><span>Album</span><span class="ta-r">Durée</span>
-        </div>
-        <div class="list" id="list"></div>
       </section>
 
+      <!-- Vidéos -->
       <section class="view" id="view-videos">
         <div class="view-head">
-          <h2>Vidéos</h2>
-        </div>
-        <div class="video-wrap" id="video-wrap" hidden>
-          <video id="video" controls playsinline></video>
+          <h2 class="view-title">Vidéos</h2>
         </div>
         <div class="tiles" id="tiles"></div>
       </section>
 
+      <!-- Réglages -->
+      <section class="view" id="view-settings">
+        <div class="settings-host" id="settings-host-normal"></div>
+      </section>
+
     </main>
 
-    <footer class="player">
+    <!-- barre de lecture du mode normale -->
+    <footer class="player" id="player">
       <div class="player-left">
         <div class="mini-cover" id="mini-cover"></div>
         <div class="mini-text">
@@ -107,20 +127,20 @@
       <div class="player-center">
         <div class="buttons">
           <button class="ctl" id="btn-shuffle" title="Lecture aléatoire">
-            <svg viewBox="0 0 24 24" class="icon icon-stroke"><path d="M4 7h4l8 10h4M4 17h4l2-2.5M16 7h4M18 4.5 20.5 7 18 9.5M18 14.5 20.5 17 18 19.5M9 10.5 11 8"/></svg>
+            <span data-icon="shuffle" data-size="17"></span>
           </button>
           <button class="ctl" id="btn-prev" title="Précédent">
-            <svg viewBox="0 0 24 24" class="icon"><path d="M18 6.5 9.5 12 18 17.5ZM6 6h2.5v12H6Z"/></svg>
+            <span data-icon="prev" data-size="19"></span>
           </button>
           <button class="ctl ctl-play" id="btn-play" title="Lecture">
-            <svg viewBox="0 0 24 24" class="icon i-play"><path d="M8.5 5.5 18 12 8.5 18.5Z"/></svg>
-            <svg viewBox="0 0 24 24" class="icon i-pause"><path d="M9 5.5h2.8v13H9zM12.7 5.5H15.5v13h-2.8z"/></svg>
+            <span data-icon="play" data-size="18" class="i-play"></span>
+            <span data-icon="pause" data-size="18" class="i-pause"></span>
           </button>
           <button class="ctl" id="btn-next" title="Suivant">
-            <svg viewBox="0 0 24 24" class="icon"><path d="M6 6.5 14.5 12 6 17.5ZM15.5 6H18v12h-2.5Z"/></svg>
+            <span data-icon="next" data-size="19"></span>
           </button>
           <button class="ctl" id="btn-repeat" title="Répéter">
-            <svg viewBox="0 0 24 24" class="icon icon-stroke"><path d="M4 12V9.5A3.5 3.5 0 0 1 7.5 6H18M15.5 3.5 18 6l-2.5 2.5M20 12v2.5A3.5 3.5 0 0 1 16.5 18H6M8.5 20.5 6 18l2.5-2.5"/></svg>
+            <span data-icon="repeat" data-size="17"></span>
             <span class="repeat-one">1</span>
           </button>
         </div>
@@ -133,32 +153,152 @@
 
       <div class="player-right">
         <button class="ctl" id="btn-mute" title="Couper le son">
-          <svg viewBox="0 0 24 24" class="icon icon-stroke"><path d="M5 9.5h3l4-3v11l-4-3H5Z"/><path class="waves" d="M15.5 9.5a3.5 3.5 0 0 1 0 5"/></svg>
+          <span data-icon="volume_high" data-size="17" class="i-vol-high"></span>
+          <span data-icon="volume_mute" data-size="17" class="i-vol-mute"></span>
         </button>
         <input type="range" id="volume" min="0" max="100" value="90" />
       </div>
     </footer>
 
+    <!-- ================= mode compacte ================= -->
+    <div class="compact" id="compact">
+      <div class="compact-top">
+        <span class="brand">
+          <span class="brand-mark" data-icon="waveform" data-size="15"></span>
+          <span class="brand-name">Écho</span>
+        </span>
+        <span class="top-actions">
+          <button class="icon-btn" id="comp-theme" title="Clair ou sombre"></button>
+          <button class="icon-btn" id="comp-settings" title="Réglages"></button>
+        </span>
+      </div>
+
+      <div class="carousel" id="carousel"></div>
+
+      <div class="car-title" id="comp-title">Rien en cours</div>
+      <div class="car-artist" id="comp-artist">Choisis un morceau dans ta bibliothèque</div>
+
+      <div class="car-progress">
+        <div class="bar" id="comp-bar"><i></i></div>
+        <div class="times"><span id="comp-now">0:00</span><span id="comp-total">0:00</span></div>
+      </div>
+
+      <div class="car-controls">
+        <button class="icon-btn" id="comp-queue" title="File d'attente"></button>
+        <button class="icon-btn" id="comp-prev" title="Précédent"></button>
+        <button class="icon-btn play" id="comp-play" title="Lecture"></button>
+        <button class="icon-btn" id="comp-next" title="Suivant"></button>
+        <button class="icon-btn" id="comp-shuffle" title="Aléatoire"></button>
+      </div>
+
+      <div class="dock">
+        <button class="icon-btn" id="dock-listen" title="Maintenant"></button>
+        <button class="icon-btn" id="dock-search" title="Rechercher"></button>
+        <button class="icon-btn" id="dock-library" title="Bibliothèque"></button>
+        <button class="icon-btn" id="dock-videos" title="Vidéos"></button>
+        <button class="icon-btn" id="dock-settings" title="Réglages"></button>
+        <button class="icon-btn" id="dock-volume" title="Couper le son"></button>
+      </div>
+    </div>
+
+    <!-- ================= mode minimaliste ================= -->
+    <div class="minimal" id="minimal">
+      <div class="min-top">
+        <label class="search min-search">
+          <span data-icon="search" data-size="15"></span>
+          <input type="search" id="min-search" placeholder="Rechercher un son, un artiste…" />
+        </label>
+        <div class="min-actions">
+          <button class="ghost-btn" id="min-videos">
+            <span data-icon="video" data-size="15"></span>Vidéos
+          </button>
+          <button class="icon-btn" id="min-theme" title="Clair ou sombre"></button>
+          <button class="icon-btn" id="min-settings" title="Réglages"></button>
+        </div>
+      </div>
+
+      <div class="min-body">
+        <div class="min-left">
+          <button class="peek peek-left" id="peek-left" title="Album précédent"></button>
+          <div class="album-cover" id="min-cover"></div>
+          <button class="peek peek-right" id="peek-right" title="Album suivant"></button>
+        </div>
+        <div class="min-right" id="min-right"></div>
+      </div>
+
+      <div class="min-player">
+        <div class="min-now">
+          <div class="mini-cover" id="min-mini-cover"></div>
+          <div class="mini-text">
+            <div class="mini-title" id="min-title">Aucun morceau</div>
+            <div class="mini-artist" id="min-artist">—</div>
+          </div>
+          <button class="icon-btn" id="min-play" title="Lecture"></button>
+        </div>
+        <div class="min-progress">
+          <div class="bar" id="min-bar"><i></i></div>
+          <div class="times"><span id="min-now-time">0:00</span><span id="min-total-time">0:00</span></div>
+        </div>
+        <div class="min-actions-r">
+          <button class="icon-btn" id="min-queue" title="File d'attente"></button>
+          <button class="icon-btn" id="min-volume" title="Couper le son"></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= surfaces superposées ================= -->
+    <div class="sheet" id="sheet" hidden>
+      <div class="sheet-inner">
+        <div class="sheet-head">
+          <div class="sheet-title" id="sheet-title">Bibliothèque</div>
+          <button class="icon-btn" id="sheet-close" title="Fermer"></button>
+        </div>
+        <div class="sheet-body" id="sheet-body"></div>
+      </div>
+    </div>
+
+    <div class="video-overlay" id="video-overlay" hidden>
+      <div class="video-box">
+        <div class="video-head">
+          <div class="video-title" id="video-title"></div>
+          <button class="icon-btn" id="video-close" title="Fermer"></button>
+        </div>
+        <video id="video" controls playsinline></video>
+      </div>
+    </div>
+
     <div class="empty" id="empty">
       <div class="empty-inner">
-        <div class="empty-mark">
-          <svg viewBox="0 0 24 24" class="icon icon-note"><path d="M10.2 17.1a2.9 2.9 0 1 1-2.9-2.9 2.9 2.9 0 0 1 2.9 2.9Z"/><rect x="11.6" y="4.6" width="1.9" height="12.5" rx="0.9"/><path d="M12.5 5.4c2.6.5 4.6 1.8 5.4 3.9-1.6-1.3-3.3-1.9-5.4-2.3Z"/></svg>
-        </div>
+        <div class="empty-mark" data-icon="waveform" data-size="30"></div>
         <h2>Ta musique te manque</h2>
-        <p>Choisis le dossier où tu ranges tes fichiers audio et vidéo. L'app s'occupe du reste.</p>
-        <button class="primary-btn" id="btn-empty-folder">Choisir un dossier</button>
+        <p>
+          Choisis le dossier où tu ranges tes fichiers audio et vidéo.
+          Écho s'occupe du reste : aucun compte, aucune publicité, rien qui sort de ton ordinateur.
+        </p>
+        <button class="primary-btn" id="btn-empty-folder">
+          <span data-icon="folder" data-size="16"></span>Choisir un dossier
+        </button>
       </div>
     </div>
 
     <div class="banner" id="banner" hidden>
-      <span id="banner-text">Le dossier de musique est introuvable.</span>
-      <button class="ghost-btn" id="btn-banner-folder">Changer de dossier</button>
+      <span class="banner-icon" data-icon="folder" data-size="16"></span>
+      <span id="banner-text">Un dossier de musique est introuvable.</span>
       <button class="ghost-btn" id="btn-banner-close">Fermer</button>
+    </div>
+
+    <div class="modal" id="modal" hidden>
+      <div class="modal-box">
+        <div class="modal-title" id="modal-title">Quitter Écho ?</div>
+        <div class="modal-text" id="modal-text">La musique s'arrêtera.</div>
+        <div class="modal-actions" id="modal-actions"></div>
+      </div>
     </div>
 
     <audio id="audio"></audio>
   </div>
 
+  <script src="icons.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
