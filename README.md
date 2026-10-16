@@ -1,52 +1,131 @@
+<div align="center">
+
+<img src="src-tauri/icons/128x128@2x.png" width="112" alt="Icône d'Écho" />
+
 # Écho
 
-Un lecteur de musique local pour Linux : léger, sans publicité, sans compte, sans réseau.
+**Un lecteur de musique local pour Linux : léger, sans publicité, sans compte, sans réseau.**
+
 Tu lui montres un dossier, il joue tout ce qu'il contient.
 
-## Ce que ça fait
+![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)
+![Rust](https://img.shields.io/badge/Rust-1.77+-000000?logo=rust&logoColor=white)
+![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)
+![JavaScript](https://img.shields.io/badge/JavaScript-vanilla-F7DF1E?logo=javascript&logoColor=black)
+![Licence MIT](https://img.shields.io/badge/licence-MIT-green)
 
-- Import d'un ou plusieurs dossiers : l'app les scanne en profondeur et construit ta bibliothèque (titre, artiste, album, durée, pochette).
-- Audio (mp3, flac, m4a, ogg, wav…). Les fichiers vidéo (mp4, webm, mkv…) sont lus pour leur piste son seulement : l'image n'est pas affichée. Les formats se choisissent dans Réglages → Formats acceptés ; tous sont cochés par défaut.
-- Les fichiers non-média du dossier sont ignorés en silence, et le bouton **Actualiser** prend en compte les nouveautés.
-- Recherche instantanée, tri par titre / artiste / album / durée.
-- Lecture dans la fenêtre, mélange aléatoire, répétition, reprise là où tu t'étais arrêté.
-- Trois dispositions au choix : **Normale** (bibliothèque + file d'attente), **Compacte** (pochettes en carrousel), **Minimaliste** (album ouvert et sa liste).
-- Clic droit sur un morceau (ou bouton **Modifier**) : titre, artiste, album et pochette. Les fichiers ne sont pas modifiés.
-- Thème clair ou sombre, quatre palettes de couleurs, trois polices, taille du texte et arrondis réglables.
-- Tout se règle dans **Réglages** (lecture, bibliothèque, formats acceptés, démarrage automatique, sauvegarde des réglages).
+</div>
+
+---
+
+## Sommaire
+
+- [Fonctionnalités](#fonctionnalités)
+- [Installation](#installation)
+- [Utilisation](#utilisation)
+- [Raccourcis clavier](#raccourcis-clavier)
+- [Formats pris en charge](#formats-pris-en-charge)
+- [Architecture](#architecture)
+- [Développement](#développement)
+- [Données et vie privée](#données-et-vie-privée)
+- [Licence](#licence)
+
+## Fonctionnalités
+
+| | |
+|---|---|
+| 📁 **Bibliothèque** | Un ou plusieurs dossiers analysés en profondeur : titre, artiste, album, durée, pochette. Les analyses suivantes ne relisent que les fichiers modifiés. |
+| 🔎 **Recherche et tri** | Recherche instantanée, sans tenir compte des accents. Tri par titre, artiste, album ou durée. Reste fluide avec des dizaines de milliers de morceaux. |
+| ▶️ **Lecture** | Aléatoire (chaque morceau passe une fois), répétition de la file ou d'un titre, reprise au morceau et à la position de la dernière fois. |
+| 🎨 **Trois dispositions** | **Normale** (bibliothèque et file d'attente), **Compacte** (pochettes en carrousel), **Minimaliste** (un album ouvert). S'adaptent aux fenêtres étroites des gestionnaires en mosaïque (Hyprland, Sway…). |
+| ✏️ **Modifier un morceau** | Titre, artiste, album et pochette, par clic droit ou avec le bouton **Modifier**. Tes fichiers ne sont jamais modifiés, et tu peux toujours revenir à l'original. |
+| 🌗 **Apparence** | Thème clair, sombre ou celui du système. Quatre palettes, trois polices, taille du texte et arrondis réglables, animations désactivables. |
+| ⌨️ **Intégration au bureau** | Touches média et widget du bureau (MPRIS), démarrage avec la session, entrée dans le menu des applications. |
 
 ## Installation
 
+Prérequis : [Rust](https://rustup.rs) et les dépendances système de Tauri 2 (WebKitGTK). Voir le [guide Tauri](https://v2.tauri.app/start/prerequisites/#linux).
+
 ```bash
-./packaging/build.sh     # compile (une fois, puis à chaque mise à jour)
-./packaging/install.sh   # pose l'icône et l'entrée dans le menu des applications
+git clone https://github.com/wave3k/echo-player.git
+cd echo-player
+./packaging/build.sh     # compile la version optimisée
+./packaging/install.sh   # installe le programme, l'icône et l'entrée de menu
 ```
 
-Aucun droit administrateur : tout va dans ton dossier personnel (`~/.local`).
-Ensuite, Écho s'ouvre depuis le menu des applications, ou en tapant `echo-player`.
+Aucun droit administrateur n'est nécessaire : tout est installé dans `~/.local`.
+Écho s'ouvre ensuite depuis le menu des applications, ou avec la commande `echo-player`.
 
 ## Utilisation
 
-1. Au premier lancement, clique sur **Ajouter un dossier** et sélectionne le dossier qui contient ta musique.
-2. Clique sur un morceau pour l'écouter. Les suivants s'enchaînent tout seuls.
-3. Si tu ajoutes des fichiers plus tard, clique sur **Actualiser**.
-4. Dans **Réglages**, choisis la disposition, les couleurs et la police qui te plaisent.
+1. Au premier lancement, clique sur **Ajouter un dossier** et choisis celui qui contient ta musique.
+2. Clique sur un morceau : les suivants s'enchaînent tout seuls.
+3. Tu as ajouté des fichiers ? Clique sur **Actualiser**. Tu peux aussi activer l'actualisation au démarrage.
+4. Dans **Réglages**, choisis la disposition, les couleurs et la police.
 
-## Raccourcis
+## Raccourcis clavier
 
-- `Espace` : lecture / pause
-- `Maj + →` : morceau suivant
-- `Maj + ←` : morceau précédent
-- `←` / `→` : reculer / avancer de quelques secondes
-- `Échap` : fermer une fenêtre ou un panneau
-- Les touches média du clavier (play/pause, suivant, précédent) pilotent aussi l'app.
-- Tab et les flèches déplacent le focus ; les barres de progression se règlent avec ← / →.
+| Touche | Action |
+|---|---|
+| `Espace` | Lecture / pause |
+| `Maj` + `→` / `←` | Morceau suivant / précédent |
+| `→` / `←` | Avancer / reculer de quelques secondes (5, 10 ou 30 s) |
+| `Échap` | Fermer une fenêtre ou un panneau |
+| Touches média | Lecture, pause, suivant, précédent |
+| `Tab` | Déplacer le focus. Les barres de progression se règlent avec `←` / `→`. |
 
-## Pour les curieux (technique)
+## Formats pris en charge
 
-- Interface : HTML / CSS / JavaScript dans une fenêtre Tauri 2 (moteur d'affichage du système). La page n'accède qu'aux dossiers de musique et au cache des pochettes.
-- Cœur : Rust. Scannage des dossiers, lecture des métadonnées (`lofty`), pochettes mises en cache, MPRIS pour les touches média et l'icône du système.
-- Ta musique ne quitte jamais ta machine ; l'app ne fait aucune connexion réseau.
-- Les réglages vivent dans `~/.config/com.echo.player/`, le cache des pochettes dans `~/.cache/com.echo.player/`.
-- Le design et le plan de fabrication sont dans `docs/superpowers/`.
-- Tests : `cd src-tauri && cargo test` pour le cœur (scan, pochettes, réglages, cache), `node --test tests/` pour les règles de lecture (`src/logic.js`).
+mp3, flac, m4a, aac, ogg, opus, wav, aiff, wma, ainsi que d'autres formats moins courants (wv, ape, mpc…).
+Les conteneurs vidéo (mp4, webm, mkv, mov) sont lus pour leur **piste son uniquement**.
+
+Tu peux choisir les formats dans **Réglages → Formats acceptés**. Le décodage passe par GStreamer : un format peu courant peut demander un greffon (`gst-plugins-good`, `gst-libav`).
+
+## Architecture
+
+```
+src/                 Interface : HTML, CSS et JavaScript, sans framework ni étape de build
+  app.js             Affichage, listes virtualisées, réglages, lecteur
+  logic.js           Règles de lecture (suivant, aléatoire, répétition), testées à part
+src-tauri/src/       Cœur en Rust
+  main.rs            Commandes Tauri, état partagé, démarrage
+  library.rs         Analyse des dossiers, tags et pochettes (lofty)
+  store.rs           Réglages, cache et corrections : fichiers JSON écrits de façon atomique
+  mpris.rs           Touches média et widget du bureau (souvlaki)
+packaging/           Compilation, installation et entrée .desktop
+tests/               Tests des règles de lecture (node --test)
+```
+
+Quelques choix de conception :
+
+- **Les fichiers audio ne sont jamais modifiés.** Les corrections de titre, d'artiste ou de pochette sont gardées dans `overrides.json` et appliquées à l'affichage.
+- **Le démarrage est rapide.** La bibliothèque est d'abord lue depuis le cache, puis rafraîchie en arrière-plan. Un seul scan tourne à la fois.
+- **Les pochettes sont lues sur le disque.** Elles passent par le protocole d'asset de Tauri, limité aux dossiers de musique et au cache, et ne sont jamais encodées en base64.
+- **L'interface reste réactive.** Les listes sont virtualisées, le tri est mémorisé, et les travaux lourds tournent hors du thread principal.
+
+## Développement
+
+```bash
+cd src-tauri
+cargo run              # lance l'app en mode développement (lit directement src/)
+cargo test             # tests du cœur : scan, pochettes, formats, réglages, cache
+cargo clippy --all-targets
+
+cd ..
+node --test tests/     # tests des règles de lecture
+```
+
+## Données et vie privée
+
+Écho ne fait **aucune connexion réseau** : ta musique et tes réglages restent sur ta machine.
+
+| Emplacement | Contenu |
+|---|---|
+| `~/.config/com.echo.player/` | Réglages, cache de la bibliothèque, corrections des morceaux |
+| `~/.cache/com.echo.player/covers/` | Pochettes extraites des fichiers (peut être vidé depuis les réglages) |
+
+Si un fichier de réglages est abîmé, il est mis de côté (sous le nom `settings.json.bad`) plutôt qu'effacé.
+
+## Licence
+
+Distribué sous licence [MIT](LICENSE).
