@@ -1,4 +1,5 @@
 mod library;
+mod mpris;
 mod store;
 
 use base64::Engine;
@@ -7,7 +8,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 #[derive(Default)]
 struct Data {
@@ -17,6 +18,15 @@ struct Data {
 }
 
 struct AppData(Mutex<Data>);
+
+/// Controles media du systeme (touches du clavier, widget du bureau).
+struct Media(Mutex<mpris::Mpris>);
+
+/// Transforme le chemin du fichier de pochette en URL utilisable par MPRIS.
+fn cover_url_for(data: &Data, id: &str) -> Option<String> {
+    let path = data.covers.get(id)?;
+    Some(format!("file://{}", path.to_string_lossy()))
+}
 
 #[derive(Serialize)]
 struct Snapshot {
@@ -111,14 +121,57 @@ fn set_folder(
             music_folder: Some(path),
         },
     );
-    let mut data = state.0.lock().unwrap();
-    Ok(do_scan(&app, &mut data))
+    let _ = app.emit("scanning", true);
+    let snapshot = {
+        let mut data = state.0.lock().unwrap();
+        do_scan(&app, &mut data)
+    };
+    let _ = app.emit("scanning", false);
+    Ok(snapshot)
 }
 
 #[tauri::command]
 fn rescan(app: tauri::AppHandle, state: State<AppData>) -> Snapshot {
-    let mut data = state.0.lock().unwrap();
-    do_scan(&app, &mut data)
+    let _ = app.emit("scanning", true);
+    let snapshot = {
+        let mut data = state.0.lock().unwrap();
+        do_scan(&app, &mut data)
+    };
+    let _ = app.emit("scanning", false);
+    snapshot
+}
+
+#[tauri::command]
+fn set_now_playing(
+    state: State<AppData>,
+    media: State<Media>,
+    title: String,
+    artist: String,
+    album: String,
+    cover: Option<String>,
+    duration_ms: u64,
+) {
+    let data = state.0.lock().unwrap();
+    let cover_url = cover.as_deref().and_then(|id| cover_url_for(&data, id));
+    drop(data);
+
+    let mut controls = media.0.lock().unwrap();
+    controls.set_metadata(
+        &title,
+        &artist,
+        &album,
+        cover_url,
+        Some(std::time::Duration::from_millis(duration_ms)),
+    );
+}
+
+#[tauri::command]
+fn set_playback(media: State<Media>, playing: bool, position_ms: u64) {
+    let mut controls = media.0.lock().unwrap();
+    controls.set_playback(
+        playing,
+        Some(std::time::Duration::from_millis(position_ms)),
+    );
 }
 
 #[tauri::command]
@@ -146,6 +199,16 @@ fn main() {
         .manage(AppData(Mutex::new(Data::default())))
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // Touches media du clavier et widget du bureau.
+            let mut controls = mpris::Mpris::new();
+            let handle_events = app.handle().clone();
+            controls.attach(move |event| {
+                if let Some(label) = mpris::describe(&event) {
+                    let _ = handle_events.emit("media-control", label);
+                }
+            });
+            app.manage(Media(Mutex::new(controls)));
             let cfg = store::load_config(&config_dir(&handle));
             {
                 let state = handle.state::<AppData>();
@@ -157,10 +220,13 @@ fn main() {
                     if Some(cache.folder.clone()) == cfg.music_folder {
                         data.tracks = cache.tracks;
                         let covers = store::covers_dir(&cache_dir(&handle));
-                        for t in &data.tracks {
-                            if let Some(id) = &t.cover {
-                                data.covers.insert(id.clone(), covers.join(id));
-                            }
+                        let ids: Vec<String> = data
+                            .tracks
+                            .iter()
+                            .filter_map(|t| t.cover.clone())
+                            .collect();
+                        for id in ids {
+                            data.covers.insert(id.clone(), covers.join(&id));
                         }
                     }
                 }
@@ -178,9 +244,14 @@ fn main() {
             if needs_scan {
                 let handle2 = handle.clone();
                 std::thread::spawn(move || {
-                    let state = handle2.state::<AppData>();
-                    let mut data = state.0.lock().unwrap();
-                    do_scan(&handle2, &mut data);
+                    let _ = handle2.emit("scanning", true);
+                    let result = {
+                        let state = handle2.state::<AppData>();
+                        let mut data = state.0.lock().unwrap();
+                        do_scan(&handle2, &mut data)
+                    };
+                    let _ = handle2.emit("library-updated", &result);
+                    let _ = handle2.emit("scanning", false);
                 });
             }
             Ok(())
@@ -189,7 +260,9 @@ fn main() {
             get_state,
             set_folder,
             rescan,
-            get_cover
+            get_cover,
+            set_now_playing,
+            set_playback
         ])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de MusicApp");

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=MusicApp
+Comment=Lecteur de musique et de vidéos local, léger et sans publicité
+Exec=@BIN@
+Icon=musicapp
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=musique;audio;video;lecteur;mp3;mp4;
+StartupWMClass=musicapp

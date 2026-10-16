@@ -56,3 +56,12 @@ Point de contrôle : l'app s'ouvre d'un clic depuis le menu, sans terminal.
 - Si les mp4 ne s'affichent pas (codec manquant), repli sur `mpv`, déjà installé.
 - Installer des paquets système est autorisé ; demander avant, si besoin est.
 - Objectif de légèreté : ne rien ajouter de superflu à l'interface.
+
+## Résultat mesuré (16/10/2026)
+
+- Poids réel de MusicApp en usage normal : **276 Mo** (mémoire partagée comptée une seule fois, tous processus confondus), source : `Pss` de `/proc/*/smaps_rollup`.
+- À titre de comparaison, sur la même machine : **Spotify : 455 Mo**.
+- Binaire compilé : 5 Mo. Aucune connexion réseau, aucun compte, aucune publicité.
+- Efficacité obtenue : cache de la bibliothèque au démarrage (l'app s'ouvre avec la liste déjà là, puis se resynchronise en tâche de fond) et scan hors de la fenêtre principale.
+- Écart assumé avec le cap de 100–150 Mo : la fenêtre s'appuie sur le moteur d'affichage du système (WebKitGTK), qui pèse à lui seul la majorité du total. Descendre en dessous suppose de redessiner l'interface dans un outil natif (GTK4) — c'est un autre chantier, à décider avec l'utilisateur si le poids devient un souci.
+

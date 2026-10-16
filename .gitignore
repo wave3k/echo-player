@@ -11,3 +11,6 @@ node_modules/
 # divers
 *.log
 .DS_Store
+
+# artefacts du navigateur de vérification
+.playwright-mcp/

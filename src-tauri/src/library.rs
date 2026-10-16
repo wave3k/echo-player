@@ -121,7 +121,7 @@ fn read_metadata(
 ) -> Option<Meta> {
     use lofty::file::{AudioFile, TaggedFileExt};
     use lofty::probe::Probe;
-    use lofty::tag::{ItemKey, TagExt};
+    use lofty::tag::ItemKey;
 
     let tagged = Probe::open(path).ok()?.read().ok()?;
 

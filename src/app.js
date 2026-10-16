@@ -1,5 +1,6 @@
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { open } = window.__TAURI__.dialog;
+const { listen } = window.__TAURI__.event;
 
 const ROW_HEIGHT = 52;
 
@@ -84,7 +85,8 @@ async function loadCover(track, node) {
 
 function visibleTracks() {
   const q = normalize(state.search);
-  let list = state.tracks;
+  // La bibliotheque sert la musique : les clips vidéo vivent dans leur vue.
+  let list = state.tracks.filter((t) => !t.is_video);
   if (q) {
     list = list.filter(
       (t) =>
@@ -182,7 +184,9 @@ function renderVideos() {
     const tile = document.createElement("button");
     tile.className = "tile";
     tile.innerHTML = `
-      <div class="tile-art">▶</div>
+      <div class="tile-art">
+        <svg viewBox="0 0 24 24" class="icon icon-stroke"><circle cx="12" cy="12" r="8.5"/><path d="M10.2 9.2 15 12l-4.8 2.8Z" class="icon-fill"/></svg>
+      </div>
       <div class="tile-body">
         <div class="tile-title"></div>
         <div class="tile-sub"></div>
@@ -262,6 +266,78 @@ function renderNowPlaying() {
   });
 }
 
+/* ---------------- touches media du systeme ---------------- */
+
+let lastPositionPush = 0;
+
+function pushNowPlaying(track) {
+  if (!track) {
+    invoke("set_now_playing", {
+      title: "",
+      artist: "",
+      album: "",
+      cover: null,
+      durationMs: 0,
+    }).catch(() => {});
+    return;
+  }
+  invoke("set_now_playing", {
+    title: track.title,
+    artist: track.artist || "",
+    album: track.album || "",
+    cover: track.cover || null,
+    durationMs: track.duration_ms || 0,
+  }).catch(() => {});
+}
+
+function pushPlayback(force = false) {
+  const track = trackById(currentId());
+  const media = track && track.is_video ? video : audio;
+  const now = Date.now();
+  if (!force && now - lastPositionPush < 5000) return;
+  lastPositionPush = now;
+  invoke("set_playback", {
+    playing: !media.paused && !!track,
+    positionMs: Math.round((media.currentTime || 0) * 1000),
+  }).catch(() => {});
+}
+
+async function bindMediaKeys() {
+  await listen("media-control", (event) => {    const track = trackById(currentId());
+    const media = track && track.is_video ? video : audio;
+    switch (event.payload) {
+      case "play":
+        media.play().catch(() => {});
+        break;
+      case "pause":
+        media.pause();
+        break;
+      case "toggle":
+        togglePlay();
+        break;
+      case "stop":
+        media.pause();
+        media.currentTime = 0;
+        break;
+      case "next":
+        step(1);
+        break;
+      case "previous":
+        step(-1);
+        break;
+      case "seek-forward":
+        media.currentTime = Math.min(media.duration || 0, media.currentTime + 10);
+        break;
+      case "seek-backward":
+        media.currentTime = Math.max(0, media.currentTime - 10);
+        break;
+      default:
+        break;
+    }
+    pushPlayback(true);
+  });
+}
+
 /* ---------------- lecture ---------------- */
 
 const audio = el("audio");
@@ -282,11 +358,14 @@ function playFromList(index) {
 
 function playVideo(track) {
   audio.pause();
+  switchView("videos");
   el("video-wrap").hidden = false;
   video.src = convertFileSrc(track.path);
   video.play().catch(() => {});
   state.queue = state.tracks.filter((t) => t.is_video).map((t) => t.id);
   state.queueIndex = state.queue.indexOf(track.id);
+  pushNowPlaying(track);
+  pushPlayback(true);
   renderNowPlaying();
   renderQueue();
 }
@@ -302,6 +381,8 @@ function playCurrent() {
   video.pause();
   audio.src = convertFileSrc(track.path);
   audio.play().catch(() => {});
+  pushNowPlaying(track);
+  pushPlayback(true);
   renderNowPlaying();
   renderQueue();
 }
@@ -366,8 +447,9 @@ function updateProgress() {
   el("time-now").textContent = formatTime(media.currentTime * 1000);
   el("time-total").textContent = formatTime((dur || 0) * 1000);
   const playing = !media.paused;
-  el("btn-play").textContent = playing ? "⏸" : "▶";
-  el("btn-play-big").textContent = playing ? "⏸" : "▶";
+  el("btn-play").classList.toggle("is-playing", playing);
+  el("btn-play-big").classList.toggle("is-playing", playing);
+  if (playing) pushPlayback();
 }
 
 /* ---------------- vues ---------------- */
@@ -450,7 +532,7 @@ el("btn-repeat").addEventListener("click", () => {
   const order = ["off", "all", "one"];
   state.repeat = order[(order.indexOf(state.repeat) + 1) % 3];
   el("btn-repeat").classList.toggle("is-on", state.repeat !== "off");
-  el("btn-repeat").textContent = state.repeat === "one" ? "↻¹" : "↻";
+  el("btn-repeat").classList.toggle("is-one", state.repeat === "one");
 });
 
 el("btn-mute").addEventListener("click", () => {
@@ -484,8 +566,14 @@ el("seek").addEventListener("change", (e) => {
 [audio, video].forEach((media) => {
   media.addEventListener("timeupdate", updateProgress);
   media.addEventListener("loadedmetadata", updateProgress);
-  media.addEventListener("play", updateProgress);
-  media.addEventListener("pause", updateProgress);
+  media.addEventListener("play", () => {
+    updateProgress();
+    pushPlayback(true);
+  });
+  media.addEventListener("pause", () => {
+    updateProgress();
+    pushPlayback(true);
+  });
   media.addEventListener("ended", () => step(1, true));
 });
 
@@ -501,9 +589,26 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+async function bindBackendEvents() {
+  await listen("library-updated", (event) => {
+    applySnapshot(event.payload);
+  });
+  await listen("scanning", (event) => {
+    if (event.payload) {
+      el("track-count").textContent = "Analyse du dossier…";
+    } else {
+      const audios = state.tracks.filter((t) => !t.is_video).length;
+      const videos = state.tracks.length - audios;
+      el("track-count").textContent = `${audios} morceau${audios > 1 ? "x" : ""} · ${videos} vidéo${videos > 1 ? "s" : ""}`;
+    }
+  });
+}
+
 /* ---------------- demarrage ---------------- */
 
 (async function start() {
   const snapshot = await invoke("get_state");
   applySnapshot(snapshot);
+  bindMediaKeys().catch(() => {});
+  bindBackendEvents().catch(() => {});
 })();
