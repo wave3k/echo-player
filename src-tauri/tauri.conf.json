@@ -40,7 +40,7 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
-    "category": "AudioVideo",
+    "category": "Music",
     "shortDescription": "Lecteur de musique local",
     "longDescription": "Écho, lecteur de musique locale : léger, sans publicité, sans compte et sans connexion."
   }

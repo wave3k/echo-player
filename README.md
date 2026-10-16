@@ -4,13 +4,14 @@
 
 # Écho
 
-**Un lecteur de musique local pour Linux : léger, sans publicité, sans compte, sans réseau.**
+**Un lecteur de musique local pour Linux et Windows : léger, sans publicité, sans compte, sans réseau.**
 
 Tu lui montres un dossier, il joue tout ce qu'il contient.
 
 ![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)
 ![Rust](https://img.shields.io/badge/Rust-1.77+-000000?logo=rust&logoColor=white)
 ![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)
+![Windows](https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white)
 ![JavaScript](https://img.shields.io/badge/JavaScript-vanilla-F7DF1E?logo=javascript&logoColor=black)
 ![Licence MIT](https://img.shields.io/badge/licence-MIT-green)
 
@@ -43,6 +44,18 @@ Tu lui montres un dossier, il joue tout ce qu'il contient.
 | ⌨️ **Intégration au bureau** | Touches média et widget du bureau (MPRIS), démarrage avec la session, entrée dans le menu des applications. |
 
 ## Installation
+
+### Télécharger
+
+Les fichiers sont sur la page [Releases](https://github.com/wave3k/echo-player/releases/latest) :
+
+| Système | Fichier |
+|---|---|
+| Windows 10 / 11 | `Echo_x.y.z_x64-setup.exe` (installateur) ou `.msi` |
+| Debian, Ubuntu, Mint… | `Echo_x.y.z_amd64.deb` : `sudo apt install ./Echo_*.deb` |
+| Autres distributions Linux | `Echo_x.y.z_amd64.AppImage` : `chmod +x` puis double-clic |
+
+### Compiler depuis les sources (Linux)
 
 Prérequis : [Rust](https://rustup.rs) et les dépendances système de Tauri 2 (WebKitGTK). Voir le [guide Tauri](https://v2.tauri.app/start/prerequisites/#linux).
 

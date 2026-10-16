@@ -1,3 +1,6 @@
+// Pas de console à côté de la fenêtre sous Windows (version publiée).
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod library;
 mod mpris;
 mod store;
@@ -438,14 +441,42 @@ async fn reset_settings(app: tauri::AppHandle) -> Bootstrap {
 #[tauri::command]
 fn open_config_dir(app: tauri::AppHandle) -> Result<(), String> {
     let dir = config_dir(&app);
-    std::process::Command::new("xdg-open")
+    #[cfg(target_os = "windows")]
+    let opener = "explorer";
+    #[cfg(target_os = "macos")]
+    let opener = "open";
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let opener = "xdg-open";
+    std::process::Command::new(opener)
         .arg(&dir)
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())
 }
 
+/// Démarrage automatique sous Windows : une valeur dans la clé « Run » de l'utilisateur.
+#[cfg(target_os = "windows")]
+fn set_autostart_impl(_app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    let mut cmd = std::process::Command::new("reg");
+    if enabled {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        cmd.args(["add", KEY, "/v", "Echo", "/t", "REG_SZ", "/f", "/d"])
+            .arg(format!("\"{}\"", exe.display()));
+    } else {
+        cmd.args(["delete", KEY, "/v", "Echo", "/f"]);
+    }
+    {
+        use std::os::windows::process::CommandExt;
+        // Pas de fenêtre de console qui clignote.
+        cmd.creation_flags(0x0800_0000);
+    }
+    let _ = cmd.output().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Ecrit ou efface le raccourci de demarrage automatique.
+#[cfg(not(target_os = "windows"))]
 fn set_autostart_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let home = app.path().home_dir().map_err(|e| e.to_string())?;
     let dir = home.join(".config/autostart");

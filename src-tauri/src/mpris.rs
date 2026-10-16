@@ -13,9 +13,18 @@ pub struct Mpris {
     handle: tauri::AppHandle,
 }
 
-fn platform_config() -> PlatformConfig<'static> {
+fn platform_config(handle: &tauri::AppHandle) -> PlatformConfig<'static> {
     #[cfg(not(target_os = "windows"))]
-    let hwnd = None;
+    let hwnd = {
+        let _ = handle;
+        None
+    };
+    // Sous Windows, les contrôles média s'attachent à la fenêtre principale.
+    #[cfg(target_os = "windows")]
+    let hwnd = handle
+        .get_webview_window("main")
+        .and_then(|w| w.hwnd().ok())
+        .map(|h| h.0 as *mut std::ffi::c_void);
 
     PlatformConfig {
         dbus_name: "echo",
@@ -43,7 +52,7 @@ impl Mpris {
         if self.controls.is_some() {
             return;
         }
-        if let Ok(mut controls) = MediaControls::new(platform_config()) {
+        if let Ok(mut controls) = MediaControls::new(platform_config(&self.handle)) {
             let handle = self.handle.clone();
             let _ = controls.attach(move |event| {
                 if let Some(label) = describe(&event) {
