@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MusicApp</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark"></div>
+        <span>MusicApp</span>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item is-active" data-view="listen">
+          <span class="nav-icon">▶</span> Écouter
+        </button>
+        <button class="nav-item" data-view="library">
+          <span class="nav-icon">≡</span> Bibliothèque
+        </button>
+        <button class="nav-item" data-view="videos">
+          <span class="nav-icon">▣</span> Vidéos
+        </button>
+      </nav>
+
+      <div class="sidebar-bottom">
+        <div class="count" id="track-count">Aucun morceau</div>
+        <button class="ghost-btn" id="btn-rescan">Actualiser</button>
+        <button class="ghost-btn" id="btn-folder">Changer de dossier</button>
+      </div>
+    </aside>
+
+    <main class="main">
+
+      <section class="view is-active" id="view-listen">
+        <h2>Écouter</h2>
+        <div class="listen-card" id="listen-card">
+          <div class="listen-cover" id="listen-cover"></div>
+          <div class="listen-info">
+            <div class="listen-title" id="listen-title">Rien en cours</div>
+            <div class="listen-artist" id="listen-artist">Choisis un morceau dans ta bibliothèque</div>
+            <button class="play-big" id="btn-play-big">▶</button>
+          </div>
+        </div>
+        <h3>File d'attente</h3>
+        <div class="queue" id="queue"></div>
+      </section>
+
+      <section class="view" id="view-library">
+        <div class="view-head">
+          <h2>Bibliothèque</h2>
+          <div class="controls">
+            <input type="search" id="search" class="search" placeholder="Rechercher un titre, un artiste…" />
+            <select id="sort" class="select">
+              <option value="title">Titre</option>
+              <option value="artist">Artiste</option>
+              <option value="album">Album</option>
+              <option value="duration">Durée</option>
+            </select>
+          </div>
+        </div>
+        <div class="list-head">
+          <span>#</span><span>Titre</span><span>Album</span><span class="ta-r">Durée</span>
+        </div>
+        <div class="list" id="list"></div>
+      </section>
+
+      <section class="view" id="view-videos">
+        <div class="view-head">
+          <h2>Vidéos</h2>
+        </div>
+        <div class="video-wrap" id="video-wrap" hidden>
+          <video id="video" controls playsinline></video>
+        </div>
+        <div class="tiles" id="tiles"></div>
+      </section>
+
+    </main>
+
+    <footer class="player">
+      <div class="player-left">
+        <div class="mini-cover" id="mini-cover"></div>
+        <div class="mini-text">
+          <div class="mini-title" id="mini-title">Aucun morceau</div>
+          <div class="mini-artist" id="mini-artist">—</div>
+        </div>
+      </div>
+
+      <div class="player-center">
+        <div class="buttons">
+          <button class="ctl" id="btn-shuffle" title="Aléatoire">⤨</button>
+          <button class="ctl" id="btn-prev" title="Précédent">⏮</button>
+          <button class="ctl ctl-play" id="btn-play" title="Lecture">▶</button>
+          <button class="ctl" id="btn-next" title="Suivant">⏭</button>
+          <button class="ctl" id="btn-repeat" title="Répéter">↻</button>
+        </div>
+        <div class="progress">
+          <span class="time" id="time-now">0:00</span>
+          <input type="range" id="seek" min="0" max="1000" value="0" />
+          <span class="time" id="time-total">0:00</span>
+        </div>
+      </div>
+
+      <div class="player-right">
+        <button class="ctl" id="btn-mute" title="Muet">◍</button>
+        <input type="range" id="volume" min="0" max="100" value="90" />
+      </div>
+    </footer>
+
+    <div class="empty" id="empty">
+      <div class="empty-inner">
+        <div class="empty-mark"></div>
+        <h2>Ta musique te manque</h2>
+        <p>Choisis le dossier où tu ranges tes fichiers audio et vidéo. L'app s'occupe du reste.</p>
+        <button class="primary-btn" id="btn-empty-folder">Choisir un dossier</button>
+      </div>
+    </div>
+
+    <div class="banner" id="banner" hidden>
+      <span id="banner-text">Le dossier de musique est introuvable.</span>
+      <button class="ghost-btn" id="btn-banner-folder">Changer de dossier</button>
+      <button class="ghost-btn" id="btn-banner-close">Fermer</button>
+    </div>
+
+    <audio id="audio"></audio>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

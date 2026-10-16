@@ -1,0 +1,13 @@
+# compilation Rust
+/target
+**/target/
+
+# node (si un jour)
+node_modules/
+
+# outils de discussion / maquettes
+.superpowers/
+
+# divers
+*.log
+.DS_Store
