@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Tout ce qui se regle dans l'application et se garde entre deux lancements.
@@ -43,6 +44,10 @@ pub struct Settings {
     pub last_track: Option<String>,
     pub last_position_ms: u64,
     pub last_playing: bool,
+    /// Version de la liste des formats : les formats ajoutés depuis sont cochés une fois.
+    /// Absente d'un ancien fichier, elle vaut 0 (et non la valeur par défaut des réglages).
+    #[serde(default)]
+    pub formats_version: u32,
 }
 
 impl Default for Settings {
@@ -67,17 +72,72 @@ impl Default for Settings {
             autostart: false,
             refresh_on_start: true,
             ask_before_quit: false,
-            formats: vec!["mp3".into(), "mp4".into()],
+            formats: FORMAT_CATALOG.iter().map(|f| f.to_string()).collect(),
             volume: 90,
             last_track: None,
             last_position_ms: 0,
             last_playing: false,
+            formats_version: FORMATS_VERSION,
         }
     }
 }
 
 /// Les formats proposes dans les reglages, dans l'ordre d'affichage.
-pub const FORMAT_CATALOG: &[&str] = &["mp3", "mp4", "flac", "m4a", "ogg", "wav", "webm", "mkv"];
+/// « autres » regroupe les extensions plus rares (wv, ape, mpc, avi…).
+pub const FORMAT_CATALOG: &[&str] = &[
+    "mp3", "flac", "m4a", "aac", "ogg", "opus", "wav", "aiff", "wma", "mp4", "webm", "mkv", "mov", "autres",
+];
+
+/// Formats de la première version : ceux qui n'y étaient pas sont ajoutés aux anciens réglages.
+const FORMATS_V1: &[&str] = &["mp3", "mp4", "flac", "m4a", "ogg", "wav", "webm", "mkv"];
+pub const FORMATS_VERSION: u32 = 2;
+
+impl Settings {
+    /// Remet dans des valeurs connues ce qui vient de l'extérieur (fichier importé,
+    /// interface), pour qu'une valeur fantaisiste ne casse pas l'affichage.
+    pub fn sanitize(&mut self) {
+        fn pick(value: &mut String, allowed: &[&str], fallback: &str) {
+            if !allowed.contains(&value.as_str()) {
+                *value = fallback.into();
+            }
+        }
+        pick(&mut self.theme, &["system", "light", "dark"], "dark");
+        pick(&mut self.palette, &["nuit", "aurore", "menthe", "prune"], "nuit");
+        pick(&mut self.font, &["space", "sora", "outfit"], "space");
+        pick(&mut self.mode, &["normal", "compact", "minimal"], "normal");
+        pick(&mut self.text_size, &["petit", "normal", "grand"], "normal");
+        pick(&mut self.repeat_default, &["off", "all", "one"], "off");
+        if !matches!(self.skip_seconds, 5 | 10 | 30) {
+            self.skip_seconds = 10;
+        }
+        self.radius = self.radius.min(20);
+        self.volume = self.volume.min(100);
+        if self.formats_version < FORMATS_VERSION {
+            // Réglages d'avant l'arrivée d'opus, aac… : ces formats n'existaient pas, on les coche.
+            for f in FORMAT_CATALOG.iter().filter(|f| !FORMATS_V1.contains(f)) {
+                if !self.formats.iter().any(|x| x == f) {
+                    self.formats.push((*f).to_string());
+                }
+            }
+            self.formats_version = FORMATS_VERSION;
+        }
+        self.formats.retain(|f| FORMAT_CATALOG.contains(&f.as_str()));
+        self.formats.dedup();
+        if self.formats.is_empty() {
+            self.formats = Settings::default().formats;
+        }
+    }
+
+    /// Prend les réglages envoyés par l'interface en gardant ce qui appartient au cœur :
+    /// les dossiers (changés seulement par add_folder / remove_folder) et la reprise.
+    /// L'interface peut envoyer une copie périmée, qui ne doit rien effacer.
+    pub fn keep_core_from(&mut self, current: &Settings) {
+        self.folders = current.folders.clone();
+        self.last_track = current.last_track.clone();
+        self.last_position_ms = current.last_position_ms;
+        self.last_playing = current.last_playing;
+    }
+}
 
 /// La bibliotheque mise en cache pour demarrer vite.
 #[derive(Serialize, Deserialize, Default)]
@@ -100,29 +160,53 @@ pub fn covers_dir(cache_dir: &Path) -> PathBuf {
     dir
 }
 
+/// Écrit d'abord dans un fichier temporaire puis le renomme : une coupure pendant
+/// l'écriture laisse l'ancien fichier intact au lieu d'un fichier à moitié écrit.
+pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, contents)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// Lit un fichier JSON. S'il est illisible, il est mis de côté (« .bad ») plutôt que
+/// d'être écrasé à la prochaine sauvegarde : rien n'est perdu sans trace.
+fn load_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
+    let text = std::fs::read_to_string(path).ok()?;
+    match serde_json::from_str(&text) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            let mut bad = path.as_os_str().to_owned();
+            bad.push(".bad");
+            let _ = std::fs::rename(path, PathBuf::from(bad));
+            None
+        }
+    }
+}
+
 pub fn load_settings(dir: &Path) -> Settings {
-    std::fs::read_to_string(settings_file(dir))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    let mut settings: Settings = load_json(&settings_file(dir)).unwrap_or_default();
+    settings.sanitize();
+    settings
 }
 
 pub fn save_settings(dir: &Path, settings: &Settings) {
-    let _ = std::fs::create_dir_all(dir);
     if let Ok(json) = serde_json::to_string_pretty(settings) {
-        let _ = std::fs::write(settings_file(dir), json);
+        let _ = write_atomic(&settings_file(dir), json.as_bytes());
     }
 }
 
 pub fn load_cache(dir: &Path) -> Option<Cache> {
-    let s = std::fs::read_to_string(cache_file(dir)).ok()?;
-    serde_json::from_str(&s).ok()
+    load_json(&cache_file(dir))
 }
 
 pub fn save_cache(dir: &Path, cache: &Cache) {
-    let _ = std::fs::create_dir_all(dir);
     if let Ok(json) = serde_json::to_string(cache) {
-        let _ = std::fs::write(cache_file(dir), json);
+        let _ = write_atomic(&cache_file(dir), json.as_bytes());
     }
 }
 
@@ -168,5 +252,127 @@ pub fn migrate_from_musicapp(config_dir: &Path, cache_dir: &Path) {
                 let _ = std::fs::rename(&old_covers, &new_covers);
             }
         }
+    }
+}
+
+/// Corrections faites par l'utilisateur sur un morceau. Les fichiers audio ne sont
+/// jamais modifiés : ces valeurs remplacent seulement ce qui est affiché.
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct TrackOverride {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    /// Nom du fichier de pochette (dans le cache) qui remplace celle du fichier.
+    pub cover: Option<String>,
+}
+
+/// Corrections par identifiant de morceau (son chemin).
+pub type Overrides = HashMap<String, TrackOverride>;
+
+pub fn load_overrides(dir: &Path) -> Overrides {
+    load_json(&dir.join("overrides.json")).unwrap_or_default()
+}
+
+pub fn save_overrides(dir: &Path, overrides: &Overrides) {
+    if let Ok(json) = serde_json::to_string_pretty(overrides) {
+        let _ = write_atomic(&dir.join("overrides.json"), json.as_bytes());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
+mod tests {
+    use super::*;
+    use crate::library::tests::TempDir;
+
+    /// Bug de l'audit : opus et aac étaient retirés des réglages.
+    #[test]
+    fn sanitize_garde_les_formats_du_catalogue() {
+        let mut s = Settings::default();
+        s.formats = vec!["opus".into(), "aac".into(), "inconnu".into()];
+        s.sanitize();
+        assert_eq!(s.formats, ["opus", "aac"]);
+    }
+
+    #[test]
+    fn d_anciens_reglages_recoivent_les_nouveaux_formats() {
+        let old: Settings = serde_json::from_str(r#"{"formats":["mp3","flac"]}"#).unwrap();
+        assert_eq!(old.formats_version, 0);
+        let mut s = old;
+        s.sanitize();
+        assert!(s.formats.contains(&"opus".to_string()));
+        assert!(s.formats.contains(&"mp3".to_string()));
+        assert!(!s.formats.contains(&"wav".to_string()), "un format décoché le reste");
+        assert_eq!(s.formats_version, FORMATS_VERSION);
+    }
+
+    #[test]
+    fn sanitize_remet_les_valeurs_fantaisistes() {
+        let mut s = Settings::default();
+        s.mode = "géant".into();
+        s.volume = 400;
+        s.skip_seconds = 7;
+        s.formats.clear();
+        s.sanitize();
+        assert_eq!(s.mode, "normal");
+        assert_eq!(s.volume, 100);
+        assert_eq!(s.skip_seconds, 10);
+        assert!(!s.formats.is_empty());
+    }
+
+    /// Bug de l'audit : un réglage envoyé par l'interface effaçait le dossier ajouté.
+    #[test]
+    fn l_interface_ne_peut_pas_effacer_les_dossiers() {
+        let mut current = Settings::default();
+        current.folders = vec!["/musique".into(), "/nouveau".into()];
+        current.last_track = Some("/musique/a.mp3".into());
+        let mut from_ui = current.clone();
+        from_ui.folders = vec!["/musique".into()];
+        from_ui.last_track = None;
+        from_ui.volume = 40;
+        from_ui.keep_core_from(&current);
+        assert_eq!(from_ui.folders, ["/musique", "/nouveau"]);
+        assert_eq!(from_ui.last_track.as_deref(), Some("/musique/a.mp3"));
+        assert_eq!(from_ui.volume, 40);
+    }
+
+    /// Bug de l'audit : un fichier abîmé faisait tout perdre, en silence.
+    #[test]
+    fn un_reglage_abime_est_mis_de_cote() {
+        let tmp = TempDir::new("settings");
+        let mut s = Settings::default();
+        s.folders.push("/ma/musique".into());
+        save_settings(&tmp.0, &s);
+        let text = std::fs::read_to_string(tmp.0.join("settings.json")).unwrap();
+        std::fs::write(tmp.0.join("settings.json"), &text[..text.len() / 2]).unwrap();
+
+        let loaded = load_settings(&tmp.0);
+        assert!(loaded.folders.is_empty());
+        let kept = std::fs::read_to_string(tmp.0.join("settings.json.bad")).unwrap();
+        assert!(kept.contains("/ma/musique"), "l'ancien fichier reste récupérable");
+    }
+
+    #[test]
+    fn l_ecriture_ne_laisse_pas_de_fichier_temporaire() {
+        let tmp = TempDir::new("atomic");
+        let mut s = Settings::default();
+        s.volume = 33;
+        save_settings(&tmp.0, &s);
+        save_settings(&tmp.0, &s);
+        assert_eq!(load_settings(&tmp.0).volume, 33);
+        assert!(!tmp.0.join("settings.json.tmp").exists());
+    }
+
+    #[test]
+    fn les_corrections_survivent_a_un_redemarrage() {
+        let tmp = TempDir::new("overrides");
+        let mut map = Overrides::new();
+        map.insert(
+            "/m/a.mp3".into(),
+            TrackOverride { title: Some("Nouveau".into()), ..Default::default() },
+        );
+        save_overrides(&tmp.0, &map);
+        assert_eq!(load_overrides(&tmp.0)["/m/a.mp3"].title.as_deref(), Some("Nouveau"));
     }
 }

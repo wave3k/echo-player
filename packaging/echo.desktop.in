@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
 Name=Écho
-Comment=Lecteur de musique et de vidéos local, léger et sans publicité
+Comment=Lecteur de musique local, léger et sans publicité
 Exec=@BIN@
 Icon=echo
 Terminal=false
 Categories=AudioVideo;Audio;Player;
-Keywords=musique;audio;video;lecteur;mp3;mp4;
-StartupWMClass=echo
+Keywords=musique;audio;lecteur;mp3;flac;opus;
+StartupWMClass=echo-player

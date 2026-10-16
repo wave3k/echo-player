@@ -1,11 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
-/// Un morceau de la bibliotheque (audio ou video).
+/// Un morceau de la bibliotheque. Tout est lu comme de l'audio : pour un mp4, seule la piste son est jouee.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Track {
     /// Identifiant stable : le chemin complet du fichier.
@@ -15,16 +14,22 @@ pub struct Track {
     pub artist: String,
     pub album: String,
     pub duration_ms: u64,
-    /// "audio" ou "video"
-    pub kind: String,
     /// Nom du fichier de pochette dans le dossier de cache, si trouve.
     pub cover: Option<String>,
-    /// true si le fichier doit etre lu par la vue video.
-    pub is_video: bool,
+    /// Date de modification et taille du fichier au moment de l'analyse.
+    /// Si rien n'a changé, on ne relit pas ses tags.
+    #[serde(default)]
+    pub mtime: u64,
+    #[serde(default)]
+    pub size: u64,
 }
 
-const AUDIO_EXTS: &[&str] = &["mp3", "m4a", "mp4a", "aac", "flac", "ogg", "oga", "opus", "wav", "wv", "aiff", "aif", "m4b", "ape", "mpc", "wma"];
-const VIDEO_EXTS: &[&str] = &["mp4", "m4v", "webm", "mkv", "mov", "avi", "ogv"];
+/// Extensions lues par la bibliotheque. Les conteneurs video (mp4, mkv...) sont lus
+/// pour leur piste son seulement.
+const AUDIO_EXTS: &[&str] = &[
+    "mp3", "m4a", "mp4a", "aac", "flac", "ogg", "oga", "opus", "wav", "wv", "aiff", "aif", "m4b", "ape", "mpc", "wma",
+    "mp4", "m4v", "webm", "mkv", "mov", "avi", "ogv",
+];
 
 fn ext_of(path: &Path) -> String {
     path.extension()
@@ -37,29 +42,51 @@ fn is_audio(ext: &str) -> bool {
     AUDIO_EXTS.contains(&ext)
 }
 
-fn is_video(ext: &str) -> bool {
-    VIDEO_EXTS.contains(&ext)
+/// Vrai si ce fichier serait gardé par le scan avec ces formats.
+pub fn is_listed(path: &Path, formats: &[String]) -> bool {
+    let ext = ext_of(path);
+    is_audio(&ext) && allowed(&ext, formats)
+}
+
+/// Le format des réglages dont relève une extension (oga → ogg, aif → aiff…).
+/// Les extensions rares sont rangées sous « autres ».
+pub fn format_key(ext: &str) -> &str {
+    match ext {
+        "mp3" | "flac" | "m4a" | "aac" | "ogg" | "opus" | "wav" | "aiff" | "wma" | "mp4" | "webm" | "mkv"
+        | "mov" => ext,
+        "oga" | "ogv" => "ogg",
+        "aif" => "aiff",
+        "m4b" | "mp4a" => "m4a",
+        "m4v" => "mp4",
+        _ => "autres",
+    }
 }
 
 /// Vrai si l'extension fait partie des formats autorises dans les reglages.
 fn allowed(ext: &str, formats: &[String]) -> bool {
-    formats.iter().any(|f| f.eq_ignore_ascii_case(ext))
+    let key = format_key(ext);
+    formats.iter().any(|f| f == key)
 }
 
 /// Balaye les dossiers choisis et en extrait la liste des morceaux lisibles.
 /// Les fichiers non media (ou des formats decoaches) sont ignores en silence.
+/// `previous` : les morceaux déjà connus. Un fichier inchangé reprend ses tags
+/// sans être relu.
 pub fn scan(
     folders: &[PathBuf],
     covers_dir: &Path,
     formats: &[String],
+    previous: &HashMap<String, Track>,
 ) -> (Vec<Track>, HashMap<String, PathBuf>) {
     let mut tracks: Vec<Track> = Vec::new();
     let mut covers: HashMap<String, PathBuf> = HashMap::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for folder in folders {
+        // Les liens symboliques sont suivis : beaucoup de bibliothèques sont
+        // rangées dans des dossiers liés. walkdir évite les boucles.
         for entry in WalkDir::new(folder)
-            .follow_links(false)
+            .follow_links(true)
             .into_iter()
             .filter_map(|e| e.ok())
         {
@@ -68,8 +95,7 @@ pub fn scan(
             }
             let path = entry.path();
             let ext = ext_of(path);
-            let video = is_video(&ext);
-            if !video && !is_audio(&ext) {
+            if !is_audio(&ext) {
                 continue;
             }
             if !allowed(&ext, formats) {
@@ -79,6 +105,34 @@ pub fn scan(
             let id = path.to_string_lossy().to_string();
             if !seen.insert(id.clone()) {
                 continue;
+            }
+
+            let (mtime, size) = match entry.metadata() {
+                Ok(m) => (
+                    m.modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0),
+                    m.len(),
+                ),
+                Err(_) => (0, 0),
+            };
+
+            // Fichier inchangé : on reprend ce qu'on sait déjà, sans relire les tags.
+            if let Some(old) = previous.get(&id) {
+                let cover_ok = old
+                    .cover
+                    .as_ref()
+                    .map(|name| covers_dir.join(name).is_file())
+                    .unwrap_or(true);
+                if old.mtime == mtime && old.size == size && old.mtime != 0 && cover_ok {
+                    if let Some(name) = &old.cover {
+                        covers.insert(name.clone(), covers_dir.join(name));
+                    }
+                    tracks.push(old.clone());
+                    continue;
+                }
             }
 
             let fallback_title = path
@@ -94,9 +148,9 @@ pub fn scan(
                 artist: String::new(),
                 album: String::new(),
                 duration_ms: 0,
-                kind: if video { "video".into() } else { "audio".into() },
                 cover: None,
-                is_video: video,
+                mtime,
+                size,
             };
 
             if let Some(meta) = read_metadata(path, covers_dir, &mut covers) {
@@ -129,6 +183,17 @@ struct Meta {
     album: String,
     duration_ms: u64,
     cover: Option<String>,
+}
+
+/// Empreinte FNV-1a 64 bits : stable d'une version de Rust à l'autre,
+/// contrairement à DefaultHasher, ce qui évite de dupliquer les pochettes.
+pub fn stable_hash(data: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in data {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 fn read_metadata(
@@ -166,9 +231,7 @@ fn read_metadata(
         if let Some(pic) = tag.pictures().first() {
             let data = pic.data();
             if !data.is_empty() {
-                let mut hasher = DefaultHasher::new();
-                data.hash(&mut hasher);
-                let hash = hasher.finish();
+                let hash = stable_hash(data);
                 let ext = match pic
                     .mime_type()
                     .map(|m| m.as_str())
@@ -193,4 +256,152 @@ fn read_metadata(
     }
 
     Some(meta)
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use lofty::config::WriteOptions;
+    use lofty::picture::{MimeType, Picture, PictureType};
+    use lofty::prelude::*;
+    use lofty::tag::{Tag, TagType};
+
+    /// Un dossier temporaire propre à chaque test, effacé à la fin.
+    pub struct TempDir(pub PathBuf);
+    impl TempDir {
+        pub fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("echo-test-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Écrit un WAV d'une seconde, avec un titre et une pochette dans ses tags.
+    pub fn tagged_wav(path: &Path, title: &str) {
+        let n: u32 = 8000;
+        let mut b = Vec::new();
+        b.extend(b"RIFF");
+        b.extend((36 + n * 2).to_le_bytes());
+        b.extend(b"WAVEfmt ");
+        b.extend(16u32.to_le_bytes());
+        b.extend(1u16.to_le_bytes());
+        b.extend(1u16.to_le_bytes());
+        b.extend(8000u32.to_le_bytes());
+        b.extend(16000u32.to_le_bytes());
+        b.extend(2u16.to_le_bytes());
+        b.extend(16u16.to_le_bytes());
+        b.extend(b"data");
+        b.extend((n * 2).to_le_bytes());
+        b.extend(vec![0u8; (n * 2) as usize]);
+        std::fs::write(path, b).unwrap();
+
+        let mut file = lofty::read_from_path(path).unwrap();
+        let mut tag = Tag::new(TagType::Id3v2);
+        tag.insert_text(ItemKey::TrackTitle, title.into());
+        tag.push_picture(Picture::new_unchecked(
+            PictureType::CoverFront,
+            Some(MimeType::Png),
+            None,
+            vec![137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3],
+        ));
+        file.insert_tag(tag);
+        file.save_to_path(path, WriteOptions::default()).unwrap();
+    }
+
+    fn all_formats() -> Vec<String> {
+        crate::store::Settings::default().formats
+    }
+
+    #[test]
+    fn lit_le_titre_et_la_pochette_des_tags() {
+        let tmp = TempDir::new("tags");
+        let covers = tmp.0.join("covers");
+        std::fs::create_dir_all(&covers).unwrap();
+        tagged_wav(&tmp.0.join("a.wav"), "Titre tag");
+
+        let (tracks, map) = scan(std::slice::from_ref(&tmp.0), &covers, &all_formats(), &HashMap::new());
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].title, "Titre tag");
+        let cover = tracks[0].cover.clone().expect("pochette extraite");
+        assert!(covers.join(&cover).is_file());
+        assert!(map.contains_key(&cover));
+    }
+
+    /// Bug de l'audit : après « Vider le cache », les pochettes ne revenaient jamais.
+    #[test]
+    fn les_pochettes_reviennent_apres_vidage_du_cache() {
+        let tmp = TempDir::new("covers");
+        let covers = tmp.0.join("covers");
+        std::fs::create_dir_all(&covers).unwrap();
+        tagged_wav(&tmp.0.join("a.wav"), "A");
+        let (first, _) = scan(std::slice::from_ref(&tmp.0), &covers, &all_formats(), &HashMap::new());
+
+        // Ce que fait clear_cover_cache : fichiers effacés, pochette et date oubliées.
+        for entry in std::fs::read_dir(&covers).unwrap() {
+            std::fs::remove_file(entry.unwrap().path()).unwrap();
+        }
+        let previous: HashMap<String, Track> = first
+            .into_iter()
+            .map(|mut t| {
+                t.cover = None;
+                t.mtime = 0;
+                (t.id.clone(), t)
+            })
+            .collect();
+
+        let (again, _) = scan(std::slice::from_ref(&tmp.0), &covers, &all_formats(), &previous);
+        let cover = again[0].cover.clone().expect("la pochette doit revenir");
+        assert!(covers.join(cover).is_file());
+    }
+
+    #[test]
+    fn un_fichier_inchange_n_est_pas_relu() {
+        let tmp = TempDir::new("incremental");
+        let covers = tmp.0.join("covers");
+        std::fs::create_dir_all(&covers).unwrap();
+        tagged_wav(&tmp.0.join("a.wav"), "Vrai titre");
+        let (first, _) = scan(std::slice::from_ref(&tmp.0), &covers, &all_formats(), &HashMap::new());
+        let mut known = first[0].clone();
+        known.title = "Déjà connu".into();
+        let previous = HashMap::from([(known.id.clone(), known)]);
+        let (again, _) = scan(std::slice::from_ref(&tmp.0), &covers, &all_formats(), &previous);
+        assert_eq!(again[0].title, "Déjà connu");
+    }
+
+    /// Bug de l'audit : opus, aac, aiff… n'étaient jamais lus.
+    #[test]
+    fn opus_aac_et_aiff_sont_listes() {
+        let tmp = TempDir::new("formats");
+        let covers = tmp.0.join("covers");
+        std::fs::create_dir_all(&covers).unwrap();
+        for name in ["a.opus", "b.aac", "c.aif", "d.m4b", "e.wv", "f.txt"] {
+            std::fs::write(tmp.0.join(name), b"x").unwrap();
+        }
+        let (tracks, _) = scan(std::slice::from_ref(&tmp.0), &covers, &all_formats(), &HashMap::new());
+        let mut names: Vec<String> = tracks.iter().map(|t| t.title.clone()).collect();
+        names.sort();
+        assert_eq!(names, ["a", "b", "c", "d", "e"]);
+    }
+
+    #[test]
+    fn les_formats_decoches_sont_ignores() {
+        let formats = vec!["mp3".to_string()];
+        assert!(is_listed(Path::new("/m/a.MP3"), &formats));
+        assert!(!is_listed(Path::new("/m/a.opus"), &formats));
+        assert_eq!(format_key("oga"), "ogg");
+        assert_eq!(format_key("aif"), "aiff");
+        assert_eq!(format_key("ape"), "autres");
+    }
+
+    #[test]
+    fn l_empreinte_des_pochettes_est_stable() {
+        // FNV-1a de « a » : valeur publiée, elle ne doit jamais changer.
+        assert_eq!(stable_hash(b"a"), 0xaf63dc4c8601ec8c);
+    }
 }

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Fabrique src/icons.js a partir des icones Hugeicons (licence MIT)."""
 import json
+import os
 import pathlib
 
-SRC = pathlib.Path("/tmp/opencode/design/icons")
-OUT = pathlib.Path("/home/teroryx/Projects/MusicApp/src/icons.js")
+# Dossier des icônes Hugeicons (SVG) : à donner via ICONS_SRC.
+SRC = pathlib.Path(os.environ.get("ICONS_SRC", "/tmp/opencode/design/icons"))
+OUT = pathlib.Path(__file__).resolve().parent.parent / "src" / "icons.js"
 
 # nom utilise dans le code : fichier Hugeicons
 WANTED = {

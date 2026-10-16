@@ -14,19 +14,19 @@
 
 @font-face {
   font-family: "Space Grotesk";
-  src: url("fonts/space_grotesk.woff2") format("woff2-variations");
+  src: url("fonts/space_grotesk.woff2") format("woff2");
   font-weight: 300 700;
   font-display: swap;
 }
 @font-face {
   font-family: "Sora";
-  src: url("fonts/sora.woff2") format("woff2-variations");
+  src: url("fonts/sora.woff2") format("woff2");
   font-weight: 300 700;
   font-display: swap;
 }
 @font-face {
   font-family: "Outfit";
-  src: url("fonts/outfit.woff2") format("woff2-variations");
+  src: url("fonts/outfit.woff2") format("woff2");
   font-weight: 300 700;
   font-display: swap;
 }
@@ -118,8 +118,8 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font), system-ui, sans-serif;
-  -webkit-user-select: none;
-  user-select: none;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 body[data-anim="off"] * { transition: none !important; animation: none !important; }
@@ -146,7 +146,7 @@ input, select { font: inherit; color: inherit; }
   transition: background .14s, color .14s, transform .14s;
 }
 .icon-btn:hover { background: var(--line); color: var(--text); }
-.icon-btn.on { color: var(--accent); }
+.icon-btn.on, .icon-btn.is-on { color: var(--accent); }
 .icon-btn.play {
   width: 46px; height: 46px; border-radius: 50%;
   background: var(--accent); color: var(--accent-ink);
@@ -160,7 +160,7 @@ input, select { font: inherit; color: inherit; }
   transition: background .14s, color .14s, border-color .14s;
 }
 .ghost-btn:hover { background: var(--line); color: var(--text); }
-.ghost-btn.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.ghost-btn.on, .ghost-btn.is-on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 
 .primary-btn {
   display: inline-flex; align-items: center; gap: 8px;
@@ -377,26 +377,6 @@ input[type="range"]::-webkit-slider-thumb {
 .row.is-playing .eq { animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 
-/* --- vidéos --- */
-
-.tiles {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 16px; overflow-y: auto; padding-bottom: 20px; align-content: start;
-}
-.tile {
-  text-align: left; border-radius: var(--radius-md); overflow: hidden;
-  background: var(--panel); border: 1px solid var(--line);
-  transition: transform .15s, border-color .15s;
-}
-.tile:hover { transform: translateY(-2px); border-color: var(--line2); }
-.tile-art {
-  aspect-ratio: 16 / 10; background-size: cover; background-position: center;
-  background-color: var(--panel2); display: flex; align-items: center; justify-content: center; color: var(--muted2);
-}
-.tile-body { padding: 11px 13px 13px; }
-.tile-title { font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tile-sub { font-size: .78rem; color: var(--muted); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
 /* --- barre de lecture (mode normale) --- */
 
 .player {
@@ -501,21 +481,20 @@ body:not([data-mode="minimal"]) .minimal { display: none; }
 .min-top { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 26px 14px; }
 .min-search { min-width: min(420px, 42vw); }
 .min-actions { display: flex; align-items: center; gap: 8px; }
-.min-body { display: flex; gap: 34px; padding: 6px 26px 0; flex: 1; min-height: 0; }
-.min-left { position: relative; display: flex; align-items: flex-start; padding: 0 13px; }
+.min-body { display: flex; gap: 30px; padding: 6px 26px 0; flex: 1; min-height: 0; }
+.min-left { display: flex; align-items: center; gap: 18px; flex: none; align-self: flex-start; padding-top: 6px; }
 .album-cover {
-  width: min(300px, 26vw); aspect-ratio: 1; border-radius: var(--radius-lg); flex: none; position: relative; z-index: 1;
+  width: min(400px, 34vw); aspect-ratio: 1; border-radius: var(--radius-lg); flex: none; position: relative; z-index: 1;
   background: linear-gradient(140deg, var(--accent), var(--accent2)); background-size: cover; background-position: center;
   box-shadow: var(--glow);
 }
+/* Les albums voisins sont détachés de la pochette : une tranche cliquable de chaque côté. */
 .peek {
-  position: absolute; top: 0; width: 28px; height: min(300px, 26vw); border-radius: var(--radius-md);
+  flex: none; width: 52px; height: calc(min(400px, 34vw) * .9); border-radius: var(--radius-md);
   background-size: cover; background-position: center; background-color: var(--panel2);
-  opacity: .55; transition: opacity .15s, transform .15s; border: 1px solid var(--line);
+  opacity: .6; transition: opacity .15s, transform .18s; border: 1px solid var(--line);
 }
-.peek:hover { opacity: .9; }
-.peek-left { left: -13px; }
-.peek-right { right: -13px; }
+.peek:hover { opacity: 1; transform: scale(1.03); }
 .peek[hidden] { display: none; }
 .min-right { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 .min-right > * { max-width: 920px; }
@@ -577,9 +556,9 @@ body:not([data-mode="minimal"]) .minimal { display: none; }
 }
 .hint { font-size: .78rem; color: var(--muted2); }
 
-.swatches { display: flex; gap: 10px; flex-wrap: wrap; }
+.swatches { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 10px; }
 .swatch {
-  width: 128px; padding: 11px; border-radius: var(--radius-md); text-align: left;
+  width: 100%; padding: 11px; border-radius: var(--radius-md); text-align: left;
   border: 1.5px solid var(--line2); background: var(--panel2); position: relative;
 }
 .swatch.sel { border-color: var(--accent); }
@@ -588,9 +567,9 @@ body:not([data-mode="minimal"]) .minimal { display: none; }
 .swatch .dots i { width: 19px; height: 19px; border-radius: 6px; display: block; border: 1px solid var(--line2); }
 .swatch .nm { font-size: .82rem; margin-top: 10px; }
 
-.fontcards { display: flex; gap: 10px; flex-wrap: wrap; }
+.fontcards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
 .fontcard {
-  flex: 1 1 200px; padding: 13px 15px; border-radius: var(--radius-md); text-align: left;
+  padding: 13px 34px 13px 15px; border-radius: var(--radius-md); text-align: left;
   border: 1.5px solid var(--line2); background: var(--panel2); position: relative;
 }
 .fontcard.sel { border-color: var(--accent); }
@@ -604,8 +583,8 @@ body:not([data-mode="minimal"]) .minimal { display: none; }
 .fontcard[data-font="sora"] .fprev { font-family: "Sora"; }
 .fontcard[data-font="outfit"] .fprev { font-family: "Outfit"; }
 
-.mthumbs { display: flex; gap: 12px; flex-wrap: wrap; }
-.mthumb { width: 158px; text-align: center; }
+.mthumbs { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.mthumb { width: 100%; text-align: center; }
 .mthumb .th {
   height: 86px; border-radius: var(--radius-soft); border: 1.5px solid var(--line2);
   background: var(--panel2); padding: 8px; display: flex; gap: 6px;
@@ -660,23 +639,13 @@ body:not([data-mode="minimal"]) .minimal { display: none; }
 .sheet-title { font-size: 1.05rem; font-weight: 600; }
 .sheet-body { flex: 1; min-height: 0; overflow: hidden; display: flex; padding: 18px 20px 0; }
 .sheet-body > .library-panel,
+
 .sheet-body > .settings-panel { flex: 1; min-height: 0; }
 .sheet-body.flush { padding: 0; overflow-y: auto; }
 .sheet-body.flush > .settings-panel { padding: 20px 26px 30px; flex: 1; min-height: 0; }
-.sheet-body.flush > .tiles,
 .sheet-body.flush > .queue { padding: 20px 22px; width: 100%; }
 
-.video-overlay {
-  position: fixed; inset: 0; z-index: 60;
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
-  backdrop-filter: blur(8px);
-  display: flex; align-items: center; justify-content: center; padding: 30px;
-}
-.video-overlay[hidden] { display: none; }
-.video-box { width: min(1100px, 100%); }
-.video-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-.video-title { font-size: 1rem; }
-#video { width: 100%; max-height: 74vh; border-radius: var(--radius-lg); background: #000; display: block; }
+
 
 .empty {
   position: fixed; inset: 0; z-index: 30;
@@ -715,3 +684,201 @@ body:not([data-mode="minimal"]) .minimal { display: none; }
 .modal-title { font-size: 1.1rem; font-weight: 600; }
 .modal-text { color: var(--muted); font-size: .88rem; margin-top: 8px; line-height: 1.5; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+
+/* ---------- 9. Accessibilité, finitions ---------- */
+
+/* La page n'apparaît qu'une fois prête (voir app.js, démarrage). */
+.app { transition: opacity .2s; }
+body:not(.ready) .app { opacity: 0; }
+
+/* Les commandes ne se sélectionnent pas, le reste du texte oui (chemins, titres). */
+button, .row, .trk, .queue-item, .dock, .player, .min-player, .car-controls,
+.carousel, .bar, .seg, .chip, .switch, .nav-item {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Focus clavier visible partout. Les règles plus loin dans le fichier l'emportent à égalité. */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.search input:focus-visible,
+.select:focus-visible { outline: none; }
+.search:focus-within { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input[type="range"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; }
+
+/* Les barres de progression sont des curseurs au clavier. */
+.bar:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+
+/* Interrupteurs : désormais des boutons, on garde leur apparence. */
+button.switch { padding: 0; }
+
+/* File d'attente virtualisée : lignes de hauteur fixe, positionnées dans le conteneur. */
+.queue .queue-item { position: absolute; left: 0; right: 0; height: 40px; }
+.queue .list-spacer { width: 100%; }
+
+/* Rubriques des réglages dans la barre latérale (disposition normale). */
+.nav[hidden] { display: none; }
+.sidebar .settings-nav { padding-top: 0; flex: 1; min-height: 0; overflow-y: auto; gap: 2px; border-top: 1px solid var(--line); margin-top: 4px; padding-top: 10px; }
+.sidebar .settings-nav button { padding: 7px 11px 7px 26px; font-size: .86rem; }
+.settings-panel.nav-moved { grid-template-columns: 1fr; }
+.settings-panel.nav-moved .settings-body { padding-left: 4px; }
+
+/* Icônes de lecture pleines sur les boutons principaux, comme dans les maquettes. */
+.play-big svg path, .ctl-play svg path, .icon-btn.play svg path { fill: currentColor; }
+
+/* Dans la fenêtre superposée, le titre est déjà dans l'en-tête : pas de doublon. */
+.sheet .settings-body h3 { display: none; }
+
+/* ---------- 10. Animations ----------
+   Tout se désactive avec le réglage « Animations » (body[data-anim="off"], voir plus haut)
+   et avec la préférence système « réduire les animations ». */
+
+@keyframes viewIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sheetIn { from { opacity: 0; transform: translateY(14px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes rise { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes pop { from { opacity: 0; transform: scale(.94); } to { opacity: 1; transform: none; } }
+@keyframes modeIn { from { opacity: 0; transform: scale(.99); } to { opacity: 1; transform: none; } }
+@keyframes coverSwap { from { opacity: .3; transform: scale(.96); } to { opacity: 1; transform: none; } }
+
+/* Changement de vue, de panneau et de disposition. */
+.view.is-active { animation: viewIn .32s cubic-bezier(.2, .7, .2, 1); }
+body.ready[data-mode="normal"] .app { animation: fadeIn .3s ease; }
+body[data-mode="compact"] .compact,
+body[data-mode="minimal"] .minimal { animation: modeIn .35s cubic-bezier(.2, .7, .2, 1); }
+
+/* Fenêtres superposées : le fond s'estompe, la fiche monte. */
+.sheet:not([hidden]),
+.modal:not([hidden]) { animation: fadeIn .2s ease; }
+.sheet:not([hidden]) .sheet-inner,
+.modal:not([hidden]) .modal-box { animation: pop .22s cubic-bezier(.2, .7, .2, 1); }
+.banner:not([hidden]) { animation: rise .25s cubic-bezier(.2, .7, .2, 1); }
+
+/* Pochette qui change de morceau. */
+.swap { animation: coverSwap .42s cubic-bezier(.2, .7, .2, 1); }
+
+/* Progression fluide entre deux mises à jour du lecteur. */
+.bar > i { transition: width .3s linear; }
+
+/* Survols et sélections plus doux. */
+.row, .queue-item, .trk { transition: background .18s ease, color .18s ease; }
+.chip { transition: background .18s ease, color .18s ease, border-color .18s ease; }
+.swatch, .fontcard, .mthumb { transition: border-color .18s ease, background .18s ease, transform .12s ease; }
+
+/* Retour tactile : les commandes s'enfoncent légèrement au clic. */
+.ctl:active, .icon-btn:active, .ghost-btn:active, .primary-btn:active,
+.play-big:active, .nav-item:active, .chip:active, .seg button:active,
+.swatch:active, .fontcard:active, .mthumb:active, .settings-nav button:active,
+.queue-item:active, .trk:active { transform: scale(.97); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Titre et artiste qui changent avec le morceau. */
+@keyframes textIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.swap-text { animation: textIn .42s cubic-bezier(.2, .7, .2, 1); }
+
+/* Lecteur : barres remplies en couleur d'accent, curseur visible au survol. */
+#seek, #volume {
+  background: linear-gradient(to right, var(--accent) var(--p, 0%), var(--line2) var(--p, 0%));
+  height: 4px; border-radius: 4px;
+}
+#seek::-webkit-slider-thumb, #volume::-webkit-slider-thumb { opacity: 0; transition: opacity .15s ease; }
+.progress:hover #seek::-webkit-slider-thumb, #volume:hover::-webkit-slider-thumb,
+#seek:focus-visible::-webkit-slider-thumb, #seek:active::-webkit-slider-thumb { opacity: 1; }
+.player .ctl { transition: color .14s, background .14s, transform .14s; }
+.player .ctl:hover { transform: scale(1.06); }
+.player { backdrop-filter: blur(10px); }
+.mini-cover { box-shadow: 0 6px 16px rgba(0, 0, 0, .25); }
+
+/* ---------- 11. Modifier un morceau ---------- */
+
+.edit-dialog {
+  position: fixed; inset: 0; z-index: 75;
+  background: color-mix(in srgb, var(--bg) 72%, transparent); backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.edit-dialog[hidden] { display: none; }
+.edit-dialog:not([hidden]) { animation: fadeIn .2s ease; }
+.edit-dialog:not([hidden]) .edit-box { animation: pop .24s cubic-bezier(.2, .7, .2, 1); }
+.edit-box {
+  width: min(560px, 100%); background: var(--panel); border: 1px solid var(--line2);
+  border-radius: var(--radius-lg); box-shadow: var(--glow); padding: 18px 20px 16px;
+}
+.edit-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.edit-body { display: flex; gap: 20px; align-items: flex-start; }
+.edit-cover {
+  position: relative; width: 170px; height: 170px; flex: none; border-radius: var(--radius-md);
+  background: var(--panel2); box-shadow: var(--glow); overflow: hidden;
+  transition: transform .18s ease, filter .18s ease;
+}
+.edit-cover:hover { transform: scale(1.02); }
+.edit-cover:hover .edit-cover-hint { opacity: 1; }
+.edit-cover-hint {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, .5); color: #fff; font-size: .85rem; opacity: 0; transition: opacity .18s ease;
+}
+.edit-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.edit-field { display: flex; flex-direction: column; gap: 6px; font-size: .8rem; color: var(--muted); }
+.edit-field input {
+  background: var(--panel2); border: 1px solid var(--line); border-radius: var(--radius-soft);
+  padding: 9px 11px; font-size: .92rem; color: var(--text); outline: none; transition: border-color .15s ease;
+}
+.edit-field input:focus-visible, .edit-field input:focus { border-color: var(--accent); outline: none; }
+.edit-actions { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
+.edit-actions .grow { flex: 1; }
+@media (max-width: 560px) {
+  .edit-body { flex-direction: column; }
+  .edit-cover { width: 100%; height: 180px; }
+}
+
+/* ---------- 12. Fenêtres étroites ----------
+   Sous un gestionnaire en mosaïque (Hyprland, Sway…), la fenêtre est souvent plus
+   étroite que prévu : la mise en page se resserre au lieu d'être coupée. */
+
+.set-row:has(.formats-ctl) { flex-wrap: wrap; }
+.formats-ctl { flex-wrap: wrap; flex: 1 1 260px !important; justify-content: flex-end; }
+
+@media (max-width: 1000px) {
+  .app { grid-template-columns: 196px 1fr; }
+  .player { grid-template-columns: minmax(140px, 1fr) auto auto; gap: 14px; padding: 12px 14px 14px; }
+  .progress { width: clamp(160px, 30vw, 420px); }
+  .player-right input { width: 72px; }
+  .view { padding: 18px 18px 0; }
+  .listen-cover { width: 120px; height: 120px; }
+  .listen-title { font-size: 1.4rem; }
+  .list-head, .row { grid-template-columns: 34px 1fr 62px; }
+  .list-head > :nth-child(3), .row-album { display: none; }
+  .settings-panel:not(.nav-moved) { grid-template-columns: 168px 1fr; }
+}
+
+@media (max-width: 760px) {
+  .app { grid-template-columns: 64px 1fr; }
+  .sidebar { padding: 16px 8px; align-items: stretch; }
+  .brand { justify-content: center; padding: 0; }
+  .brand-name, .count, .nav-item > span:last-child, .sidebar .settings-nav button > span:last-child { display: none; }
+  .nav-item, .sidebar .settings-nav button { justify-content: center; padding: 10px 0; }
+  .sidebar-bottom .ghost-btn { font-size: 0; justify-content: center; padding: 9px 0; gap: 0; }
+  .player { grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; }
+  .player-right input { display: none; }
+  .listen-card { gap: 16px; padding: 16px; }
+  .listen-cover { width: 96px; height: 96px; }
+  .listen-actions { flex-wrap: wrap; gap: 8px; }
+  .settings-panel:not(.nav-moved) { grid-template-columns: 1fr; }
+  .settings-panel:not(.nav-moved) .settings-nav { flex-direction: row; flex-wrap: wrap; }
+  /* Minimaliste : la pochette passe au-dessus des titres, qui gardent toute la largeur. */
+  .min-top { padding: 14px 16px 10px; }
+  .min-search { min-width: 0; flex: 1; }
+  .min-body { flex-direction: column; gap: 16px; padding: 4px 16px 0; overflow-y: auto; }
+  .min-left { align-self: center; padding-top: 0; }
+  .album-cover { width: min(260px, 52vw); height: min(260px, 52vw); }
+  .peek { height: calc(min(260px, 52vw) * .9); }
+  .min-right { overflow: visible; }
+  .min-player { grid-template-columns: minmax(0, 1fr) minmax(160px, 1.6fr) auto; padding-left: 16px; padding-right: 16px; }
+}

@@ -5,7 +5,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN_SRC="$ROOT/src-tauri/target/release/echo"
+BIN_SRC="$ROOT/src-tauri/target/release/echo-player"
 
 if [ ! -x "$BIN_SRC" ]; then
   echo "Le programme n'est pas encore compilé."
@@ -19,10 +19,17 @@ ICON_DIR="$HOME/.local/share/icons/hicolor/512x512/apps"
 
 mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR"
 
-install -m 755 "$BIN_SRC" "$BIN_DIR/echo"
+install -m 755 "$BIN_SRC" "$BIN_DIR/echo-player"
 install -m 644 "$ROOT/src-tauri/icons/icon.png" "$ICON_DIR/echo.png"
 
-sed "s|@BIN@|$BIN_DIR/echo|" "$ROOT/packaging/echo.desktop.in" > "$APP_DIR/echo.desktop"
+sed "s|@BIN@|$BIN_DIR/echo-player|" "$ROOT/packaging/echo.desktop.in" > "$APP_DIR/echo.desktop"
+
+# Ancien nom de commande : « echo » se confondait avec la commande système echo.
+# On ne retire que le binaire d'Écho (il contient son identifiant), jamais autre chose.
+if [ -f "$BIN_DIR/echo" ] && grep -aq "com.echo.player" "$BIN_DIR/echo" 2>/dev/null; then
+  rm -f "$BIN_DIR/echo"
+  echo "L'ancienne commande « echo » a été retirée : elle masquait la commande système."
+fi
 
 # L'ancienne version s'appelait MusicApp : on enlève ses traces.
 removed=0
@@ -44,4 +51,4 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
 fi
 
 echo "Écho est installé."
-echo "Tu la trouveras dans ton menu d'applications, ou en tapant : echo"
+echo "Tu la trouveras dans ton menu d'applications, ou en tapant : echo-player"

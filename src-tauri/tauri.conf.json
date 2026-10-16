@@ -13,23 +13,26 @@
         "title": "Écho",
         "width": 1180,
         "height": 760,
-        "minWidth": 980,
-        "minHeight": 620,
+        "minWidth": 640,
+        "minHeight": 480,
         "theme": "Dark",
         "center": true
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; media-src 'self' asset: http://asset.localhost; font-src 'self'; connect-src ipc: http://ipc.localhost",
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": []
       }
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "appimage"],
+    "targets": [
+      "deb",
+      "appimage"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -39,6 +42,6 @@
     ],
     "category": "AudioVideo",
     "shortDescription": "Lecteur de musique local",
-    "longDescription": "Écho, lecteur de musique et de vidéos locales : léger, sans publicité, sans compte et sans connexion."
+    "longDescription": "Écho, lecteur de musique locale : léger, sans publicité, sans compte et sans connexion."
   }
 }

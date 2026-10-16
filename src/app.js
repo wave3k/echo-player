@@ -24,9 +24,10 @@ const state = {
   minimalAlbum: null,
   seeking: false,
   resuming: null,
+  shuffle: false,
+  repeat: "off",
 };
 
-const coverCache = new Map();
 const el = (id) => document.getElementById(id);
 
 /* ---------------- petits outils ---------------- */
@@ -55,12 +56,23 @@ function hueFor(text) {
   return h;
 }
 
-function escape(text) {
+function escapeHtml(text) {
   return String(text ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
+/// Table id → morceau, refaite à chaque nouvelle bibliothèque.
+let trackIndex = new Map();
 function trackById(id) {
-  return state.tracks.find((t) => t.id === id) || null;
+  return trackIndex.get(id) || null;
+}
+
+/// Tri « à la française », réutilisé : bien plus rapide que localeCompare à chaque comparaison.
+const COLLATOR = new Intl.Collator("fr", { sensitivity: "base" });
+
+/// Texte de recherche d'un morceau, préparé une fois (sans accents, en minuscules).
+function searchKey(track) {
+  if (track._q === undefined) track._q = normalize(`${track.title}\u0001${track.artist}\u0001${track.album}`);
+  return track._q;
 }
 function currentId() {
   return state.queue[state.queueIndex] || null;
@@ -69,14 +81,11 @@ function currentTrack() {
   return trackById(currentId());
 }
 function audioTracks() {
-  return state.tracks.filter((t) => !t.is_video);
+  return state.tracks;
 }
-function videoTracks() {
-  return state.tracks.filter((t) => t.is_video);
-}
+
 function mediaEl() {
-  const track = currentTrack();
-  return track && track.is_video ? video : audio;
+  return audio;
 }
 
 /* ---------------- icônes écrites dans le HTML ---------------- */
@@ -97,10 +106,31 @@ function applyIcons(root = document) {
 
 /* ---------------- pochettes ---------------- */
 
+/// Adresse (protocole d'asset) de chaque pochette déjà connue. Le navigateur gère
+/// lui-même le cache des images : rien n'est recopié en mémoire ici.
+const coverUrls = new Map();
+const coverPending = new Map();
+
+function coverSrc(id) {
+  if (coverUrls.has(id)) return Promise.resolve(coverUrls.get(id));
+  if (!coverPending.has(id)) {
+    const request = invoke("get_cover_path", { id })
+      .then((path) => {
+        coverUrls.set(id, path ? convertFileSrc(path) : null);
+        return coverUrls.get(id);
+      })
+      .catch(() => null)
+      .finally(() => coverPending.delete(id));
+    coverPending.set(id, request);
+  }
+  return coverPending.get(id);
+}
+
 /// Pose la pochette (ou un dégradé) sur un élément, sans toucher à sa taille.
 function paintCover(node, track) {
-  if (track && track.cover && coverCache.has(track.cover)) {
-    node.style.background = `#222 url("${coverCache.get(track.cover)}") center / cover no-repeat`;
+  const url = track && track.cover ? coverUrls.get(track.cover) : null;
+  if (url) {
+    node.style.background = `#222 url("${url}") center / cover no-repeat`;
     return;
   }
   const hue = hueFor(track && track.id ? track.id : "x");
@@ -123,18 +153,12 @@ function fillCover(node, track) {
   node.innerHTML = "";
   paintCover(node, track);
 
-  if (!track.cover || coverCache.has(track.cover)) return;
-  // La pochette arrive du disque : on la pose dès qu'elle est prête.
+  if (!track.cover || coverUrls.has(track.cover)) return;
+  // La pochette est reconnue : on la pose dès que son adresse est prête.
   const wanted = track.cover;
-  invoke("get_cover", { id: wanted })
-    .then((data) => {
-      if (!data) return;
-      coverCache.set(wanted, data);
-      if (track.cover === wanted) paintCover(node, track);
-    })
-    .catch(() => {
-      /* pochette illisible : le dégradé reste */
-    });
+  coverSrc(wanted).then((url) => {
+    if (url && track.cover === wanted) paintCover(node, track);
+  });
 }
 
 /* ============================================================
@@ -160,10 +184,7 @@ const MODES = [
   { id: "minimal", name: "Minimaliste" },
 ];
 
-const FORMAT_NAMES = {
-  mp3: "mp3", mp4: "mp4", flac: "flac", m4a: "m4a",
-  ogg: "ogg", wav: "wav", webm: "webm", mkv: "mkv",
-};
+const FORMAT_NAMES = { autres: "Autres" };
 
 function systemPrefersDark() {
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -183,24 +204,31 @@ function applySettings() {
   body.dataset.font = s.font;
   body.dataset.mode = s.mode;
   body.dataset.anim = s.animations ? "on" : "off";
+  syncSettingsNav();
   document.documentElement.dataset.text = s.text_size;
   body.style.setProperty("--radius", `${s.radius}px`);
   body.style.setProperty("--radius-soft", `${(s.radius * 0.83).toFixed(1)}px`);
   body.style.setProperty("--radius-md", `${(s.radius * 1.17).toFixed(1)}px`);
   body.style.setProperty("--radius-lg", `${(s.radius * 1.5).toFixed(1)}px`);
   audio.volume = Math.min(1, Math.max(0, s.volume / 100));
-  video.volume = audio.volume;
   const volume = el("volume");
-  if (volume) volume.value = String(s.volume);
+  if (volume) {
+    volume.value = String(s.volume);
+    volume.style.setProperty("--p", `${s.volume}%`);
+  }
 }
 
 let saveTimer = null;
 function saveSettings(patch = {}, { refresh = true } = {}) {
+  const modeChanged = patch.mode !== undefined && patch.mode !== state.settings.mode;
   Object.assign(state.settings, patch);
   applySettings();
+  // Chaque disposition ne se dessine que quand elle est affichée.
+  if (modeChanged) renderAll();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
+      // Une bibliothèque ne revient que si elle a été relue (formats changés).
       const snap = await invoke("set_settings", { newSettings: state.settings });
       if (snap) applySnapshot(snap);
     } catch (err) {
@@ -219,7 +247,7 @@ function rowSwitch(label, desc, field, value, action = null, pending = false) {
       <div class="lab">${label}${pending ? ' <span class="badge">bientôt</span>' : ""}</div>
       <div class="desc">${desc}</div>
     </div>
-    <div class="set-ctl"><span class="switch${value ? " on" : ""}${pending ? " disabled" : ""}" ${attr}><i></i></span></div>
+    <div class="set-ctl"><button type="button" role="switch" aria-label="${label}" aria-checked="${value ? "true" : "false"}" class="switch${value ? " on" : ""}${pending ? " disabled" : ""}" ${attr}${pending ? " disabled" : ""}><i></i></button></div>
   </div>`;
 }
 
@@ -252,7 +280,7 @@ function sectionApparence() {
   const fontcards = FONTS.map(
     (f) => `<button class="fontcard${s.font === f.id ? " sel" : ""}" data-set="font" data-value="${f.id}">
       <span class="radio">${s.font === f.id ? icon("check", 14) : ""}</span>
-      <div class="fprev">Écho <span class="fsub">Night Drive — Kavinsky</span></div>
+      <div class="fprev">Écho</div>
       <div class="fname">${f.name}</div>
       <div class="fdesc">${f.desc}</div>
     </button>`
@@ -291,7 +319,7 @@ function sectionApparence() {
       ${rowSwitch("Afficher les pochettes", "Sinon, une note remplace la pochette", "show_covers", s.show_covers)}
       <div class="set-row">
         <div class="left"><div class="lab">Coins arrondis</div><div class="desc">Forme des cartes et des pochettes</div></div>
-        <div class="set-ctl"><span class="slider"><input type="range" min="0" max="20" value="${s.radius}" data-slider="radius" /><span class="hint" id="radius-value">${s.radius} px</span></span></div>
+        <div class="set-ctl"><span class="slider"><input type="range" min="0" max="20" value="${s.radius}" data-slider="radius" aria-label="Coins arrondis" /><span class="hint" id="radius-value">${s.radius} px</span></span></div>
       </div>
       ${rowSeg("Taille du texte", "S'applique à toute l'application", "text_size", [
         { value: "petit", label: "Petit" },
@@ -309,7 +337,7 @@ function sectionLecture() {
     <h4>Lecture</h4>
     <div class="card">
       ${rowSwitch("Reprendre au dernier morceau", "À l'ouverture, la lecture repart où tu l'as laissée", "resume_last", s.resume_last)}
-      ${rowSwitch("Mémoriser la position", "Même au milieu d'un titre ou d'une vidéo", "remember_position", s.remember_position)}
+      ${rowSwitch("Mémoriser la position", "Même au milieu d'un titre", "remember_position", s.remember_position)}
       ${rowSwitch("Aléatoire au démarrage", "Commence en mode mélangé", "shuffle_default", s.shuffle_default)}
       ${rowSwitch("Passer au suivant en cas de problème", "Si un fichier est illisible, on continue", "next_on_error", s.next_on_error)}
       ${rowSeg("Répétition par défaut", "Ce que fait Écho à la fin d'un titre", "repeat_default", [
@@ -335,8 +363,8 @@ function sectionBiblio() {
     ? state.folders
         .map(
           (f) => `<div class="path-row">
-        <span class="path" title="${escape(f)}">${escape(f)}</span>
-        <button class="icon-btn" data-remove-folder="${escape(f)}" title="Retirer">${icon("close", 15)}</button>
+        <span class="path" title="${escapeHtml(f)}">${escapeHtml(f)}</span>
+        <button class="icon-btn" data-remove-folder="${escapeHtml(f)}" title="Retirer">${icon("close", 15)}</button>
       </div>`
         )
         .join("")
@@ -363,7 +391,7 @@ function sectionBiblio() {
     <div class="card">
       <div class="set-row">
         <div class="left"><div class="lab">Extensions lues par la bibliothèque</div><div class="desc">Décoche ce que tu veux éviter de voir</div></div>
-        <div class="set-ctl">${formats}</div>
+        <div class="set-ctl formats-ctl">${formats}</div>
       </div>
       ${rowSwitch("Actualiser au démarrage", "Vérifie la bibliothèque à chaque ouverture", "refresh_on_start", s.refresh_on_start)}
       ${rowSwitch("Surveiller les changements", "Les nouveaux fichiers apparaissent tout seuls", "watch", false, null, true)}
@@ -422,7 +450,7 @@ function sectionAbout() {
         <div class="about-mark">${icon("waveform", 24)}</div>
         <div>
           <div class="about-name">Écho <span class="badge">1.0</span></div>
-          <div class="about-desc">Lecteur de musique et de vidéos, pour tes fichiers, sur ton ordinateur.</div>
+          <div class="about-desc">Lecteur de musique, pour tes fichiers, sur ton ordinateur.</div>
           <div class="about-facts">
             <span>${icon("dashboard", 13)} Léger sur la mémoire</span>
             <span>${icon("check", 13)} Gratuit et libre</span>
@@ -468,15 +496,62 @@ function buildSettingsPanel() {
   return panel;
 }
 
+/// Un sélecteur qui retrouve le même contrôle après reconstruction du panneau.
+function controlSelector(node) {
+  if (node.dataset.set) return `[data-set="${node.dataset.set}"][data-value="${node.dataset.value}"]`;
+  if (node.dataset.toggle) return `[data-toggle="${node.dataset.toggle}"]`;
+  if (node.dataset.slider) return `[data-slider="${node.dataset.slider}"]`;
+  if (node.dataset.action) return `[data-action="${node.dataset.action}"]`;
+  if (node.dataset.goto) return `[data-goto="${node.dataset.goto}"]`;
+  return null;
+}
+
 function refreshSettingsPanel() {
   const old = el("settings-panel");
   if (!old) return;
+  // Le panneau est reconstruit : on garde la position de défilement et le focus clavier.
+  const active = document.activeElement;
+  const focusKey = active && old.contains(active) ? controlSelector(active) : null;
+  const oldNav = document.querySelector(".settings-nav");
   const fresh = buildSettingsPanel();
   const body = old.querySelector(".settings-body");
   const scroll = body ? body.scrollTop : 0;
+  // Le nouveau panneau prend la place de l'ancien, y compris dans une fenêtre superposée :
+  // sinon, à la fermeture, il ne retrouverait pas son emplacement et disparaîtrait.
+  if (HOMES.has(old)) {
+    HOMES.set(fresh, HOMES.get(old));
+    HOMES.delete(old);
+  }
   old.replaceWith(fresh);
+  // La rubrique gardée à l'écran est celle d'origine (avec ses écouteurs) : on la reprend.
+  const freshNav = fresh.querySelector(".settings-nav");
+  if (oldNav && freshNav) freshNav.replaceWith(oldNav);
+  syncSettingsNav();
   const newBody = fresh.querySelector(".settings-body");
   if (newBody) newBody.scrollTop = scroll;
+  if (focusKey) {
+    const again = fresh.querySelector(focusKey);
+    if (again) again.focus({ preventScroll: true });
+  }
+}
+
+/// En disposition normale, dans la rubrique Réglages, les rubriques prennent la place
+/// de la barre latérale (comme dans les maquettes). Ailleurs, elles restent dans le panneau.
+function syncSettingsNav() {
+  const navEl = document.querySelector(".settings-nav");
+  const panel = el("settings-panel");
+  const sidebar = document.querySelector(".sidebar");
+  const mainNav = el("nav");
+  if (!navEl || !panel || !sidebar || !mainNav) return;
+  const inSidebar = state.view === "settings" && document.body.dataset.mode === "normal";
+  if (inSidebar) {
+    if (navEl.parentElement !== sidebar) mainNav.after(navEl);
+  } else if (navEl.parentElement !== panel) {
+    panel.prepend(navEl);
+  }
+  // Les rubriques s'ajoutent sous les vues principales : on garde le retour à la bibliothèque.
+  mainNav.hidden = false;
+  panel.classList.toggle("nav-moved", inSidebar);
 }
 
 const SET_SECTIONS = ["set-apparence", "set-lecture", "set-bibliotheque", "set-systeme", "set-donnees", "set-apropos"];
@@ -487,7 +562,7 @@ function bindSettings(panel) {
     if (!btn) return;
     const target = el(SET_SECTIONS[Number(btn.dataset.goto)]);
     if (target) target.scrollIntoView({ block: "start", behavior: state.settings.animations ? "smooth" : "auto" });
-    panel.querySelectorAll(".settings-nav button").forEach((b) => b.classList.toggle("on", b === btn));
+    document.querySelectorAll(".settings-nav button").forEach((b) => b.classList.toggle("on", b === btn));
   });
 
   const body = panel.querySelector(".settings-body");
@@ -498,7 +573,7 @@ function bindSettings(panel) {
       const node = el(id);
       if (node && node.offsetTop - 120 <= top) index = i;
     });
-    panel.querySelectorAll(".settings-nav button").forEach((b, i) => b.classList.toggle("on", i === index));
+    document.querySelectorAll(".settings-nav button").forEach((b, i) => b.classList.toggle("on", i === index));
   });
 
   panel.addEventListener("change", (e) => {
@@ -574,13 +649,16 @@ function bindSettings(panel) {
         await rescan();
         refreshSettingsPanel();
         break;
-      case "clear-cache":
-        state.cacheBytes = await invoke("clear_cover_cache");
-        coverCache.clear();
-        renderAll();
+      case "clear-cache": {
+        toast("Pochettes vidées, relecture des fichiers…");
+        const cleared = await invoke("clear_cover_cache");
+        coverUrls.clear();
+        state.cacheBytes = cleared.cache_bytes;
+        applySnapshot(cleared.snapshot);
         refreshSettingsPanel();
-        toast("Les pochettes ont été vidées : elles reviendront au prochain affichage.");
+        toast("Les pochettes ont été reconstruites.");
         break;
+      }
       case "open-config":
         await invoke("open_config_dir").catch(() => toast("Impossible d'ouvrir le dossier."));
         break;
@@ -634,19 +712,36 @@ function bindSettings(panel) {
    Liste de la bibliothèque (virtuelle)
    ============================================================ */
 
+/// Liste filtrée et triée, gardée tant que ni la bibliothèque, ni la recherche,
+/// ni le tri ne changent : inutile de tout retrier à chaque lecture.
+let libraryVersion = 0;
+let visibleMemo = { version: -1, search: null, sort: null, list: [] };
+
 function visibleTracks() {
+  if (
+    visibleMemo.version !== libraryVersion ||
+    visibleMemo.search !== state.search ||
+    visibleMemo.sort !== state.sort
+  ) {
+    visibleMemo = {
+      version: libraryVersion,
+      search: state.search,
+      sort: state.sort,
+      list: computeVisibleTracks(),
+    };
+  }
+  return visibleMemo.list;
+}
+
+function computeVisibleTracks() {
   const q = normalize(state.search);
   let list = audioTracks();
-  if (q) {
-    list = list.filter(
-      (t) => normalize(t.title).includes(q) || normalize(t.artist).includes(q) || normalize(t.album).includes(q)
-    );
-  }
+  if (q) list = list.filter((t) => searchKey(t).includes(q));
   const key = state.sort;
   const dir = key === "duration" ? -1 : 1;
   return [...list].sort((a, b) => {
     if (key === "duration") return (a.duration_ms - b.duration_ms) * dir;
-    return String(a[key] || "").localeCompare(String(b[key] || ""), "fr", { sensitivity: "base" });
+    return COLLATOR.compare(String(a[key] || ""), String(b[key] || ""));
   });
 }
 
@@ -656,11 +751,11 @@ function rowHtml(track, index, current, playing) {
     <div class="row-main">
       <div class="thumb"></div>
       <div class="row-text">
-        <div class="row-title">${escape(track.title)}</div>
-        <div class="row-artist">${escape(track.artist || "—")}</div>
+        <div class="row-title">${escapeHtml(track.title)}</div>
+        <div class="row-artist">${escapeHtml(track.artist || "—")}</div>
       </div>
     </div>
-    <div class="row-album">${escape(track.album || "—")}</div>
+    <div class="row-album">${escapeHtml(track.album || "—")}</div>
     <div class="row-time">${formatTime(track.duration_ms)}</div>`;
 }
 
@@ -687,6 +782,7 @@ function renderLibrary() {
       row.className = "row" + (track.id === currentId() ? " is-current" : "") + (track.id === currentId() && playing ? " is-playing" : "");
       row.style.top = `${i * ROW_HEIGHT}px`;
       row.dataset.index = String(i);
+      row.dataset.trackId = track.id;
       row.innerHTML = rowHtml(track, i, track.id === currentId(), playing);
       fillCover(row.querySelector(".thumb"), track, true);
       row.addEventListener("click", () => playFromList(i));
@@ -699,60 +795,61 @@ function renderLibrary() {
   draw();
 }
 
-function renderVideos() {
-  const tiles = el("tiles");
-  tiles.replaceChildren();
-  const vids = videoTracks();
-  for (const track of vids) {
-    const tile = document.createElement("button");
-    tile.className = "tile";
-    tile.innerHTML = `
-      <div class="tile-art">${icon("video", 26)}</div>
-      <div class="tile-body">
-        <div class="tile-title">${escape(track.title)}</div>
-        <div class="tile-sub">${escape(track.artist || formatTime(track.duration_ms))}</div>
-      </div>`;
-    const art = tile.querySelector(".tile-art");
-    fillCover(art, track);
-    if (!track.cover || !state.settings.show_covers) art.innerHTML = icon("video", 26);
-    tile.addEventListener("click", () => openVideo(track));
-    tiles.appendChild(tile);
-  }
-  if (vids.length === 0 && state.folders.length) {
-    const p = document.createElement("div");
-    p.className = "hint";
-    p.textContent = "Aucun clip dans tes dossiers pour l'instant.";
-    tiles.appendChild(p);
-  }
-}
+
+const QUEUE_ROW = 40;
 
 function renderQueue() {
   const queue = el("queue");
   if (!queue) return;
-  queue.replaceChildren();
   const ids = state.queue;
-  ids.forEach((id, i) => {
-    const track = trackById(id);
-    if (!track) return;
-    const item = document.createElement("button");
-    item.className = "queue-item" + (id === currentId() ? " is-current" : "");
-    item.innerHTML = `<span class="queue-num">${i + 1}</span>
-      <span class="queue-name">${escape(track.title)}${track.artist ? " — " + escape(track.artist) : ""}</span>
-      <span class="queue-time">${formatTime(track.duration_ms)}</span>`;
-    item.addEventListener("click", () => {
-      state.queueIndex = i;
-      playCurrent();
-    });
-    queue.appendChild(item);
-  });
+  const count = el("queue-count");
+  if (count) count.textContent = ids.length ? `${ids.length} morceaux` : "";
+
+  queue.replaceChildren();
   if (ids.length === 0) {
     const p = document.createElement("div");
     p.className = "hint";
     p.textContent = "La file est vide. Choisis un morceau dans la bibliothèque.";
     queue.appendChild(p);
+    queue.onscroll = null;
+    return;
   }
-  const count = el("queue-count");
-  if (count) count.textContent = ids.length ? `${ids.length} morceaux` : "";
+
+  // Une seule table id → morceau, au lieu d'une recherche par ligne.
+  const byId = new Map(state.tracks.map((t) => [t.id, t]));
+  const spacer = document.createElement("div");
+  spacer.className = "list-spacer";
+  spacer.style.height = `${ids.length * QUEUE_ROW}px`;
+  queue.appendChild(spacer);
+
+  // Seules les lignes visibles sont dessinées, comme dans la bibliothèque.
+  const draw = () => {
+    const top = queue.scrollTop;
+    const start = Math.max(0, Math.floor(top / QUEUE_ROW) - 6);
+    const end = Math.min(ids.length, Math.ceil((top + queue.clientHeight) / QUEUE_ROW) + 6);
+    const frag = document.createDocumentFragment();
+    for (let i = start; i < end; i++) {
+      const id = ids[i];
+      const track = byId.get(id);
+      if (!track) continue;
+      const item = document.createElement("button");
+      item.className = "queue-item" + (id === currentId() ? " is-current" : "");
+      item.style.top = `${i * QUEUE_ROW}px`;
+      item.dataset.trackId = id;
+      item.innerHTML = `<span class="queue-num">${i + 1}</span>
+        <span class="queue-name">${escapeHtml(track.title)}${track.artist ? " — " + escapeHtml(track.artist) : ""}</span>
+        <span class="queue-time">${formatTime(track.duration_ms)}</span>`;
+      item.addEventListener("click", () => {
+        state.queueIndex = i;
+        playCurrent();
+      });
+      frag.appendChild(item);
+    }
+    spacer.replaceChildren(frag);
+  };
+
+  queue.onscroll = draw;
+  draw();
 }
 
 /* ============================================================
@@ -761,9 +858,11 @@ function renderQueue() {
 
 function renderCarousel() {
   const box = el("carousel");
-  if (!box) return;
+  if (!box || state.settings.mode !== "compact") return;
   const playing = isPlaying();
   const now = currentId();
+  const changed = now !== lastCarouselId;
+  lastCarouselId = now;
   box.replaceChildren();
   if (!state.queue.length) {
     box.innerHTML = `<div class="car-cover now" style="width:190px;height:190px">${icon("note3", 40)}</div>`;
@@ -791,6 +890,7 @@ function renderCarousel() {
     }
     const isNow = offset === 0;
     if (isNow && playing) node.classList.add("playing");
+    if (isNow && changed) node.classList.add("swap");
     fillCover(node, track);
     if (isNow && playing) {
       const eq = document.createElement("span");
@@ -813,7 +913,15 @@ function renderCarousel() {
    Mode minimaliste : album
    ============================================================ */
 
+/// Albums de la bibliothèque, regroupés une fois par version de la bibliothèque.
+let albumMemo = { version: -1, list: [] };
+
 function albumList() {
+  if (albumMemo.version !== libraryVersion) albumMemo = { version: libraryVersion, list: computeAlbumList() };
+  return albumMemo.list;
+}
+
+function computeAlbumList() {
   const map = new Map();
   for (const track of audioTracks()) {
     const name = track.album || "Sans album";
@@ -821,7 +929,7 @@ function albumList() {
     if (!map.has(key)) map.set(key, { key, name, artist: track.artist || "", tracks: [] });
     map.get(key).tracks.push(track);
   }
-  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, "fr", { sensitivity: "base" }));
+  return [...map.values()].sort((a, b) => COLLATOR.compare(a.name, b.name));
 }
 
 function currentAlbum() {
@@ -841,16 +949,16 @@ function currentAlbum() {
 
 function renderMinimal() {
   const right = el("min-right");
-  if (!right) return;
+  if (!right || state.settings.mode !== "minimal") return;
 
   if (state.minSearch.trim()) {
     const q = normalize(state.minSearch);
-    const results = audioTracks()
-      .filter((t) => normalize(t.title).includes(q) || normalize(t.artist).includes(q) || normalize(t.album).includes(q))
-      .slice(0, 200);
+    const matches = audioTracks().filter((t) => searchKey(t).includes(q));
+    const results = matches.slice(0, 200);
+    const capped = matches.length > results.length ? " · 200 premiers affichés" : "";
     right.innerHTML = `
       <div class="album-title">Résultats</div>
-      <div class="album-meta">${results.length} morceau${results.length > 1 ? "x" : ""} pour « ${escape(state.minSearch)} »</div>
+      <div class="album-meta">${matches.length} morceau${matches.length > 1 ? "x" : ""} pour « ${escapeHtml(state.minSearch)} »${capped}</div>
       <div class="album-tracks">${results
         .map((t, i) => minimalTrackRow(t, i, true))
         .join("")}</div>`;
@@ -869,8 +977,8 @@ function renderMinimal() {
 
   const total = album.tracks.reduce((sum, t) => sum + (t.duration_ms || 0), 0);
   right.innerHTML = `
-    <div class="album-title">${escape(album.name)}</div>
-    <div class="album-meta">${album.artist ? escape(album.artist) + " · " : ""}${album.tracks.length} titre${album.tracks.length > 1 ? "s" : ""} · ${formatTime(total)}</div>
+    <div class="album-title">${escapeHtml(album.name)}</div>
+    <div class="album-meta">${album.artist ? escapeHtml(album.artist) + " · " : ""}${album.tracks.length} titre${album.tracks.length > 1 ? "s" : ""} · ${formatTime(total)}</div>
     <div class="album-tracks">${album.tracks.map((t, i) => minimalTrackRow(t, i, false)).join("")}</div>`;
 
   right.querySelectorAll("[data-min-id]").forEach((node) => {
@@ -883,6 +991,11 @@ function renderMinimal() {
 
   const cover = el("min-cover");
   fillCover(cover, album.tracks[0]);
+  if (cover.dataset.album !== album.key) {
+    // Changement d'album : la pochette et la fiche s'animent ensemble.
+    playAnim(cover, "swap");
+    playAnim(right, "swap-text");
+  }
   cover.dataset.album = album.key;
 
   const albums = albumList();
@@ -897,9 +1010,9 @@ function minimalTrackRow(track, index, showAlbum) {
   const playing = isPlaying();
   const current = track.id === currentId();
   const left = current && playing ? `<span class="playing">${ICONS.waveform}</span>` : `<span class="trk-n">${index + 1}</span>`;
-  return `<button class="trk${current ? " is-current" : ""}" data-min-id="${escape(track.id)}">
+  return `<button class="trk${current ? " is-current" : ""}" data-min-id="${escapeHtml(track.id)}">
     ${left}
-    <span class="trk-t">${escape(track.title)}${showAlbum && track.album ? ` <span class="hint">${escape(track.album)}</span>` : ""}</span>
+    <span class="trk-t">${escapeHtml(track.title)}${showAlbum && track.album ? ` <span class="hint">${escapeHtml(track.album)}</span>` : ""}</span>
     <span class="trk-d">${formatTime(track.duration_ms)}</span>
     <span class="trk-m">${icon("more", 15)}</span>
   </button>`;
@@ -924,13 +1037,11 @@ function setPeek(node, album, currentKey) {
    ============================================================ */
 
 const audio = el("audio");
-const video = el("video");
 
 function isPlaying() {
   const track = currentTrack();
   if (!track) return false;
-  const media = track.is_video ? video : audio;
-  return !media.paused;
+  return !audio.paused;
 }
 
 function playFromList(index) {
@@ -952,44 +1063,12 @@ function buildQueueFromLibrary(startId) {
   state.queueIndex = list.indexOf(startId);
 }
 
-function openVideo(track) {
-  audio.pause();
-  el("video-overlay").hidden = false;
-  el("video-title").textContent = `${track.title}${track.artist ? " — " + track.artist : ""}`;
-  video.src = convertFileSrc(track.path);
-  video.play().catch(() => {});
-  state.queue = videoTracks().map((t) => t.id);
-  state.queueIndex = state.queue.indexOf(track.id);
-  pushNowPlaying(track);
-  pushPlayback(true);
-  renderAll();
-}
 
-function closeVideo() {
-  el("video-overlay").hidden = true;
-  video.pause();
-}
+
 
 function playCurrent({ autoplay = true } = {}) {
   const track = currentTrack();
   if (!track) return;
-  if (track.is_video) {
-    if (autoplay) {
-      openVideo(track);
-      return;
-    }
-    // Reprise d'une vidéo qui ne jouait pas : on garde le titre en cours, sans ouvrir la vue.
-    el("video-overlay").hidden = true;
-    video.pause();
-    state.queue = videoTracks().map((t) => t.id);
-    state.queueIndex = state.queue.indexOf(track.id);
-    pushNowPlaying(track);
-    pushPlayback(false);
-    renderAll();
-    return;
-  }
-  el("video-overlay").hidden = true;
-  video.pause();
   audio.src = convertFileSrc(track.path);
   if (autoplay) audio.play().catch(() => {});
   pushNowPlaying(track);
@@ -1014,29 +1093,16 @@ function togglePlay() {
     if (state.listOrder.length) playFromList(0);
     return;
   }
-  if (track.is_video && el("video-overlay").hidden) {
-    // Une vidéo se regarde : on ouvre la vue au lieu de la lancer en sourdine.
-    openVideo(track);
-    return;
-  }
-  const media = track.is_video ? video : audio;
-  if (media.paused) media.play().catch(() => {});
-  else media.pause();
+  if (audio.paused) audio.play().catch(() => {});
+  else audio.pause();
 }
 
-function nextIndex(auto) {
-  const n = state.queue.length;
-  if (n === 0) return -1;
-  if (state.shuffle && n > 1) {
-    let i = state.queueIndex;
-    while (i === state.queueIndex) i = Math.floor(Math.random() * n);
-    return i;
-  }
-  if (state.queueIndex + 1 < n) return state.queueIndex + 1;
-  if (auto && state.repeat === "one") return state.queueIndex;
-  if (auto && state.repeat === "all") return 0;
-  if (auto) return -1;
-  return 0;
+/// Mémoire de l'aléatoire : repart de zéro dès que la file change.
+let shuffleBag = EchoLogic.freshBag(null);
+
+function playContext() {
+  if (shuffleBag.queue !== state.queue) shuffleBag = EchoLogic.freshBag(state.queue);
+  return { n: state.queue.length, index: state.queueIndex, shuffle: state.shuffle, repeat: state.repeat, bag: shuffleBag };
 }
 
 function step(delta, auto = false) {
@@ -1044,16 +1110,28 @@ function step(delta, auto = false) {
     if (state.listOrder.length) playFromList(0);
     return;
   }
+  const ctx = playContext();
   if (delta > 0) {
-    const i = nextIndex(auto);
+    const i = EchoLogic.nextIndex(ctx, auto);
     if (i < 0) {
       audio.pause();
-      video.pause();
       return;
     }
+    if (i === state.queueIndex) {
+      // « Un titre » : on rejoue sans recharger le fichier.
+      audio.currentTime = 0;
+      audio.play().catch(() => {});
+      return;
+    }
+    if (state.shuffle) shuffleBag.history.push(state.queueIndex);
     state.queueIndex = i;
   } else {
-    state.queueIndex = state.queueIndex - 1 < 0 ? state.queue.length - 1 : state.queueIndex - 1;
+    // Précédent, au milieu d'un titre : on revient d'abord au début, comme les autres lecteurs.
+    if (!auto && mediaEl().currentTime > 3) {
+      mediaEl().currentTime = 0;
+      return;
+    }
+    state.queueIndex = EchoLogic.prevIndex(ctx);
   }
   playCurrent();
 }
@@ -1065,14 +1143,17 @@ let lastSavedPosition = 0;
 
 function updateProgress() {
   const track = currentTrack();
-  const media = track && track.is_video ? video : audio;
+  const media = audio;
   const dur = media.duration || 0;
   const ratio = !state.seeking && isFinite(dur) && dur > 0 ? media.currentTime / dur : null;
   const now = media.currentTime || 0;
 
   if (ratio !== null) {
     const seek = el("seek");
-    if (seek) seek.value = String(Math.round(ratio * 1000));
+    if (seek) {
+      seek.value = String(Math.round(ratio * 1000));
+      seek.style.setProperty("--p", `${(ratio * 100).toFixed(2)}%`);
+    }
     const compBar = el("comp-bar");
     if (compBar) compBar.firstElementChild.style.width = `${ratio * 100}%`;
     const minBar = el("min-bar");
@@ -1092,6 +1173,7 @@ function updateProgress() {
 
   const playing = !media.paused;
   document.querySelectorAll(".ctl-play, .play-big").forEach((b) => b.classList.toggle("is-playing", playing));
+  el("btn-play").setAttribute("aria-label", playing ? "Pause" : "Lecture");
   const compPlay = el("comp-play");
   if (compPlay) {
     compPlay.innerHTML = icon(playing ? "pause" : "play", 20);
@@ -1121,9 +1203,22 @@ function seekToRatio(ratio) {
 
 function bindBar(node) {
   if (!node) return;
+  // La barre se comporte comme un curseur : elle reçoit le focus et les flèches.
+  node.tabIndex = 0;
+  node.setAttribute("role", "slider");
+  node.setAttribute("aria-label", "Position dans le morceau");
   node.addEventListener("click", (e) => {
     const rect = node.getBoundingClientRect();
     seekToRatio((e.clientX - rect.left) / rect.width);
+  });
+  node.addEventListener("keydown", (e) => {
+    if (e.code !== "ArrowLeft" && e.code !== "ArrowRight") return;
+    e.preventDefault();
+    e.stopPropagation();
+    const media = mediaEl();
+    const dur = media.duration || 0;
+    if (!dur) return;
+    seekToRatio(media.currentTime / dur + (e.code === "ArrowRight" ? 0.05 : -0.05));
   });
 }
 
@@ -1147,7 +1242,7 @@ function pushNowPlaying(track) {
 
 function pushPlayback(force = false) {
   const track = currentTrack();
-  const media = track && track.is_video ? video : audio;
+  const media = audio;
   const now = Date.now();
   if (!force && now - lastPositionPush < 5000) return;
   lastPositionPush = now;
@@ -1159,7 +1254,7 @@ function pushPlayback(force = false) {
 
 function saveProgress(force = false) {
   const track = currentTrack();
-  const media = track && track.is_video ? video : audio;
+  const media = audio;
   if (!state.settings.resume_last && !force) return;
   invoke("save_progress", {
     trackId: track ? track.id : null,
@@ -1171,7 +1266,19 @@ function saveProgress(force = false) {
 async function bindMediaKeys() {
   await listen("media-control", (event) => {
     const media = mediaEl();
-    switch (event.payload) {
+    // Les actions avec une valeur arrivent sous la forme « action:millisecondes ».
+    const [action, raw] = String(event.payload).split(":");
+    const ms = Number(raw);
+    if (action === "set-position" && isFinite(ms)) {
+      media.currentTime = Math.min(media.duration || 0, Math.max(0, ms / 1000));
+    } else if (action === "seek-by" && isFinite(ms)) {
+      media.currentTime = Math.min(media.duration || 0, Math.max(0, media.currentTime + ms / 1000));
+    } else if (action === "quit") {
+      saveProgress(true);
+      invoke("quit_app").catch(() => {});
+      return;
+    }
+    switch (action) {
       case "play":
         media.play().catch(() => {});
         break;
@@ -1208,8 +1315,26 @@ async function bindMediaKeys() {
    Affichage général
    ============================================================ */
 
+/// Dernier morceau affiché : une pochette ne s'anime que quand le morceau change.
+let lastNowId = null;
+let lastCarouselId = null;
+
+/// Rejoue une animation CSS sur un élément (la classe est retirée puis remise).
+function playAnim(node, cls) {
+  if (!node) return;
+  node.classList.remove(cls);
+  void node.offsetWidth;
+  node.classList.add(cls);
+}
+
 function renderNowPlaying() {
   const track = currentTrack();
+  if ((track ? track.id : null) !== lastNowId) {
+    lastNowId = track ? track.id : null;
+    ["listen-cover", "mini-cover", "min-mini-cover"].forEach((id) => playAnim(el(id), "swap"));
+    ["listen-title", "listen-artist", "comp-title", "comp-artist", "mini-title", "mini-artist", "min-title", "min-artist"]
+      .forEach((id) => playAnim(el(id), "swap-text"));
+  }
   const cover = el("listen-cover");
   const miniCover = el("mini-cover");
   const minCover = el("min-mini-cover");
@@ -1238,20 +1363,23 @@ function renderNowPlaying() {
   }
 }
 
+let bannerDismissed = null;
+
 function renderAll() {
   const audios = audioTracks().length;
-  const vids = videoTracks().length;
   const count = el("track-count");
   if (count) {
     count.textContent =
       state.tracks.length === 0
         ? "Aucun morceau"
-        : `${audios} morceau${audios > 1 ? "x" : ""} · ${vids} vidéo${vids > 1 ? "s" : ""}`;
+        : `${audios} morceau${audios > 1 ? "x" : ""}`;
   }
 
   el("empty").hidden = state.folders.length > 0;
   const banner = el("banner");
-  if (state.foldersMissing.length) {
+  const missingKey = state.foldersMissing.join("\n");
+  // Une fois fermé, le bandeau ne revient que si la liste des dossiers manquants change.
+  if (state.foldersMissing.length && missingKey !== bannerDismissed) {
     banner.hidden = false;
     el("banner-text").textContent =
       state.foldersMissing.length === 1
@@ -1262,7 +1390,6 @@ function renderAll() {
   }
 
   renderLibrary();
-  renderVideos();
   renderQueue();
   renderNowPlaying();
   renderCarousel();
@@ -1274,6 +1401,7 @@ function switchView(view) {
   state.view = view;
   document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("is-active", b.dataset.view === view));
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("is-active", v.id === `view-${view}`));
+  syncSettingsNav();
   if (view === "library") renderLibrary();
 }
 
@@ -1281,9 +1409,26 @@ function switchView(view) {
 
 const HOMES = new Map();
 
+/// Remet un élément à sa place d'origine dans la page.
+function returnHome(node) {
+  const home = HOMES.get(node);
+  if (home && home.isConnected) {
+    home.appendChild(node);
+    return;
+  }
+  // Pas d'emplacement connu : on ne supprime jamais un panneau de l'interface.
+  if (node.id === "settings-panel") el("settings-host-normal").appendChild(node);
+  else if (node.id === "library-panel") el("view-library").appendChild(node);
+  else if (node.id === "queue") el("view-listen").appendChild(node);
+  else node.remove();
+}
+
 function openSheet(node, title, { flush = false } = {}) {
   if (node && !HOMES.has(node) && node.parentElement) HOMES.set(node, node.parentElement);
   const body = el("sheet-body");
+  // Un panneau déjà ouvert retourne chez lui avant d'être remplacé, sinon il serait perdu.
+  const previous = body.firstElementChild;
+  if (previous && previous !== node) returnHome(previous);
   el("sheet-title").textContent = title;
   body.classList.toggle("flush", flush);
   if (node) body.replaceChildren(node);
@@ -1296,11 +1441,7 @@ function openSheet(node, title, { flush = false } = {}) {
 function closeSheet() {
   const body = el("sheet-body");
   const node = body.firstElementChild;
-  if (node) {
-    const home = HOMES.get(node);
-    if (home) home.appendChild(node);
-    else node.remove();
-  }
+  if (node) returnHome(node);
   el("sheet").hidden = true;
 }
 
@@ -1319,23 +1460,151 @@ function toast(text) {
   node._timer = setTimeout(() => (node.hidden = true), 3200);
 }
 
+/// Annule la boîte de dialogue ouverte (Échap) : renvoie « non ».
+let modalCancel = null;
+
 function ask(title, text, options) {
   return new Promise((resolve) => {
     el("modal-title").textContent = title;
     el("modal-text").textContent = text;
     const actions = el("modal-actions");
     actions.replaceChildren();
+    const finish = (value) => {
+      el("modal").hidden = true;
+      modalCancel = null;
+      resolve(value);
+    };
     options.forEach((option) => {
       const btn = document.createElement("button");
       btn.className = option.primary ? "primary-btn" : "ghost-btn";
       btn.textContent = option.label;
-      btn.addEventListener("click", () => {
-        el("modal").hidden = true;
-        resolve(option.value);
-      });
+      btn.addEventListener("click", () => finish(option.value));
       actions.appendChild(btn);
     });
+    modalCancel = () => finish(false);
     el("modal").hidden = false;
+  });
+}
+
+/* ---------------- modifier un morceau ---------------- */
+
+/// Morceau en cours d'édition : valeurs d'origine et choix faits dans la fenêtre.
+let editing = null;
+
+const DEFAULT_COVER = "linear-gradient(140deg, var(--accent), var(--accent2))";
+
+function paintEditCover(coverName, pickedPath = null) {
+  const node = el("edit-cover");
+  if (pickedPath) {
+    node.style.background = `#222 url("${convertFileSrc(pickedPath)}") center / cover no-repeat`;
+    return;
+  }
+  if (!coverName) {
+    node.style.background = DEFAULT_COVER;
+    return;
+  }
+  coverSrc(coverName).then((url) => {
+    node.style.background = url ? `#222 url("${url}") center / cover no-repeat` : DEFAULT_COVER;
+  });
+}
+
+async function openEditor(track) {
+  if (!track) return;
+  let original = null;
+  try {
+    original = await invoke("track_original", { id: track.id });
+  } catch (err) {
+    console.error(err);
+  }
+  if (!original) {
+    toast("Ce morceau n'est plus dans la bibliothèque.");
+    return;
+  }
+  editing = { id: track.id, original, pickedCover: null, clearCover: false };
+  el("edit-title").value = track.title || "";
+  el("edit-artist").value = track.artist || "";
+  el("edit-album").value = track.album || "";
+  paintEditCover(track.cover);
+  el("edit-dialog").hidden = false;
+  el("edit-title").focus();
+}
+
+function closeEditor() {
+  el("edit-dialog").hidden = true;
+  editing = null;
+}
+
+function bindEditor() {
+  el("btn-edit-listen").addEventListener("click", () => openEditor(currentTrack()));
+  el("edit-close").addEventListener("click", closeEditor);
+  el("edit-cancel").addEventListener("click", closeEditor);
+  el("edit-dialog").addEventListener("click", (e) => {
+    if (e.target === el("edit-dialog")) closeEditor();
+  });
+
+  el("edit-cover").addEventListener("click", async () => {
+    if (!editing) return;
+    const picked = await openDialog({
+      multiple: false,
+      title: "Choisir une image de pochette",
+      filters: [{ name: "Images", extensions: ["jpg", "jpeg", "png", "webp", "gif"] }],
+    }).catch(() => null);
+    if (!picked) return;
+    editing.pickedCover = typeof picked === "string" ? picked : picked.path;
+    editing.clearCover = false;
+    paintEditCover(null, editing.pickedCover);
+  });
+
+  // Rétablir l'original : on remet les champs et on retire toutes les corrections.
+  el("edit-reset").addEventListener("click", () => {
+    if (!editing) return;
+    el("edit-title").value = editing.original.title;
+    el("edit-artist").value = editing.original.artist;
+    el("edit-album").value = editing.original.album;
+    editing.pickedCover = null;
+    editing.clearCover = true;
+    paintEditCover(editing.original.cover);
+  });
+
+  el("edit-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!editing) return;
+    if (!el("edit-title").value.trim()) {
+      el("edit-title").focus();
+      toast("Le titre ne peut pas être vide.");
+      return;
+    }
+    el("edit-save").disabled = true;
+    try {
+      const updated = await invoke("edit_track", {
+        id: editing.id,
+        title: el("edit-title").value,
+        artist: el("edit-artist").value,
+        album: el("edit-album").value,
+        coverPath: editing.pickedCover,
+        clearCover: editing.clearCover,
+      });
+      const edited = editing.id;
+      closeEditor();
+      replaceTrack(updated);
+      // Si le morceau modifié joue, la barre des médias du système suit la correction.
+      if (currentId() === edited) pushNowPlaying(currentTrack());
+      toast("Morceau mis à jour.");
+    } catch (err) {
+      toast(String(err));
+    } finally {
+      el("edit-save").disabled = false;
+    }
+  });
+
+  // Clic droit sur n'importe quel morceau (liste, file, vidéos, vue minimaliste) : on le modifie.
+  document.addEventListener("contextmenu", (e) => {
+    const node = e.target.closest("[data-track-id], [data-min-id]");
+    if (!node) return;
+    const track = trackById(node.dataset.trackId || node.dataset.minId);
+    if (!track) return;
+    e.preventDefault();
+    openEditor(track);
   });
 }
 
@@ -1368,6 +1637,21 @@ function applySnapshot(snapshot) {
   state.folders = snapshot.folders || [];
   state.foldersMissing = snapshot.folders_missing || [];
   state.tracks = snapshot.tracks || [];
+  trackIndex = new Map(state.tracks.map((t) => [t.id, t]));
+  // Sans ça, le prochain réglage enregistré renverrait l'ancienne liste de dossiers.
+  EchoLogic.syncFolders(state.settings, snapshot);
+  libraryVersion += 1;
+  renderAll();
+}
+
+/// Un seul morceau a changé (modification) : inutile de recharger toute la bibliothèque.
+function replaceTrack(track) {
+  if (!track) return;
+  const i = state.tracks.findIndex((t) => t.id === track.id);
+  if (i < 0) return;
+  state.tracks[i] = track;
+  trackIndex.set(track.id, track);
+  libraryVersion += 1;
   renderAll();
 }
 
@@ -1375,6 +1659,9 @@ function applyBootstrap(boot) {
   state.settings = boot.settings;
   state.formats = boot.formats || [];
   state.cacheBytes = boot.cache_bytes || 0;
+  // Aléatoire et répétition par défaut s'appliquent à chaque démarrage, reprise ou non.
+  state.shuffle = !!boot.settings.shuffle_default;
+  state.repeat = boot.settings.repeat_default || "off";
   applySettings();
   applySnapshot(boot.snapshot);
   prepareResume();
@@ -1389,8 +1676,6 @@ function prepareResume() {
   if (!track) return;
   buildQueueFromLibrary(track.id);
   state.resuming = { id: track.id, position: s.remember_position ? s.last_position_ms : 0 };
-  state.shuffle = s.shuffle_default;
-  state.repeat = s.repeat_default || "off";
   playCurrent({ autoplay: s.last_playing });
 }
 
@@ -1399,6 +1684,7 @@ function prepareResume() {
    ============================================================ */
 
 function bindOnce() {
+  bindEditor();
   document.querySelectorAll(".nav-item").forEach((btn) => {
     btn.addEventListener("click", () => switchView(btn.dataset.view));
   });
@@ -1418,7 +1704,10 @@ function bindOnce() {
 
   el("btn-add-folder").addEventListener("click", addFolder);
   el("btn-empty-folder").addEventListener("click", addFolder);
-  el("btn-banner-close").addEventListener("click", () => (el("banner").hidden = true));
+  el("btn-banner-close").addEventListener("click", () => {
+    el("banner").hidden = true;
+    bannerDismissed = state.foldersMissing.join("\n");
+  });
   el("btn-rescan").addEventListener("click", rescan);
 
   el("btn-play").addEventListener("click", togglePlay);
@@ -1447,7 +1736,6 @@ function bindOnce() {
 
   const toggleMute = () => {
     audio.muted = !audio.muted;
-    video.muted = audio.muted;
     refreshToggles();
   };
   el("btn-mute").addEventListener("click", toggleMute);
@@ -1456,8 +1744,8 @@ function bindOnce() {
 
   el("volume").addEventListener("input", (e) => {
     const v = Number(e.target.value);
+    e.target.style.setProperty("--p", `${v}%`);
     audio.volume = v / 100;
-    video.volume = v / 100;
     saveSettings({ volume: v }, { refresh: false });
   });
 
@@ -1474,8 +1762,13 @@ function bindOnce() {
   bindBar(el("comp-bar"));
   bindBar(el("min-bar"));
 
+  // Une rafale de molette ne change de morceau qu'une fois toutes les 350 ms.
+  let lastWheelStep = 0;
   el("carousel").addEventListener("wheel", (e) => {
     if (Math.abs(e.deltaY) < 12) return;
+    const now = Date.now();
+    if (now - lastWheelStep < 350) return;
+    lastWheelStep = now;
     step(e.deltaY > 0 ? 1 : -1);
   }, { passive: true });
 
@@ -1486,7 +1779,6 @@ function bindOnce() {
     el("search").focus();
   });
   el("dock-library").addEventListener("click", () => openSheet(el("library-panel"), "Bibliothèque"));
-  el("dock-videos").addEventListener("click", () => openSheet(el("tiles"), "Vidéos", { flush: true }));
   el("dock-settings").addEventListener("click", () => openSheet(el("settings-panel"), "Réglages", { flush: true }));
   el("comp-settings").addEventListener("click", () => openSheet(el("settings-panel"), "Réglages", { flush: true }));
   el("comp-queue").addEventListener("click", () => {
@@ -1496,7 +1788,6 @@ function bindOnce() {
   });
 
   el("min-settings").addEventListener("click", () => openSheet(el("settings-panel"), "Réglages", { flush: true }));
-  el("min-videos").addEventListener("click", () => openSheet(el("tiles"), "Vidéos", { flush: true }));
   el("min-queue").addEventListener("click", () => {
     renderQueue();
     openSheet(el("queue"), "File d'attente");
@@ -1514,14 +1805,15 @@ function bindOnce() {
     if (e.target === el("sheet")) closeSheet();
   });
 
-  el("video-close").addEventListener("click", closeVideo);
-  el("video-overlay").addEventListener("click", (e) => {
-    if (e.target === el("video-overlay")) closeVideo();
-  });
+  // Nombre de fichiers d'affilée qui n'ont pas pu être lus : au-delà, on s'arrête.
+  let errorStreak = 0;
 
-  [audio, video].forEach((media) => {
+  [audio].forEach((media) => {
     media.addEventListener("timeupdate", updateProgress);
     media.addEventListener("loadedmetadata", updateProgress);
+    media.addEventListener("playing", () => {
+      errorStreak = 0;
+    });
     media.addEventListener("play", () => {
       updateProgress();
       pushPlayback(true);
@@ -1539,15 +1831,27 @@ function bindOnce() {
     });
     media.addEventListener("ended", () => step(1, true));
     media.addEventListener("error", () => {
-      if (currentTrack()) {
-        toast("Ce fichier n'a pas pu être lu.");
-        if (state.settings.next_on_error) setTimeout(() => step(1, true), 600);
+      if (!currentTrack()) return;
+      errorStreak += 1;
+      if (errorStreak >= 3) {
+        errorStreak = 0;
+        media.pause();
+        toast("Plusieurs fichiers de suite ne se lisent pas : lecture arrêtée.");
+        return;
       }
+      toast("Ce fichier n'a pas pu être lu.");
+      if (state.settings.next_on_error) setTimeout(() => step(1, true), 600);
     });
   });
 
   document.addEventListener("keydown", (e) => {
+    if (e.code === "Escape" && !el("edit-dialog").hidden) {
+      closeEditor();
+      return;
+    }
     if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+    // Tant qu'une boîte de dialogue est ouverte, seule Échap agit : pas de lecture cachée.
+    if (!el("modal").hidden && e.code !== "Escape") return;
     const media = mediaEl();
     if (e.code === "Space") {
       e.preventDefault();
@@ -1561,7 +1865,8 @@ function bindOnce() {
     } else if (e.code === "ArrowLeft") {
       media.currentTime = Math.max(0, media.currentTime - state.settings.skip_seconds);
     } else if (e.code === "Escape") {
-      if (!el("sheet").hidden) closeSheet();
+      if (!el("modal").hidden && modalCancel) modalCancel();
+      else if (!el("sheet").hidden) closeSheet();
     }
   });
 
@@ -1573,26 +1878,36 @@ function bindOnce() {
 }
 
 function refreshToggles() {
-  el("btn-shuffle").classList.toggle("is-on", state.shuffle);
-  el("btn-shuffle-listen").classList.toggle("is-on", state.shuffle);
-  el("comp-shuffle").classList.toggle("is-on", state.shuffle);
-  el("btn-repeat").classList.toggle("is-on", state.repeat !== "off");
-  el("btn-repeat").classList.toggle("is-one", state.repeat === "one");
+  const shuffle = !!state.shuffle;
+  const repeat = state.repeat || "off";
+  for (const id of ["btn-shuffle", "btn-shuffle-listen", "comp-shuffle"]) {
+    el(id).classList.toggle("is-on", shuffle);
+    el(id).setAttribute("aria-pressed", String(shuffle));
+  }
+  el("btn-repeat").classList.toggle("is-on", repeat !== "off");
+  el("btn-repeat").classList.toggle("is-one", repeat === "one");
+  el("btn-repeat").setAttribute("aria-pressed", String(repeat !== "off"));
   el("btn-mute").classList.toggle("is-muted", audio.muted);
+  el("btn-mute").setAttribute("aria-pressed", String(audio.muted));
   el("dock-volume").classList.toggle("on", audio.muted);
   el("min-volume").classList.toggle("on", audio.muted);
 }
 
+/// Bibliothèque arrivée avant la fin du démarrage : appliquée juste après.
+let pendingLibrary = null;
+
 async function bindBackendEvents() {
-  await listen("library-updated", (event) => applySnapshot(event.payload));
+  await listen("library-updated", (event) => {
+    if (!state.settings) pendingLibrary = event.payload;
+    else applySnapshot(event.payload);
+  });
   await listen("scanning", (event) => {
     const count = el("track-count");
     if (!count) return;
     if (event.payload) count.textContent = "Analyse des dossiers…";
     else {
       const audios = audioTracks().length;
-      const vids = videoTracks().length;
-      count.textContent = `${audios} morceau${audios > 1 ? "x" : ""} · ${vids} vidéo${vids > 1 ? "s" : ""}`;
+      count.textContent = `${audios} morceau${audios > 1 ? "x" : ""}`;
     }
   });
   await listen("close-requested", async () => {
@@ -1611,7 +1926,7 @@ async function bindBackendEvents() {
    Démarrage
    ============================================================ */
 
-(async function start() {
+async function start() {
   applyIcons(document);
   bindOnce();
 
@@ -1625,7 +1940,6 @@ async function bindBackendEvents() {
   el("dock-listen").innerHTML = icon("home", 19);
   el("dock-search").innerHTML = icon("search", 19);
   el("dock-library").innerHTML = icon("library", 19);
-  el("dock-videos").innerHTML = icon("video", 19);
   el("dock-settings").innerHTML = icon("settings", 19);
   el("dock-volume").innerHTML = icon("volume_high", 19);
   el("min-theme").innerHTML = icon("moon", 18);
@@ -1634,10 +1948,16 @@ async function bindBackendEvents() {
   el("min-queue").innerHTML = icon("queue", 18);
   el("min-volume").innerHTML = icon("volume_high", 18);
   el("sheet-close").innerHTML = icon("close", 18);
-  el("video-close").innerHTML = icon("close", 18);
+
+  // Les écouteurs d'abord : un scan qui finit pendant le démarrage ne doit pas être perdu.
+  await Promise.all([bindMediaKeys(), bindBackendEvents()]).catch(() => {});
 
   const boot = await invoke("bootstrap");
   applyBootstrap(boot);
+  if (pendingLibrary) {
+    applySnapshot(pendingLibrary);
+    pendingLibrary = null;
+  }
 
   const panel = buildSettingsPanel();
   el("settings-host-normal").appendChild(panel);
@@ -1645,9 +1965,13 @@ async function bindBackendEvents() {
   refreshToggles();
   switchView("listen");
 
-  bindMediaKeys().catch(() => {});
-  bindBackendEvents().catch(() => {});
+}
 
-  // La fenêtre apparaît quand tout est en place.
-  document.body.classList.add("ready");
-})();
+// La fenêtre apparaît une fois l'interface prête, même si le démarrage a échoué
+// (sinon l'utilisateur verrait une fenêtre vide, sans rien pour comprendre).
+start()
+  .catch((err) => {
+    console.error("démarrage d'Écho", err);
+    toast("Écho n'a pas pu démarrer correctement.");
+  })
+  .finally(() => document.body.classList.add("ready"));

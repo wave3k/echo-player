@@ -1,16 +1,17 @@
 # Écho
 
-Un lecteur de musique et de vidéos local pour Linux : léger, sans publicité, sans compte, sans réseau.
+Un lecteur de musique local pour Linux : léger, sans publicité, sans compte, sans réseau.
 Tu lui montres un dossier, il joue tout ce qu'il contient.
 
 ## Ce que ça fait
 
 - Import d'un ou plusieurs dossiers : l'app les scanne en profondeur et construit ta bibliothèque (titre, artiste, album, durée, pochette).
-- Audio (mp3, flac, m4a, ogg, opus, wav…) et vidéos (mp4, mkv, webm…), tout ce que ton système sait lire.
+- Audio (mp3, flac, m4a, ogg, wav…). Les fichiers vidéo (mp4, webm, mkv…) sont lus pour leur piste son seulement : l'image n'est pas affichée. Les formats se choisissent dans Réglages → Formats acceptés ; tous sont cochés par défaut.
 - Les fichiers non-média du dossier sont ignorés en silence, et le bouton **Actualiser** prend en compte les nouveautés.
 - Recherche instantanée, tri par titre / artiste / album / durée.
 - Lecture dans la fenêtre, mélange aléatoire, répétition, reprise là où tu t'étais arrêté.
 - Trois dispositions au choix : **Normale** (bibliothèque + file d'attente), **Compacte** (pochettes en carrousel), **Minimaliste** (album ouvert et sa liste).
+- Clic droit sur un morceau (ou bouton **Modifier**) : titre, artiste, album et pochette. Les fichiers ne sont pas modifiés.
 - Thème clair ou sombre, quatre palettes de couleurs, trois polices, taille du texte et arrondis réglables.
 - Tout se règle dans **Réglages** (lecture, bibliothèque, formats acceptés, démarrage automatique, sauvegarde des réglages).
 
@@ -22,7 +23,7 @@ Tu lui montres un dossier, il joue tout ce qu'il contient.
 ```
 
 Aucun droit administrateur : tout va dans ton dossier personnel (`~/.local`).
-Ensuite, Écho s'ouvre depuis le menu des applications, ou en tapant `echo`.
+Ensuite, Écho s'ouvre depuis le menu des applications, ou en tapant `echo-player`.
 
 ## Utilisation
 
@@ -37,13 +38,15 @@ Ensuite, Écho s'ouvre depuis le menu des applications, ou en tapant `echo`.
 - `Maj + →` : morceau suivant
 - `Maj + ←` : morceau précédent
 - `←` / `→` : reculer / avancer de quelques secondes
-- `Échap` : fermer la vue vidéo ou un panneau
+- `Échap` : fermer une fenêtre ou un panneau
 - Les touches média du clavier (play/pause, suivant, précédent) pilotent aussi l'app.
+- Tab et les flèches déplacent le focus ; les barres de progression se règlent avec ← / →.
 
 ## Pour les curieux (technique)
 
-- Interface : HTML / CSS / JavaScript dans une fenêtre Tauri 2 (moteur d'affichage du système).
+- Interface : HTML / CSS / JavaScript dans une fenêtre Tauri 2 (moteur d'affichage du système). La page n'accède qu'aux dossiers de musique et au cache des pochettes.
 - Cœur : Rust. Scannage des dossiers, lecture des métadonnées (`lofty`), pochettes mises en cache, MPRIS pour les touches média et l'icône du système.
 - Ta musique ne quitte jamais ta machine ; l'app ne fait aucune connexion réseau.
 - Les réglages vivent dans `~/.config/com.echo.player/`, le cache des pochettes dans `~/.cache/com.echo.player/`.
 - Le design et le plan de fabrication sont dans `docs/superpowers/`.
+- Tests : `cd src-tauri && cargo test` pour le cœur (scan, pochettes, réglages, cache), `node --test tests/` pour les règles de lecture (`src/logic.js`).

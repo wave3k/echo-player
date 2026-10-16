@@ -101,7 +101,19 @@ impl Mpris {
 }
 
 /// Ce que l'app doit faire quand une touche media est pressee.
+/// Les actions qui portent une valeur la donnent après « : », en millisecondes
+/// (« set-position:12000 », « seek-by:-5000 »).
 pub fn describe(event: &MediaControlEvent) -> Option<String> {
+    match event {
+        MediaControlEvent::SetPosition(MediaPosition(at)) => {
+            return Some(format!("set-position:{}", at.as_millis()));
+        }
+        MediaControlEvent::SeekBy(direction, by) => {
+            let sign = if matches!(direction, SeekDirection::Forward) { "" } else { "-" };
+            return Some(format!("seek-by:{sign}{}", by.as_millis()));
+        }
+        _ => {}
+    }
     let label = match event {
         MediaControlEvent::Play => "play",
         MediaControlEvent::Pause => "pause",
@@ -111,10 +123,33 @@ pub fn describe(event: &MediaControlEvent) -> Option<String> {
         MediaControlEvent::Previous => "previous",
         MediaControlEvent::Seek(SeekDirection::Forward) => "seek-forward",
         MediaControlEvent::Seek(SeekDirection::Backward) => "seek-backward",
-        MediaControlEvent::SetPosition(MediaPosition(_)) => "set-position",
         MediaControlEvent::Raise => "raise",
         MediaControlEvent::Quit => "quit",
         _ => return None,
     };
     Some(label.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn la_position_demandee_par_le_bureau_est_transmise() {
+        let event = MediaControlEvent::SetPosition(MediaPosition(Duration::from_millis(83_500)));
+        assert_eq!(describe(&event).as_deref(), Some("set-position:83500"));
+    }
+
+    #[test]
+    fn un_saut_relatif_garde_son_sens() {
+        let back = MediaControlEvent::SeekBy(SeekDirection::Backward, Duration::from_secs(5));
+        let fwd = MediaControlEvent::SeekBy(SeekDirection::Forward, Duration::from_secs(5));
+        assert_eq!(describe(&back).as_deref(), Some("seek-by:-5000"));
+        assert_eq!(describe(&fwd).as_deref(), Some("seek-by:5000"));
+    }
+
+    #[test]
+    fn quitter_est_transmis() {
+        assert_eq!(describe(&MediaControlEvent::Quit).as_deref(), Some("quit"));
+    }
 }

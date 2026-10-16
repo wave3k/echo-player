@@ -23,9 +23,6 @@
         <button class="nav-item" data-view="library">
           <span data-icon="library" data-size="17"></span><span>Bibliothèque</span>
         </button>
-        <button class="nav-item" data-view="videos">
-          <span data-icon="video" data-size="17"></span><span>Vidéos</span>
-        </button>
         <button class="nav-item" data-view="settings">
           <span data-icon="settings" data-size="17"></span><span>Réglages</span>
         </button>
@@ -54,12 +51,15 @@
             <div class="listen-title" id="listen-title">Rien en cours</div>
             <div class="listen-artist" id="listen-artist">Choisis un morceau dans ta bibliothèque</div>
             <div class="listen-actions">
-              <button class="play-big" id="btn-play-big" title="Lecture">
+              <button aria-label="Lecture" class="play-big" id="btn-play-big" title="Lecture">
                 <span data-icon="play" data-size="20" class="i-play"></span>
                 <span data-icon="pause" data-size="20" class="i-pause"></span>
               </button>
               <button class="ghost-btn" id="btn-shuffle-listen">
                 <span data-icon="shuffle" data-size="15"></span>Aléatoire
+              </button>
+              <button class="ghost-btn" id="btn-edit-listen" title="Modifier le titre, l'artiste ou la pochette">
+                <span data-icon="sliders" data-size="15"></span>Modifier
               </button>
             </div>
           </div>
@@ -79,10 +79,10 @@
             <div class="controls">
               <label class="search">
                 <span data-icon="search" data-size="15"></span>
-                <input type="search" id="search" placeholder="Rechercher un titre, un artiste…" />
+                <input type="search" id="search" aria-label="Rechercher dans la bibliothèque" placeholder="Rechercher un titre, un artiste…" />
               </label>
               <label class="select-wrap">
-                <select id="sort" class="select">
+                <select id="sort" class="select" aria-label="Trier la bibliothèque">
                   <option value="title">Titre</option>
                   <option value="artist">Artiste</option>
                   <option value="album">Album</option>
@@ -97,14 +97,6 @@
           </div>
           <div class="list" id="list"></div>
         </div>
-      </section>
-
-      <!-- Vidéos -->
-      <section class="view" id="view-videos">
-        <div class="view-head">
-          <h2 class="view-title">Vidéos</h2>
-        </div>
-        <div class="tiles" id="tiles"></div>
       </section>
 
       <!-- Réglages -->
@@ -126,37 +118,37 @@
 
       <div class="player-center">
         <div class="buttons">
-          <button class="ctl" id="btn-shuffle" title="Lecture aléatoire">
+          <button aria-label="Lecture aléatoire" class="ctl" id="btn-shuffle" title="Lecture aléatoire">
             <span data-icon="shuffle" data-size="17"></span>
           </button>
-          <button class="ctl" id="btn-prev" title="Précédent">
+          <button aria-label="Précédent" class="ctl" id="btn-prev" title="Précédent">
             <span data-icon="prev" data-size="19"></span>
           </button>
-          <button class="ctl ctl-play" id="btn-play" title="Lecture">
+          <button aria-label="Lecture" class="ctl ctl-play" id="btn-play" title="Lecture">
             <span data-icon="play" data-size="18" class="i-play"></span>
             <span data-icon="pause" data-size="18" class="i-pause"></span>
           </button>
-          <button class="ctl" id="btn-next" title="Suivant">
+          <button aria-label="Suivant" class="ctl" id="btn-next" title="Suivant">
             <span data-icon="next" data-size="19"></span>
           </button>
-          <button class="ctl" id="btn-repeat" title="Répéter">
+          <button aria-label="Répéter" class="ctl" id="btn-repeat" title="Répéter">
             <span data-icon="repeat" data-size="17"></span>
             <span class="repeat-one">1</span>
           </button>
         </div>
         <div class="progress">
           <span class="time" id="time-now">0:00</span>
-          <input type="range" id="seek" min="0" max="1000" value="0" />
+          <input type="range" id="seek" aria-label="Position dans le morceau" min="0" max="1000" value="0" />
           <span class="time" id="time-total">0:00</span>
         </div>
       </div>
 
       <div class="player-right">
-        <button class="ctl" id="btn-mute" title="Couper le son">
+        <button aria-label="Couper le son" class="ctl" id="btn-mute" title="Couper le son">
           <span data-icon="volume_high" data-size="17" class="i-vol-high"></span>
           <span data-icon="volume_mute" data-size="17" class="i-vol-mute"></span>
         </button>
-        <input type="range" id="volume" min="0" max="100" value="90" />
+        <input type="range" id="volume" aria-label="Volume" min="0" max="100" value="90" />
       </div>
     </footer>
 
@@ -168,8 +160,8 @@
           <span class="brand-name">Écho</span>
         </span>
         <span class="top-actions">
-          <button class="icon-btn" id="comp-theme" title="Clair ou sombre"></button>
-          <button class="icon-btn" id="comp-settings" title="Réglages"></button>
+          <button aria-label="Clair ou sombre" class="icon-btn" id="comp-theme" title="Clair ou sombre"></button>
+          <button aria-label="Réglages" class="icon-btn" id="comp-settings" title="Réglages"></button>
         </span>
       </div>
 
@@ -184,20 +176,19 @@
       </div>
 
       <div class="car-controls">
-        <button class="icon-btn" id="comp-queue" title="File d'attente"></button>
-        <button class="icon-btn" id="comp-prev" title="Précédent"></button>
-        <button class="icon-btn play" id="comp-play" title="Lecture"></button>
-        <button class="icon-btn" id="comp-next" title="Suivant"></button>
-        <button class="icon-btn" id="comp-shuffle" title="Aléatoire"></button>
+        <button aria-label="File d'attente" class="icon-btn" id="comp-queue" title="File d'attente"></button>
+        <button aria-label="Précédent" class="icon-btn" id="comp-prev" title="Précédent"></button>
+        <button aria-label="Lecture" class="icon-btn play" id="comp-play" title="Lecture"></button>
+        <button aria-label="Suivant" class="icon-btn" id="comp-next" title="Suivant"></button>
+        <button aria-label="Aléatoire" class="icon-btn" id="comp-shuffle" title="Aléatoire"></button>
       </div>
 
       <div class="dock">
-        <button class="icon-btn" id="dock-listen" title="Maintenant"></button>
-        <button class="icon-btn" id="dock-search" title="Rechercher"></button>
-        <button class="icon-btn" id="dock-library" title="Bibliothèque"></button>
-        <button class="icon-btn" id="dock-videos" title="Vidéos"></button>
-        <button class="icon-btn" id="dock-settings" title="Réglages"></button>
-        <button class="icon-btn" id="dock-volume" title="Couper le son"></button>
+        <button aria-label="Maintenant" class="icon-btn" id="dock-listen" title="Maintenant"></button>
+        <button aria-label="Rechercher" class="icon-btn" id="dock-search" title="Rechercher"></button>
+        <button aria-label="Bibliothèque" class="icon-btn" id="dock-library" title="Bibliothèque"></button>
+        <button aria-label="Réglages" class="icon-btn" id="dock-settings" title="Réglages"></button>
+        <button aria-label="Couper le son" class="icon-btn" id="dock-volume" title="Couper le son"></button>
       </div>
     </div>
 
@@ -206,22 +197,19 @@
       <div class="min-top">
         <label class="search min-search">
           <span data-icon="search" data-size="15"></span>
-          <input type="search" id="min-search" placeholder="Rechercher un son, un artiste…" />
+          <input type="search" id="min-search" aria-label="Rechercher un son" placeholder="Rechercher un son, un artiste…" />
         </label>
         <div class="min-actions">
-          <button class="ghost-btn" id="min-videos">
-            <span data-icon="video" data-size="15"></span>Vidéos
-          </button>
-          <button class="icon-btn" id="min-theme" title="Clair ou sombre"></button>
-          <button class="icon-btn" id="min-settings" title="Réglages"></button>
+          <button aria-label="Clair ou sombre" class="icon-btn" id="min-theme" title="Clair ou sombre"></button>
+          <button aria-label="Réglages" class="icon-btn" id="min-settings" title="Réglages"></button>
         </div>
       </div>
 
       <div class="min-body">
         <div class="min-left">
-          <button class="peek peek-left" id="peek-left" title="Album précédent"></button>
+          <button aria-label="Album précédent" class="peek peek-left" id="peek-left" title="Album précédent"></button>
           <div class="album-cover" id="min-cover"></div>
-          <button class="peek peek-right" id="peek-right" title="Album suivant"></button>
+          <button aria-label="Album suivant" class="peek peek-right" id="peek-right" title="Album suivant"></button>
         </div>
         <div class="min-right" id="min-right"></div>
       </div>
@@ -233,15 +221,15 @@
             <div class="mini-title" id="min-title">Aucun morceau</div>
             <div class="mini-artist" id="min-artist">—</div>
           </div>
-          <button class="icon-btn" id="min-play" title="Lecture"></button>
+          <button aria-label="Lecture" class="icon-btn" id="min-play" title="Lecture"></button>
         </div>
         <div class="min-progress">
           <div class="bar" id="min-bar"><i></i></div>
           <div class="times"><span id="min-now-time">0:00</span><span id="min-total-time">0:00</span></div>
         </div>
         <div class="min-actions-r">
-          <button class="icon-btn" id="min-queue" title="File d'attente"></button>
-          <button class="icon-btn" id="min-volume" title="Couper le son"></button>
+          <button aria-label="File d'attente" class="icon-btn" id="min-queue" title="File d'attente"></button>
+          <button aria-label="Couper le son" class="icon-btn" id="min-volume" title="Couper le son"></button>
         </div>
       </div>
     </div>
@@ -251,20 +239,43 @@
       <div class="sheet-inner">
         <div class="sheet-head">
           <div class="sheet-title" id="sheet-title">Bibliothèque</div>
-          <button class="icon-btn" id="sheet-close" title="Fermer"></button>
+          <button aria-label="Fermer" class="icon-btn" id="sheet-close" title="Fermer"></button>
         </div>
         <div class="sheet-body" id="sheet-body"></div>
       </div>
     </div>
 
-    <div class="video-overlay" id="video-overlay" hidden>
-      <div class="video-box">
-        <div class="video-head">
-          <div class="video-title" id="video-title"></div>
-          <button class="icon-btn" id="video-close" title="Fermer"></button>
+    <!-- ================= modifier un morceau ================= -->
+    <div class="edit-dialog" id="edit-dialog" hidden>
+      <form class="edit-box" id="edit-form" autocomplete="off">
+        <div class="edit-head">
+          <div class="modal-title">Modifier le morceau</div>
+          <button type="button" class="icon-btn" id="edit-close" title="Fermer" aria-label="Fermer"></button>
         </div>
-        <video id="video" controls playsinline></video>
-      </div>
+        <div class="edit-body">
+          <button type="button" class="edit-cover" id="edit-cover" title="Choisir une image" aria-label="Choisir une image de pochette">
+            <span class="edit-cover-hint">Changer l'image</span>
+          </button>
+          <div class="edit-fields">
+            <label class="edit-field">Titre
+              <input id="edit-title" required maxlength="200" />
+            </label>
+            <label class="edit-field">Artiste
+              <input id="edit-artist" maxlength="200" />
+            </label>
+            <label class="edit-field">Album
+              <input id="edit-album" maxlength="200" />
+            </label>
+            <p class="hint">Seul l'affichage change : le fichier audio reste intact.</p>
+          </div>
+        </div>
+        <div class="edit-actions">
+          <button type="button" class="ghost-btn" id="edit-reset">Rétablir l'original</button>
+          <span class="grow"></span>
+          <button type="button" class="ghost-btn" id="edit-cancel">Annuler</button>
+          <button type="submit" class="primary-btn" id="edit-save">Enregistrer</button>
+        </div>
+      </form>
     </div>
 
     <div class="empty" id="empty">
@@ -272,7 +283,7 @@
         <div class="empty-mark" data-icon="waveform" data-size="30"></div>
         <h2>Ta musique te manque</h2>
         <p>
-          Choisis le dossier où tu ranges tes fichiers audio et vidéo.
+          Choisis le dossier où tu ranges ta musique.
           Écho s'occupe du reste : aucun compte, aucune publicité, rien qui sort de ton ordinateur.
         </p>
         <button class="primary-btn" id="btn-empty-folder">
@@ -299,6 +310,7 @@
   </div>
 
   <script src="icons.js"></script>
+  <script src="logic.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

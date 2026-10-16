@@ -18,4 +18,4 @@ fi
 cd "$ROOT/src-tauri"
 cargo build --release --features custom-protocol
 echo
-echo "C'est compilé : $ROOT/src-tauri/target/release/echo"
+echo "C'est compilé : $ROOT/src-tauri/target/release/echo-player"
