@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Echo",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "identifier": "com.echo.player",
   "build": {
     "frontendDist": "../src"
@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; media-src 'self' asset: http://asset.localhost; font-src 'self'; connect-src ipc: http://ipc.localhost",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; media-src 'self' asset: http://asset.localhost file:; font-src 'self'; connect-src ipc: http://ipc.localhost",
       "assetProtocol": {
         "enable": true,
         "scope": []
@@ -42,6 +42,20 @@
     ],
     "category": "Music",
     "shortDescription": "Lecteur de musique local",
-    "longDescription": "Écho, lecteur de musique locale : léger, sans publicité, sans compte et sans connexion."
+    "longDescription": "Écho, lecteur de musique locale : léger, sans publicité, sans compte et sans connexion.",
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      },
+      "deb": {
+        "depends": [
+          "gstreamer1.0-plugins-base",
+          "gstreamer1.0-plugins-good"
+        ],
+        "recommends": [
+          "gstreamer1.0-libav"
+        ]
+      }
+    }
   }
 }

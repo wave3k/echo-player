@@ -794,7 +794,6 @@ body[data-mode="minimal"] .minimal { animation: modeIn .35s cubic-bezier(.2, .7,
 #seek:focus-visible::-webkit-slider-thumb, #seek:active::-webkit-slider-thumb { opacity: 1; }
 .player .ctl { transition: color .14s, background .14s, transform .14s; }
 .player .ctl:hover { transform: scale(1.06); }
-.player { backdrop-filter: blur(10px); }
 .mini-cover { box-shadow: 0 6px 16px rgba(0, 0, 0, .25); }
 
 /* ---------- 11. Modifier un morceau ---------- */

@@ -791,7 +791,7 @@ function renderLibrary() {
     spacer.replaceChildren(frag);
   };
 
-  listEl.onscroll = draw;
+  listEl.onscroll = onFrame(draw);
   draw();
 }
 
@@ -848,7 +848,7 @@ function renderQueue() {
     spacer.replaceChildren(frag);
   };
 
-  queue.onscroll = draw;
+  queue.onscroll = onFrame(draw);
   draw();
 }
 
@@ -1038,6 +1038,15 @@ function setPeek(node, album, currentKey) {
 
 const audio = el("audio");
 
+/// Sous Linux, le lecteur audio de WebKitGTK n'accepte pas asset:// : on lui donne
+/// l'adresse file:// du morceau. Ailleurs (WebView2), le protocole d'asset fonctionne.
+const LINUX_WEBKIT = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent) && !window.chrome;
+
+function mediaSrc(path) {
+  if (!LINUX_WEBKIT) return convertFileSrc(path);
+  return "file://" + path.split("/").map(encodeURIComponent).join("/");
+}
+
 function isPlaying() {
   const track = currentTrack();
   if (!track) return false;
@@ -1069,7 +1078,7 @@ function buildQueueFromLibrary(startId) {
 function playCurrent({ autoplay = true } = {}) {
   const track = currentTrack();
   if (!track) return;
-  audio.src = convertFileSrc(track.path);
+  audio.src = mediaSrc(track.path);
   if (autoplay) audio.play().catch(() => {});
   pushNowPlaying(track);
   pushPlayback(true);
@@ -1141,6 +1150,22 @@ function step(delta, auto = false) {
 let lastProgressPush = 0;
 let lastSavedPosition = 0;
 
+/// Dernier état affiché sur les boutons lecture (null : jamais dessinés).
+let lastPlayingShown = null;
+
+/// Regroupe les événements de défilement : une liste n'est redessinée qu'une fois par image.
+function onFrame(draw) {
+  let queued = false;
+  return () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      draw();
+    });
+  };
+}
+
 function updateProgress() {
   const track = currentTrack();
   const media = audio;
@@ -1172,15 +1197,19 @@ function updateProgress() {
   });
 
   const playing = !media.paused;
-  document.querySelectorAll(".ctl-play, .play-big").forEach((b) => b.classList.toggle("is-playing", playing));
-  el("btn-play").setAttribute("aria-label", playing ? "Pause" : "Lecture");
-  const compPlay = el("comp-play");
-  if (compPlay) {
-    compPlay.innerHTML = icon(playing ? "pause" : "play", 20);
-    compPlay.classList.toggle("is-playing", playing);
+  // Les boutons ne changent qu'au passage lecture ↔ pause, pas à chaque seconde.
+  if (playing !== lastPlayingShown) {
+    lastPlayingShown = playing;
+    document.querySelectorAll(".ctl-play, .play-big").forEach((b) => b.classList.toggle("is-playing", playing));
+    el("btn-play").setAttribute("aria-label", playing ? "Pause" : "Lecture");
+    const compPlay = el("comp-play");
+    if (compPlay) {
+      compPlay.innerHTML = icon(playing ? "pause" : "play", 20);
+      compPlay.classList.toggle("is-playing", playing);
+    }
+    const minPlay = el("min-play");
+    if (minPlay) minPlay.innerHTML = icon(playing ? "pause" : "play", 18);
   }
-  const minPlay = el("min-play");
-  if (minPlay) minPlay.innerHTML = icon(playing ? "pause" : "play", 18);
 
   if (playing) {
     const stamp = Date.now();
@@ -1809,7 +1838,15 @@ function bindOnce() {
   let errorStreak = 0;
 
   [audio].forEach((media) => {
-    media.addEventListener("timeupdate", updateProgress);
+    // WebKit envoie timeupdate quatre fois par seconde : l'affichage ne change qu'à
+    // chaque seconde, inutile de redessiner entre-temps.
+    let shownSecond = -1;
+    media.addEventListener("timeupdate", () => {
+      const second = Math.floor(media.currentTime);
+      if (second === shownSecond) return;
+      shownSecond = second;
+      updateProgress();
+    });
     media.addEventListener("loadedmetadata", updateProgress);
     media.addEventListener("playing", () => {
       errorStreak = 0;

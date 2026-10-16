@@ -704,7 +704,40 @@ fn get_cover_path(state: State<AppData>, id: String) -> Option<String> {
         .map(|p| p.to_string_lossy().to_string())
 }
 
+/// Réglages du moteur d'affichage à poser avant d'ouvrir la fenêtre.
+fn prepare_webview_env() {
+    // Pilote NVIDIA propriétaire : le rendu DMA-BUF de WebKitGTK donne souvent une
+    // fenêtre vide. Le rendu classique marche partout ; un réglage déjà posé est respecté.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
+        && Path::new("/proc/driver/nvidia/version").exists()
+    {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
+/// Moins de mémoire pour le moteur d'affichage : Écho n'est pas un navigateur,
+/// inutile de garder en cache les pages déjà vues ni de précharger quoi que ce soit.
+fn lighten_webview(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "linux")]
+    let _ = window.with_webview(|webview| {
+        use webkit2gtk::{CacheModel, SecurityManagerExt, WebContextExt, WebViewExt};
+        if let Some(context) = webview.inner().context() {
+            context.set_cache_model(CacheModel::DocumentViewer);
+            // Le lecteur audio de WebKitGTK (GStreamer) refuse les adresses asset:// :
+            // sous Linux, les morceaux sont lus en file://, ce que la page de l'app
+            // (tauri://) n'a le droit de faire que si son schéma est déclaré local.
+            if let Some(security) = context.security_manager() {
+                security.register_uri_scheme_as_local("tauri");
+            }
+        }
+    });
+    #[cfg(not(target_os = "linux"))]
+    let _ = window;
+}
+
 fn main() {
+    prepare_webview_env();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppData(Mutex::new(Data::default())))
@@ -780,6 +813,7 @@ fn main() {
 
             // Fermeture de la fenetre : on demande confirmation si le reglage le dit.
             if let Some(window) = app.get_webview_window("main") {
+                lighten_webview(&window);
                 let win = window.clone();
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
