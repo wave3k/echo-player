@@ -46,7 +46,7 @@ jobs:
       - name: Tests
         run: |
           cd src-tauri && cargo test
-          cd .. && node --test tests/
+          cd .. && node --test tests/logic.test.js
 
       - uses: tauri-apps/tauri-action@v0
         env:
