@@ -22,6 +22,39 @@ pub struct Track {
     pub mtime: u64,
     #[serde(default)]
     pub size: u64,
+    /// Faux pour une vidéo téléchargée sans son (fichier muet).
+    #[serde(default = "yes")]
+    pub has_audio: bool,
+    /// Vrai si le fichier a une piste image : sa pochette peut venir d'une image de la vidéo.
+    #[serde(default)]
+    pub video: bool,
+    /// Vrai quand l'image de la vidéo a déjà été cherchée sans succès.
+    #[serde(default)]
+    pub no_frame: bool,
+    /// Version des règles de titres appliquées (voir `titles::VERSION`).
+    #[serde(default)]
+    pub parsed: u32,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// Conteneurs qui peuvent porter une image : leur pochette peut être tirée de la vidéo.
+const VIDEO_EXTS: &[&str] = &["mp4", "m4v", "webm", "mkv", "mov", "avi", "ogv"];
+
+pub fn is_video(path: &Path) -> bool {
+    VIDEO_EXTS.contains(&ext_of(path).as_str())
+}
+
+/// Nom du fichier de pochette tiré d'une vidéo : change avec le fichier.
+pub fn frame_name(id: &str, mtime: u64) -> String {
+    format!("frame-{:016x}-{mtime}.jpg", stable_hash(id.as_bytes()))
+}
+
+/// Marque « aucune image trouvée » pour ne pas recommencer à chaque lancement.
+pub fn no_frame_marker(id: &str, mtime: u64) -> String {
+    format!("frame-{:016x}-{mtime}.none", stable_hash(id.as_bytes()))
 }
 
 /// Extensions lues par la bibliotheque. Les conteneurs video (mp4, mkv...) sont lus
@@ -40,6 +73,11 @@ fn ext_of(path: &Path) -> String {
 
 fn is_audio(ext: &str) -> bool {
     AUDIO_EXTS.contains(&ext)
+}
+
+/// Vrai si ce fichier a une extension que la bibliothèque sait lire.
+pub fn is_media_path(path: &Path) -> bool {
+    is_audio(&ext_of(path))
 }
 
 /// Vrai si ce fichier serait gardé par le scan avec ces formats.
@@ -126,7 +164,8 @@ pub fn scan(
                     .as_ref()
                     .map(|name| covers_dir.join(name).is_file())
                     .unwrap_or(true);
-                if old.mtime == mtime && old.size == size && old.mtime != 0 && cover_ok {
+                let fresh = old.parsed == crate::titles::VERSION;
+                if old.mtime == mtime && old.size == size && old.mtime != 0 && cover_ok && fresh {
                     if let Some(name) = &old.cover {
                         covers.insert(name.clone(), covers_dir.join(name));
                     }
@@ -151,9 +190,18 @@ pub fn scan(
                 cover: None,
                 mtime,
                 size,
+                has_audio: true,
+                video: is_video(path),
+                no_frame: false,
+                parsed: crate::titles::VERSION,
             };
 
-            if let Some(meta) = read_metadata(path, covers_dir, &mut covers) {
+            let meta = if matches!(ext.as_str(), "webm" | "mkv") {
+                read_matroska(path, covers_dir, &mut covers)
+            } else {
+                read_metadata(path, covers_dir, &mut covers).or_else(|| read_mp4(path))
+            };
+            if let Some(meta) = meta {
                 if !meta.title.is_empty() {
                     track.title = meta.title;
                 }
@@ -161,6 +209,28 @@ pub fn scan(
                 track.album = meta.album;
                 track.duration_ms = meta.duration_ms;
                 track.cover = meta.cover;
+                track.has_audio = meta.has_audio;
+                if let Some(video) = meta.has_video {
+                    track.video = video;
+                }
+            }
+
+            // Pas d'artiste dans les tags : on le cherche dans le titre (« Artiste - Titre »).
+            if track.artist.trim().is_empty() {
+                let (artist, title) = crate::titles::guess(&track.title);
+                track.artist = artist;
+                track.title = title;
+            }
+
+            // Vidéo sans pochette : une image de la vidéo, extraite une fois par l'interface.
+            if track.video && track.cover.is_none() {
+                let frame = frame_name(&track.id, mtime);
+                if covers_dir.join(&frame).is_file() {
+                    covers.insert(frame.clone(), covers_dir.join(&frame));
+                    track.cover = Some(frame);
+                } else if covers_dir.join(no_frame_marker(&track.id, mtime)).is_file() {
+                    track.no_frame = true;
+                }
             }
 
             tracks.push(track);
@@ -183,6 +253,55 @@ struct Meta {
     album: String,
     duration_ms: u64,
     cover: Option<String>,
+    has_audio: bool,
+    /// `None` : on ne sait pas (on s'en tient à l'extension).
+    has_video: Option<bool>,
+}
+
+/// Enregistre une pochette (octets d'image) dans le cache et renvoie son nom.
+fn save_cover(data: &[u8], mime: &str, covers_dir: &Path, covers: &mut HashMap<String, PathBuf>) -> String {
+    let ext = match mime {
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "jpg",
+    };
+    let name = format!("{:016x}.{}", stable_hash(data), ext);
+    let dest = covers_dir.join(&name);
+    if !covers.contains_key(&name) {
+        if !dest.exists() {
+            let _ = std::fs::write(&dest, data);
+        }
+        covers.insert(name.clone(), dest);
+    }
+    name
+}
+
+/// MP4 que `lofty` refuse (vidéo sans son) : au moins sa durée, et le fait qu'il est muet.
+fn read_mp4(path: &Path) -> Option<Meta> {
+    let info = crate::mp4::read(path)?;
+    Some(Meta {
+        title: String::new(),
+        artist: String::new(),
+        album: String::new(),
+        duration_ms: info.duration_ms,
+        cover: None,
+        has_audio: info.has_audio,
+        has_video: Some(info.has_video),
+    })
+}
+
+fn read_matroska(path: &Path, covers_dir: &Path, covers: &mut HashMap<String, PathBuf>) -> Option<Meta> {
+    let info = crate::matroska::read(path)?;
+    Some(Meta {
+        title: info.title,
+        artist: info.artist,
+        album: info.album,
+        duration_ms: info.duration_ms,
+        cover: info.cover.map(|(mime, data)| save_cover(&data, &mime, covers_dir, covers)),
+        has_audio: info.has_audio.unwrap_or(true),
+        has_video: info.has_audio.map(|_| info.has_video),
+    })
 }
 
 /// Empreinte FNV-1a 64 bits : stable d'une version de Rust à l'autre,
@@ -207,7 +326,8 @@ fn read_metadata(
 
     let tagged = Probe::open(path).ok()?.read().ok()?;
 
-    let duration_ms = tagged.properties().duration().as_millis() as u64;
+    let properties = tagged.properties();
+    let duration_ms = properties.duration().as_millis() as u64;
 
     let mut meta = Meta {
         title: String::new(),
@@ -215,6 +335,10 @@ fn read_metadata(
         album: String::new(),
         duration_ms,
         cover: None,
+        // Une vidéo mp4 sans piste son n'annonce aucun canal audio.
+        has_audio: properties.channels().is_some() || properties.sample_rate().is_some(),
+        // lofty ne dit rien de l'image : pour un mp4, on regarde ses pistes.
+        has_video: is_video(path).then(|| crate::mp4::read(path).map(|i| i.has_video)).flatten(),
     };
 
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
@@ -231,26 +355,8 @@ fn read_metadata(
         if let Some(pic) = tag.pictures().first() {
             let data = pic.data();
             if !data.is_empty() {
-                let hash = stable_hash(data);
-                let ext = match pic
-                    .mime_type()
-                    .map(|m| m.as_str())
-                    .unwrap_or("image/jpeg")
-                {
-                    "image/png" => "png",
-                    "image/gif" => "gif",
-                    "image/webp" => "webp",
-                    _ => "jpg",
-                };
-                let name = format!("{:016x}.{}", hash, ext);
-                let dest = covers_dir.join(&name);
-                if !covers.contains_key(&name) {
-                    if !dest.exists() {
-                        let _ = std::fs::write(&dest, data);
-                    }
-                    covers.insert(name.clone(), dest);
-                }
-                meta.cover = Some(name);
+                let mime = pic.mime_type().map(|m| m.as_str()).unwrap_or("image/jpeg");
+                meta.cover = Some(save_cover(data, mime, covers_dir, covers));
             }
         }
     }

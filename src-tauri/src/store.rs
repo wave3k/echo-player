@@ -39,6 +39,22 @@ pub struct Settings {
     pub ask_before_quit: bool,
     /// Extensions lues par la bibliotheque.
     pub formats: Vec<String>,
+    /// Les nouveaux fichiers des dossiers apparaissent tout seuls.
+    pub watch: bool,
+    /// Icône dans la barre du système, et fermeture qui y range la fenêtre.
+    pub tray: bool,
+    pub close_to_tray: bool,
+    /// Notification du système à chaque nouveau morceau.
+    pub notify: bool,
+    /// Statut « Écoute … » sur Discord.
+    pub discord: bool,
+
+    /// Fondu enchaîné entre deux morceaux, en secondes (0 : aucun).
+    pub crossfade: u32,
+    /// Volume égal : rattrape les différences de niveau entre les fichiers.
+    pub loudness: bool,
+    /// Égaliseur : "flat", "bass", "vocal", "treble", "rap" ou "acoustic".
+    pub eq: String,
 
     pub volume: u32,
     pub last_track: Option<String>,
@@ -73,6 +89,14 @@ impl Default for Settings {
             refresh_on_start: true,
             ask_before_quit: false,
             formats: FORMAT_CATALOG.iter().map(|f| f.to_string()).collect(),
+            watch: true,
+            tray: false,
+            close_to_tray: false,
+            notify: false,
+            discord: false,
+            crossfade: 0,
+            loudness: true,
+            eq: "flat".into(),
             volume: 90,
             last_track: None,
             last_position_ms: 0,
@@ -107,6 +131,13 @@ impl Settings {
         pick(&mut self.mode, &["normal", "compact", "minimal"], "normal");
         pick(&mut self.text_size, &["petit", "normal", "grand"], "normal");
         pick(&mut self.repeat_default, &["off", "all", "one"], "off");
+        pick(&mut self.eq, &["flat", "bass", "vocal", "treble", "rap", "acoustic"], "flat");
+        if !matches!(self.crossfade, 0 | 3 | 6 | 10) {
+            self.crossfade = 0;
+        }
+        if !self.tray {
+            self.close_to_tray = false;
+        }
         if !matches!(self.skip_seconds, 5 | 10 | 30) {
             self.skip_seconds = 10;
         }
@@ -365,6 +396,36 @@ mod tests {
     }
 
     #[test]
+    fn les_playlists_sont_gardees_propres() {
+        let tmp = TempDir::new("playlists");
+        let dirty = vec![
+            Playlist { id: "a".into(), name: "  Rap FR  ".into(), tracks: vec!["/m/1".into(), "/m/1".into(), "/m/2".into()] },
+            Playlist { id: "a".into(), name: "doublon".into(), tracks: vec![] },
+            Playlist { id: " ".into(), name: "sans id".into(), tracks: vec![] },
+            Playlist { id: "b".into(), name: "".into(), tracks: vec![] },
+        ];
+        let clean = sanitize_playlists(dirty);
+        assert_eq!(clean.len(), 2);
+        assert_eq!(clean[0].name, "Rap FR");
+        assert_eq!(clean[0].tracks, ["/m/1", "/m/2"]);
+        assert_eq!(clean[1].name, "Sans nom");
+        save_playlists(&tmp.0, &clean);
+        assert_eq!(load_playlists(&tmp.0), clean);
+    }
+
+    #[test]
+    fn les_reglages_de_son_restent_valides() {
+        let mut s = Settings::default();
+        s.crossfade = 7;
+        s.eq = "boum".into();
+        s.close_to_tray = true;
+        s.sanitize();
+        assert_eq!(s.crossfade, 0);
+        assert_eq!(s.eq, "flat");
+        assert!(!s.close_to_tray, "pas de rangement sans icône dans la barre");
+    }
+
+    #[test]
     fn les_corrections_survivent_a_un_redemarrage() {
         let tmp = TempDir::new("overrides");
         let mut map = Overrides::new();
@@ -375,4 +436,40 @@ mod tests {
         save_overrides(&tmp.0, &map);
         assert_eq!(load_overrides(&tmp.0)["/m/a.mp3"].title.as_deref(), Some("Nouveau"));
     }
+}
+
+/// Une liste de lecture : un nom et des morceaux (par identifiant), dans l'ordre.
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
+#[serde(default)]
+pub struct Playlist {
+    pub id: String,
+    pub name: String,
+    pub tracks: Vec<String>,
+}
+
+pub fn load_playlists(dir: &Path) -> Vec<Playlist> {
+    load_json(&dir.join("playlists.json")).unwrap_or_default()
+}
+
+pub fn save_playlists(dir: &Path, playlists: &[Playlist]) {
+    if let Ok(json) = serde_json::to_string_pretty(playlists) {
+        let _ = write_atomic(&dir.join("playlists.json"), json.as_bytes());
+    }
+}
+
+/// Remet une liste de playlists reçue de l'interface dans un état sûr.
+pub fn sanitize_playlists(list: Vec<Playlist>) -> Vec<Playlist> {
+    let mut seen = std::collections::HashSet::new();
+    list.into_iter()
+        .filter(|p| !p.id.trim().is_empty() && seen.insert(p.id.clone()))
+        .map(|mut p| {
+            p.name = p.name.trim().chars().take(80).collect();
+            if p.name.is_empty() {
+                p.name = "Sans nom".into();
+            }
+            let mut ids = std::collections::HashSet::new();
+            p.tracks.retain(|t| ids.insert(t.clone()));
+            p
+        })
+        .collect()
 }

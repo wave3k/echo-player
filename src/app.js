@@ -186,6 +186,15 @@ const MODES = [
 
 const FORMAT_NAMES = { autres: "Autres" };
 
+const EQ_CHOICES = [
+  { value: "flat", label: "Neutre" },
+  { value: "bass", label: "Basses" },
+  { value: "rap", label: "Rap" },
+  { value: "vocal", label: "Voix" },
+  { value: "treble", label: "Aigus" },
+  { value: "acoustic", label: "Acoustique" },
+];
+
 function systemPrefersDark() {
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
 }
@@ -210,7 +219,7 @@ function applySettings() {
   body.style.setProperty("--radius-soft", `${(s.radius * 0.83).toFixed(1)}px`);
   body.style.setProperty("--radius-md", `${(s.radius * 1.17).toFixed(1)}px`);
   body.style.setProperty("--radius-lg", `${(s.radius * 1.5).toFixed(1)}px`);
-  audio.volume = Math.min(1, Math.max(0, s.volume / 100));
+  Sound.configure(s);
   const volume = el("volume");
   if (volume) {
     volume.value = String(s.volume);
@@ -255,7 +264,7 @@ function rowSeg(label, desc, field, options, value) {
   return `<div class="set-row">
     <div class="left"><div class="lab">${label}</div><div class="desc">${desc}</div></div>
     <div class="set-ctl"><span class="seg">${options
-      .map((o) => `<button class="${o.value === value ? "on" : ""}" data-set="${field}" data-value="${o.value}">${o.label}</button>`)
+      .map((o) => `<button class="${String(o.value) === String(value) ? "on" : ""}" data-set="${field}" data-value="${o.value}">${o.label}</button>`)
       .join("")}</span></div>
   </div>`;
 }
@@ -351,8 +360,22 @@ function sectionLecture() {
           .map((v) => `<button class="chip${s.skip_seconds === v ? " on" : ""}" data-set="skip_seconds" data-value="${v}">${v} s</button>`)
           .join("")}</div>
       </div>
-      ${rowSwitch("Fondu enchaîné", "Le titre suivant démarre en douceur", "crossfade", false, null, true)}
-      ${rowSwitch("Volume égal", "Rattrape les différences de volume entre les fichiers", "loudness", false, null, true)}
+      ${rowSeg("Fondu enchaîné", "Le titre suivant démarre en douceur pendant que l'autre s'éteint", "crossfade", [
+        { value: 0, label: "Aucun" },
+        { value: 3, label: "3 s" },
+        { value: 6, label: "6 s" },
+        { value: 10, label: "10 s" },
+      ], s.crossfade)}
+    </div>
+    <h4 style="margin-top:18px">Son</h4>
+    <div class="card">
+      ${rowSwitch("Volume égal", "Rattrape les différences de niveau entre les morceaux, sans jamais saturer", "loudness", s.loudness)}
+      <div class="set-row eq-row">
+        <div class="left"><div class="lab">Égaliseur</div><div class="desc">Couleur du son, appliquée à tous les morceaux</div></div>
+        <div class="set-ctl eq-ctl">${EQ_CHOICES.map(
+          (o) => `<button class="chip${s.eq === o.value ? " on" : ""}" data-set="eq" data-value="${o.value}">${o.label}</button>`
+        ).join("")}</div>
+      </div>
     </div>
   </section>`;
 }
@@ -394,7 +417,7 @@ function sectionBiblio() {
         <div class="set-ctl formats-ctl">${formats}</div>
       </div>
       ${rowSwitch("Actualiser au démarrage", "Vérifie la bibliothèque à chaque ouverture", "refresh_on_start", s.refresh_on_start)}
-      ${rowSwitch("Surveiller les changements", "Les nouveaux fichiers apparaissent tout seuls", "watch", false, null, true)}
+      ${rowSwitch("Ajouter les nouveaux morceaux automatiquement", "Un fichier ajouté, déplacé ou supprimé dans tes dossiers est pris en compte tout seul", "watch", s.watch)}
     </div>
     <h4 style="margin-top:18px">Pochettes en cache</h4>
     <div class="card">
@@ -414,12 +437,14 @@ function sectionSysteme() {
     <div class="card">
       ${rowSwitch("Touches média du clavier", "Les boutons lecture / suivant de ton clavier", "media_keys", s.media_keys)}
       ${rowSwitch("Démarrer avec la session", "Écho s'ouvre à l'allumage de l'ordinateur", "autostart", s.autostart)}
-      ${rowSwitch("Icône dans la barre du système", "Pour retrouver la fenêtre à tout moment", "tray", false, null, true)}
-      ${rowSwitch("Notification à chaque morceau", "Petit bandeau avec le titre en cours", "notify", false, null, true)}
-      ${rowSeg("Quand je ferme la fenêtre", "Ce que fait le bouton de fermeture", "close", [
+      ${rowSwitch("Icône dans la barre du système", "Lecture, suivant, précédent et retour à la fenêtre, depuis la barre", "tray", s.tray)}
+      ${rowSwitch("Notification à chaque morceau", "Un petit bandeau quand le titre change et qu'Écho est en arrière-plan", "notify", s.notify)}
+      ${rowSwitch("Statut Discord", "Affiche « Écoute… » avec le titre et l'artiste sur ton profil Discord", "discord", s.discord)}
+      ${rowSeg("Quand je ferme la fenêtre", s.tray ? "Ce que fait le bouton de fermeture" : "« Réduire » range Écho dans la barre du système (à activer ci-dessus)", "close", [
         { value: "quit", label: "Quitter" },
         { value: "ask", label: "Demander" },
-      ], s.ask_before_quit ? "ask" : "quit")}
+        ...(s.tray ? [{ value: "tray", label: "Réduire" }] : []),
+      ], s.close_to_tray && s.tray ? "tray" : s.ask_before_quit ? "ask" : "quit")}
     </div>
   </section>`;
 }
@@ -449,7 +474,7 @@ function sectionAbout() {
       <div class="about">
         <div class="about-mark">${icon("waveform", 24)}</div>
         <div>
-          <div class="about-name">Écho <span class="badge">1.0</span></div>
+          <div class="about-name">Écho <span class="badge">1.1</span></div>
           <div class="about-desc">Lecteur de musique, pour tes fichiers, sur ton ordinateur.</div>
           <div class="about-facts">
             <span>${icon("dashboard", 13)} Léger sur la mémoire</span>
@@ -600,7 +625,12 @@ function bindSettings(panel) {
     const toggle = e.target.closest("[data-toggle]");
     if (toggle) {
       const field = toggle.dataset.toggle;
-      saveSettings({ [field]: !state.settings[field] });
+      const on = !state.settings[field];
+      // Sans icône dans la barre, la fenêtre ne peut plus s'y ranger.
+      saveSettings(field === "tray" && !on ? { tray: false, close_to_tray: false } : { [field]: on });
+      if (field === "discord" && on && !state.discordReady) {
+        toast("Statut Discord : il manque l'identifiant de l'application Discord (voir le README).");
+      }
       return;
     }
 
@@ -617,10 +647,10 @@ function bindSettings(panel) {
           return;
         }
         saveSettings({ formats: [...list] });
-      } else if (field === "skip_seconds") {
-        saveSettings({ skip_seconds: Number(value) });
+      } else if (field === "skip_seconds" || field === "crossfade") {
+        saveSettings({ [field]: Number(value) });
       } else if (field === "close") {
-        saveSettings({ ask_before_quit: value === "ask" });
+        saveSettings({ ask_before_quit: value === "ask", close_to_tray: value === "tray" });
       } else {
         saveSettings({ [field]: value });
       }
@@ -653,6 +683,7 @@ function bindSettings(panel) {
         toast("Pochettes vidées, relecture des fichiers…");
         const cleared = await invoke("clear_cover_cache");
         coverUrls.clear();
+        frameTried.clear();
         state.cacheBytes = cleared.cache_bytes;
         applySnapshot(cleared.snapshot);
         refreshSettingsPanel();
@@ -756,7 +787,7 @@ function rowHtml(track, index, current, playing) {
       </div>
     </div>
     <div class="row-album">${escapeHtml(track.album || "—")}</div>
-    <div class="row-time">${formatTime(track.duration_ms)}</div>`;
+    <div class="row-time">${track.has_audio === false ? '<span class="badge mute-badge" title="Vidéo sans piste son">muet</span>' : track.duration_ms ? formatTime(track.duration_ms) : "—"}</div>`;
 }
 
 function renderLibrary() {
@@ -838,7 +869,7 @@ function renderQueue() {
       item.dataset.trackId = id;
       item.innerHTML = `<span class="queue-num">${i + 1}</span>
         <span class="queue-name">${escapeHtml(track.title)}${track.artist ? " — " + escapeHtml(track.artist) : ""}</span>
-        <span class="queue-time">${formatTime(track.duration_ms)}</span>`;
+        <span class="queue-time">${track.duration_ms ? formatTime(track.duration_ms) : "—"}</span>`;
       item.addEventListener("click", () => {
         state.queueIndex = i;
         playCurrent();
@@ -963,7 +994,10 @@ function renderMinimal() {
         .map((t, i) => minimalTrackRow(t, i, true))
         .join("")}</div>`;
     right.querySelectorAll("[data-min-id]").forEach((node) => {
-      node.addEventListener("click", () => playFromResults(node.dataset.minId, results.map((t) => t.id)));
+      node.addEventListener("click", (e) => {
+        if (openMenuFromDots(e)) return;
+        playFromResults(node.dataset.minId, results.map((t) => t.id));
+      });
     });
     return;
   }
@@ -982,7 +1016,8 @@ function renderMinimal() {
     <div class="album-tracks">${album.tracks.map((t, i) => minimalTrackRow(t, i, false)).join("")}</div>`;
 
   right.querySelectorAll("[data-min-id]").forEach((node) => {
-    node.addEventListener("click", () => {
+    node.addEventListener("click", (e) => {
+      if (openMenuFromDots(e)) return;
       state.queue = album.tracks.map((t) => t.id);
       state.queueIndex = album.tracks.findIndex((t) => t.id === node.dataset.minId);
       playCurrent();
@@ -1006,6 +1041,17 @@ function renderMinimal() {
   setPeek(el("peek-right"), next, album.key);
 }
 
+/// Le bouton « … » d'une ligne ouvre le menu du morceau au lieu de le lire.
+function openMenuFromDots(e) {
+  const dots = e.target.closest("[data-menu]");
+  if (!dots) return false;
+  e.stopPropagation();
+  const track = trackById(dots.dataset.menu);
+  const rect = dots.getBoundingClientRect();
+  if (track) openTrackMenu(track, rect.left - 180, rect.bottom + 4);
+  return true;
+}
+
 function minimalTrackRow(track, index, showAlbum) {
   const playing = isPlaying();
   const current = track.id === currentId();
@@ -1013,8 +1059,8 @@ function minimalTrackRow(track, index, showAlbum) {
   return `<button class="trk${current ? " is-current" : ""}" data-min-id="${escapeHtml(track.id)}">
     ${left}
     <span class="trk-t">${escapeHtml(track.title)}${showAlbum && track.album ? ` <span class="hint">${escapeHtml(track.album)}</span>` : ""}</span>
-    <span class="trk-d">${formatTime(track.duration_ms)}</span>
-    <span class="trk-m">${icon("more", 15)}</span>
+    <span class="trk-d">${track.has_audio === false ? '<span class="badge mute-badge">muet</span>' : track.duration_ms ? formatTime(track.duration_ms) : "—"}</span>
+    <span class="trk-m" data-menu="${escapeHtml(track.id)}" role="button" aria-label="Plus d'actions" title="Plus d'actions">${icon("more", 15)}</span>
   </button>`;
 }
 
@@ -1036,11 +1082,41 @@ function setPeek(node, album, currentKey) {
    Lecture
    ============================================================ */
 
-const audio = el("audio");
+/// Le lecteur actif. Pendant un fondu enchaîné, l'autre lecteur finit de s'éteindre.
+let audio = Sound.element;
 
 /// Sous Linux, le lecteur audio de WebKitGTK n'accepte pas asset:// : on lui donne
 /// l'adresse file:// du morceau. Ailleurs (WebView2), le protocole d'asset fonctionne.
 const LINUX_WEBKIT = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent) && !window.chrome;
+
+// Sous Windows, les fichiers viennent d'une autre origine (asset) : le traitement du son
+// et la capture d'images de vidéo demandent le CORS, que le protocole d'asset accorde.
+if (!LINUX_WEBKIT) Sound.players.forEach((p) => (p.crossOrigin = "anonymous"));
+
+/// Durée inconnue des tags (fichier sans en-tête complet) : on garde celle du lecteur.
+function learnDuration(media) {
+  const track = currentTrack();
+  if (!track || track.duration_ms > 0 || !isFinite(media.duration) || media.duration <= 0) return;
+  track.duration_ms = Math.round(media.duration * 1000);
+  invoke("set_duration", { id: track.id, durationMs: track.duration_ms }).catch(() => {});
+  libraryVersion += 1;
+  renderLibrary();
+  renderQueue();
+}
+
+function startPlayback() {
+  Sound.resume();
+  audio.play().catch(() => {});
+}
+
+/// Notification du système pour un nouveau morceau, quand Écho n'est pas au premier plan.
+function notifyTrack(track) {
+  if (!state.settings.notify || document.hasFocus()) return;
+  invoke("notify_track", { title: track.title, body: track.artist || "Écho" }).catch(() => {});
+}
+
+/// Morceaux muets sautés d'affilée : au-delà de la taille de la file, on s'arrête.
+let silentSkips = 0;
 
 function mediaSrc(path) {
   if (!LINUX_WEBKIT) return convertFileSrc(path);
@@ -1078,8 +1154,24 @@ function buildQueueFromLibrary(startId) {
 function playCurrent({ autoplay = true } = {}) {
   const track = currentTrack();
   if (!track) return;
+  if (track.has_audio === false) {
+    // Vidéo téléchargée sans son : rien à écouter, on passe à la suivante.
+    toast(`« ${track.title} » n'a pas de piste son (vidéo seule).`);
+    if (autoplay && silentSkips < state.queue.length) {
+      silentSkips += 1;
+      setTimeout(() => step(1, true), 0);
+    }
+    return;
+  }
+  silentSkips = 0;
+  Sound.cancelFade();
+  audio = Sound.element;
   audio.src = mediaSrc(track.path);
-  if (autoplay) audio.play().catch(() => {});
+  Sound.beginTrack(track.id);
+  if (autoplay) {
+    startPlayback();
+    notifyTrack(track);
+  }
   pushNowPlaying(track);
   pushPlayback(true);
   renderAll();
@@ -1102,8 +1194,31 @@ function togglePlay() {
     if (state.listOrder.length) playFromList(0);
     return;
   }
-  if (audio.paused) audio.play().catch(() => {});
+  if (audio.paused) startPlayback();
   else audio.pause();
+}
+
+/// Fondu enchaîné : quelques secondes avant la fin, le morceau suivant démarre
+/// sur l'autre lecteur pendant que celui-ci s'éteint.
+function maybeCrossfade() {
+  const seconds = state.settings.crossfade || 0;
+  if (!seconds || Sound.fading || audio.paused || state.repeat === "one") return;
+  const duration = audio.duration;
+  if (!isFinite(duration) || duration < seconds * 3 || duration - audio.currentTime > seconds) return;
+  const i = EchoLogic.nextIndex(playContext(), true);
+  if (i < 0 || i === state.queueIndex) return;
+  const next = trackById(state.queue[i]);
+  if (!next || next.has_audio === false) return;
+  if (state.shuffle) shuffleBag.history.push(state.queueIndex);
+  state.queueIndex = i;
+  Sound.other.src = mediaSrc(next.path);
+  audio = Sound.crossfade(seconds);
+  Sound.beginTrack(next.id);
+  startPlayback();
+  notifyTrack(next);
+  pushNowPlaying(next);
+  pushPlayback(true);
+  renderAll();
 }
 
 /// Mémoire de l'aléatoire : repart de zéro dès que la file change.
@@ -1129,7 +1244,7 @@ function step(delta, auto = false) {
     if (i === state.queueIndex) {
       // « Un titre » : on rejoue sans recharger le fichier.
       audio.currentTime = 0;
-      audio.play().catch(() => {});
+      startPlayback();
       return;
     }
     if (state.shuffle) shuffleBag.history.push(state.queueIndex);
@@ -1309,7 +1424,7 @@ async function bindMediaKeys() {
     }
     switch (action) {
       case "play":
-        media.play().catch(() => {});
+        startPlayback();
         break;
       case "pause":
         media.pause();
@@ -1432,6 +1547,7 @@ function switchView(view) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("is-active", v.id === `view-${view}`));
   syncSettingsNav();
   if (view === "library") renderLibrary();
+  if (view === "playlists") renderPlaylists();
 }
 
 /* ---------------- surfaces superposées ---------------- */
@@ -1449,6 +1565,7 @@ function returnHome(node) {
   if (node.id === "settings-panel") el("settings-host-normal").appendChild(node);
   else if (node.id === "library-panel") el("view-library").appendChild(node);
   else if (node.id === "queue") el("view-listen").appendChild(node);
+  else if (node.id === "playlists-panel") el("view-playlists").appendChild(node);
   else node.remove();
 }
 
@@ -1486,22 +1603,33 @@ function toast(text) {
   node.textContent = text;
   node.hidden = false;
   clearTimeout(node._timer);
-  node._timer = setTimeout(() => (node.hidden = true), 3200);
+  // Le temps de lire : un message long reste affiché plus longtemps.
+  node._timer = setTimeout(() => (node.hidden = true), Math.max(3200, text.length * 55));
 }
 
 /// Annule la boîte de dialogue ouverte (Échap) : renvoie « non ».
 let modalCancel = null;
 
-function ask(title, text, options) {
+function ask(title, text, options, { input = null } = {}) {
   return new Promise((resolve) => {
     el("modal-title").textContent = title;
     el("modal-text").textContent = text;
+    const field = el("modal-input");
+    field.hidden = input === null;
+    field.value = input ?? "";
+    field.onkeydown = (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        finish(true);
+      }
+    };
     const actions = el("modal-actions");
     actions.replaceChildren();
     const finish = (value) => {
       el("modal").hidden = true;
       modalCancel = null;
-      resolve(value);
+      // Avec un champ : la valeur saisie si l'on valide, null sinon.
+      resolve(input === null ? value : value ? field.value.trim() : null);
     };
     options.forEach((option) => {
       const btn = document.createElement("button");
@@ -1512,6 +1640,10 @@ function ask(title, text, options) {
     });
     modalCancel = () => finish(false);
     el("modal").hidden = false;
+    if (input !== null) {
+      field.focus();
+      field.select();
+    }
   });
 }
 
@@ -1626,16 +1758,428 @@ function bindEditor() {
     }
   });
 
-  // Clic droit sur n'importe quel morceau (liste, file, vidéos, vue minimaliste) : on le modifie.
+  // Clic droit sur n'importe quel morceau (liste, file, playlist, vue minimaliste) : son menu.
   document.addEventListener("contextmenu", (e) => {
     const node = e.target.closest("[data-track-id], [data-min-id]");
     if (!node) return;
     const track = trackById(node.dataset.trackId || node.dataset.minId);
     if (!track) return;
     e.preventDefault();
-    openEditor(track);
+    openTrackMenu(track, e.clientX, e.clientY, { playlist: node.dataset.playlist || null });
   });
 }
+
+/* ---------------- menu d'un morceau ---------------- */
+
+function closeTrackMenu() {
+  const menu = el("ctx-menu");
+  if (menu) menu.hidden = true;
+}
+
+/// Insère un morceau dans la file : juste après celui en cours, ou à la fin.
+function enqueue(track, next) {
+  if (!state.queue.length) {
+    state.queue = [track.id];
+    state.queueIndex = 0;
+    playCurrent();
+    return;
+  }
+  const queue = [...state.queue];
+  if (next) queue.splice(state.queueIndex + 1, 0, track.id);
+  else queue.push(track.id);
+  state.queue = queue;
+  renderQueue();
+  renderCarousel();
+  toast(next ? "Joué juste après." : "Ajouté à la file.");
+}
+
+function openTrackMenu(track, x, y, { playlist = null } = {}) {
+  const menu = el("ctx-menu");
+  const item = (label, iconName, action, extra = "") =>
+    `<button role="menuitem" class="ctx-item${extra}" data-act="${action}">${icon(iconName, 15)}<span>${label}</span></button>`;
+
+  const main = () => {
+    menu.innerHTML = `
+      <div class="ctx-head"><div class="ctx-title">${escapeHtml(track.title)}</div><div class="ctx-sub">${escapeHtml(track.artist || "—")}</div></div>
+      ${item("Lire maintenant", "play", "play")}
+      ${item("Lire ensuite", "next", "next")}
+      ${item("Ajouter à la file", "queue", "queue")}
+      <div class="ctx-sep"></div>
+      ${item("Ajouter à une playlist", "playlist", "playlists", " has-sub")}
+      ${playlist ? item("Retirer de cette playlist", "close", "remove") : ""}
+      <div class="ctx-sep"></div>
+      ${item("Modifier le morceau…", "sliders", "edit")}`;
+  };
+  const lists = () => {
+    menu.innerHTML = `
+      <button class="ctx-item ctx-back" data-act="back">${icon("arrow_left", 15)}<span>Ajouter à une playlist</span></button>
+      <div class="ctx-sep"></div>
+      ${state.playlists
+        .map((p) => {
+          const has = p.tracks.includes(track.id);
+          return `<button role="menuitemcheckbox" aria-checked="${has}" class="ctx-item" data-act="toggle" data-pl="${escapeHtml(p.id)}">${icon(has ? "check" : "playlist", 15)}<span>${escapeHtml(p.name)}</span></button>`;
+        })
+        .join("")}
+      ${item("Nouvelle playlist…", "plus", "new")}`;
+  };
+  main();
+
+  menu.onclick = async (e) => {
+    const btn = e.target.closest("[data-act]");
+    if (!btn) return;
+    e.stopPropagation();
+    switch (btn.dataset.act) {
+      case "play":
+        closeTrackMenu();
+        buildQueueFromLibrary(track.id);
+        playCurrent();
+        break;
+      case "next":
+        closeTrackMenu();
+        enqueue(track, true);
+        break;
+      case "queue":
+        closeTrackMenu();
+        enqueue(track, false);
+        break;
+      case "playlists":
+        lists();
+        break;
+      case "back":
+        main();
+        break;
+      case "toggle": {
+        const list = state.playlists.find((p) => p.id === btn.dataset.pl);
+        if (!list) return;
+        const had = list.tracks.includes(track.id);
+        list.tracks = had ? list.tracks.filter((id) => id !== track.id) : [...list.tracks, track.id];
+        await savePlaylists();
+        toast(had ? `Retiré de « ${list.name} ».` : `Ajouté à « ${list.name} ».`);
+        lists();
+        break;
+      }
+      case "new": {
+        closeTrackMenu();
+        const created = await createPlaylist([track.id]);
+        if (created) toast(`Ajouté à « ${created.name} ».`);
+        break;
+      }
+      case "remove": {
+        closeTrackMenu();
+        const list = state.playlists.find((p) => p.id === playlist);
+        if (!list) return;
+        list.tracks = list.tracks.filter((id) => id !== track.id);
+        await savePlaylists();
+        break;
+      }
+      case "edit":
+        closeTrackMenu();
+        openEditor(track);
+        break;
+    }
+  };
+
+  menu.hidden = false;
+  // Le menu reste dans la fenêtre, même ouvert près d'un bord.
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(x, innerWidth - rect.width - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, innerHeight - rect.height - 8))}px`;
+  playAnim(menu, "menu-in");
+  const first = menu.querySelector(".ctx-item");
+  if (first) first.focus({ preventScroll: true });
+}
+
+/* ---------------- playlists ---------------- */
+
+function newPlaylistId() {
+  return `pl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+async function savePlaylists() {
+  try {
+    state.playlists = await invoke("save_playlists", { playlists: state.playlists });
+  } catch (err) {
+    toast(`Playlist non enregistrée : ${err}`);
+  }
+  renderPlaylists();
+}
+
+async function createPlaylist(tracks = []) {
+  const name = await ask("Nouvelle playlist", "Donne-lui un nom.", [
+    { label: "Annuler", value: false },
+    { label: "Créer", value: true, primary: true },
+  ], { input: `Playlist ${state.playlists.length + 1}` });
+  if (!name) return null;
+  const list = { id: newPlaylistId(), name, tracks };
+  state.playlists = [...state.playlists, list];
+  state.playlistOpen = list.id;
+  await savePlaylists();
+  return list;
+}
+
+function playlistTracks(list) {
+  return list.tracks.map(trackById).filter(Boolean);
+}
+
+function playPlaylist(list, { shuffle = false, startId = null } = {}) {
+  const tracks = playlistTracks(list).filter((t) => t.has_audio !== false);
+  if (!tracks.length) {
+    toast("Cette playlist est vide.");
+    return;
+  }
+  state.queue = tracks.map((t) => t.id);
+  state.shuffle = shuffle || state.shuffle;
+  state.queueIndex = startId ? Math.max(0, state.queue.indexOf(startId)) : shuffle ? Math.floor(Math.random() * tracks.length) : 0;
+  refreshToggles();
+  playCurrent();
+}
+
+function renderPlaylists() {
+  const listBox = el("pl-list");
+  const detail = el("pl-detail");
+  if (!listBox || !detail) return;
+  const lists = state.playlists;
+  if (!lists.some((p) => p.id === state.playlistOpen)) state.playlistOpen = lists.length ? lists[0].id : null;
+
+  listBox.innerHTML = lists.length
+    ? lists
+        .map((p) => {
+          const count = playlistTracks(p).length;
+          return `<button role="listitem" class="pl-item${p.id === state.playlistOpen ? " on" : ""}" data-open="${escapeHtml(p.id)}">
+            <span class="pl-mark">${icon("playlist", 16)}</span>
+            <span class="pl-name">${escapeHtml(p.name)}</span>
+            <span class="pl-count">${count}</span>
+          </button>`;
+        })
+        .join("")
+    : `<div class="hint pl-empty">Aucune playlist pour l'instant.</div>`;
+
+  const open = lists.find((p) => p.id === state.playlistOpen);
+  if (!open) {
+    detail.innerHTML = `<div class="pl-intro">
+      <div class="pl-intro-mark">${icon("playlist", 28)}</div>
+      <div class="album-title">Tes playlists</div>
+      <div class="album-meta">Crée une playlist, puis fais un clic droit sur un morceau → « Ajouter à une playlist ».</div>
+    </div>`;
+    return;
+  }
+  const tracks = playlistTracks(open);
+  const total = tracks.reduce((sum, t) => sum + (t.duration_ms || 0), 0);
+  detail.innerHTML = `
+    <div class="pl-head">
+      <div class="pl-cover" id="pl-cover"></div>
+      <div class="pl-info">
+        <div class="listen-kicker">Playlist</div>
+        <div class="pl-title">${escapeHtml(open.name)}</div>
+        <div class="album-meta">${tracks.length} titre${tracks.length > 1 ? "s" : ""}${total ? " · " + formatTime(total) : ""}</div>
+        <div class="listen-actions">
+          <button class="play-big" data-pl-act="play" aria-label="Lire la playlist" title="Lire">${icon("play", 20)}</button>
+          <button class="ghost-btn" data-pl-act="shuffle">${icon("shuffle", 15)}Aléatoire</button>
+          <button class="ghost-btn" data-pl-act="rename">${icon("sliders", 15)}Renommer</button>
+          <button class="ghost-btn danger" data-pl-act="delete">${icon("close", 15)}Supprimer</button>
+        </div>
+      </div>
+    </div>
+    <div class="pl-tracks">${
+      tracks.length
+        ? tracks
+            .map(
+              (t, i) => `<div class="pl-row${t.id === currentId() ? " is-current" : ""}" data-track-id="${escapeHtml(t.id)}" data-playlist="${escapeHtml(open.id)}">
+                <span class="trk-n">${t.id === currentId() && isPlaying() ? `<span class="playing">${ICONS.waveform}</span>` : i + 1}</span>
+                <div class="thumb"></div>
+                <span class="pl-row-text"><span class="row-title">${escapeHtml(t.title)}</span><span class="row-artist">${escapeHtml(t.artist || "—")}</span></span>
+                <span class="row-time">${t.duration_ms ? formatTime(t.duration_ms) : "—"}</span>
+                <button class="icon-btn pl-remove" data-remove="${escapeHtml(t.id)}" aria-label="Retirer de la playlist" title="Retirer">${icon("close", 14)}</button>
+              </div>`
+            )
+            .join("")
+        : `<div class="hint pl-empty">Playlist vide : clic droit sur un morceau de la bibliothèque → « Ajouter à une playlist ».</div>`
+    }</div>`;
+  fillCover(el("pl-cover"), tracks.find((t) => t.cover) || tracks[0] || null);
+  detail.querySelectorAll(".pl-row").forEach((row, i) => fillCover(row.querySelector(".thumb"), tracks[i]));
+}
+
+function bindPlaylists() {
+  el("btn-new-playlist").addEventListener("click", () => createPlaylist());
+  el("pl-list").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-open]");
+    if (!btn) return;
+    state.playlistOpen = btn.dataset.open;
+    renderPlaylists();
+  });
+  el("pl-detail").addEventListener("click", async (e) => {
+    const open = state.playlists.find((p) => p.id === state.playlistOpen);
+    if (!open) return;
+    const remove = e.target.closest("[data-remove]");
+    if (remove) {
+      e.stopPropagation();
+      open.tracks = open.tracks.filter((id) => id !== remove.dataset.remove);
+      await savePlaylists();
+      return;
+    }
+    const action = e.target.closest("[data-pl-act]");
+    if (action) {
+      switch (action.dataset.plAct) {
+        case "play":
+          playPlaylist(open);
+          break;
+        case "shuffle":
+          playPlaylist(open, { shuffle: true });
+          break;
+        case "rename": {
+          const name = await ask("Renommer la playlist", "Nouveau nom :", [
+            { label: "Annuler", value: false },
+            { label: "Renommer", value: true, primary: true },
+          ], { input: open.name });
+          if (name) {
+            open.name = name;
+            await savePlaylists();
+          }
+          break;
+        }
+        case "delete": {
+          const ok = await ask(`Supprimer « ${open.name} » ?`, "Les morceaux restent dans ta bibliothèque.", [
+            { label: "Annuler", value: false },
+            { label: "Supprimer", value: true, primary: true },
+          ]);
+          if (ok) {
+            state.playlists = state.playlists.filter((p) => p.id !== open.id);
+            await savePlaylists();
+          }
+          break;
+        }
+      }
+      return;
+    }
+    const row = e.target.closest(".pl-row");
+    if (row) playPlaylist(open, { startId: row.dataset.trackId });
+  });
+}
+
+/* ---------------- pochettes tirées des vidéos ---------------- */
+
+/// Vidéos déjà essayées pendant cette session (réussite ou non).
+const frameTried = new Set();
+let framesRunning = false;
+let framesTimer = null;
+
+function scheduleFrames() {
+  clearTimeout(framesTimer);
+  framesTimer = setTimeout(extractFrames, 1500);
+}
+
+/// Image carrée prise au centre de la vidéo ; « dark » si elle est presque noire.
+function squareFrame(video) {
+  const w = video.videoWidth;
+  const h = video.videoHeight;
+  const side = Math.min(w, h);
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 480;
+  const g = canvas.getContext("2d");
+  g.drawImage(video, (w - side) / 2, (h - side) / 2, side, side, 0, 0, 480, 480);
+  const probe = document.createElement("canvas");
+  probe.width = probe.height = 12;
+  const pg = probe.getContext("2d");
+  pg.drawImage(canvas, 0, 0, 12, 12);
+  const px = pg.getImageData(0, 0, 12, 12).data;
+  let light = 0;
+  for (let i = 0; i < px.length; i += 4) light += px[i] + px[i + 1] + px[i + 2];
+  const dark = light / (px.length / 4) / 3 < 18;
+  const data = atob(canvas.toDataURL("image/jpeg", 0.86).split(",")[1]);
+  const bytes = new Array(data.length);
+  for (let i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i);
+  return { bytes, dark };
+}
+
+/// Ouvre la vidéo sans son, va au tiers, et capture une image (évite le noir du début).
+/// Résultat : { bytes, missing } — `missing` : le fichier a bien une image (le cœur l'a
+/// vu), mais le système ne sait pas la décoder (AV1 sans greffon, par exemple).
+/// Rien n'est alors noté : on réessaiera au prochain lancement.
+function grabFrame(track) {
+  return new Promise((resolve) => {
+    const video = document.createElement("video");
+    video.className = "frame-grabber";
+    video.muted = true;
+    video.preload = "auto";
+    if (!LINUX_WEBKIT) video.crossOrigin = "anonymous";
+    const points = [0.33, 0.5, 0.18, 0.7];
+    let attempt = 0;
+    let best = null;
+    let done = false;
+    const finish = (bytes, missing = false) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+      video.remove();
+      resolve({ bytes, missing });
+    };
+    const timer = setTimeout(() => finish(best), 20000);
+    video.addEventListener("loadedmetadata", () => {
+      // Image annoncée de 0×0 : il manque le décodeur de ce format vidéo.
+      if (!video.videoWidth) return finish(null, true);
+      if (!isFinite(video.duration) || video.duration <= 0) return finish(null);
+      video.currentTime = video.duration * points[0];
+    });
+    video.addEventListener("seeked", () => video.play().catch(() => finish(best)));
+    video.addEventListener("playing", () =>
+      setTimeout(() => {
+        if (done) return;
+        let shot;
+        try {
+          shot = squareFrame(video);
+        } catch {
+          return finish(null);
+        }
+        best = best || shot.bytes;
+        if (!shot.dark) return finish(shot.bytes);
+        attempt += 1;
+        if (attempt >= points.length) return finish(best);
+        video.pause();
+        video.currentTime = video.duration * points[attempt];
+      }, 450)
+    );
+    video.addEventListener("error", () => finish(null, true));
+    document.body.appendChild(video);
+    video.src = mediaSrc(track.path);
+  });
+}
+
+/// Une vidéo à la fois, en arrière-plan : chaque image trouvée devient une pochette.
+async function extractFrames() {
+  if (framesRunning || !state.settings || !state.settings.show_covers) return;
+  framesRunning = true;
+  let missing = 0;
+  try {
+    for (;;) {
+      const track = state.tracks.find((t) => t.video && !t.cover && !t.no_frame && !frameTried.has(t.id));
+      if (!track) break;
+      frameTried.add(track.id);
+      const result = await grabFrame(track);
+      if (result.bytes) {
+        const updated = await invoke("save_frame", { id: track.id, jpeg: result.bytes }).catch(() => null);
+        if (updated) replaceTrack(updated);
+      } else if (result.missing) {
+        missing += 1;
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  } finally {
+    framesRunning = false;
+  }
+  if (missing && !framesHintShown) {
+    framesHintShown = true;
+    toast(
+      `${missing} vidéo${missing > 1 ? "s sont" : " est"} dans un format d'image (souvent AV1) que ton système ne décode pas : ` +
+        "installe le greffon dav1d de GStreamer pour avoir leur pochette. Le son, lui, marche."
+    );
+  }
+}
+
+/// Le conseil « décodeur manquant » n'est donné qu'une fois par lancement.
+let framesHintShown = false;
 
 /* ---------------- dossiers ---------------- */
 
@@ -1671,6 +2215,8 @@ function applySnapshot(snapshot) {
   EchoLogic.syncFolders(state.settings, snapshot);
   libraryVersion += 1;
   renderAll();
+  renderPlaylists();
+  scheduleFrames();
 }
 
 /// Un seul morceau a changé (modification) : inutile de recharger toute la bibliothèque.
@@ -1682,12 +2228,14 @@ function replaceTrack(track) {
   trackIndex.set(track.id, track);
   libraryVersion += 1;
   renderAll();
+  renderPlaylists();
 }
 
 function applyBootstrap(boot) {
   state.settings = boot.settings;
   state.formats = boot.formats || [];
   state.cacheBytes = boot.cache_bytes || 0;
+  state.discordReady = !!boot.discord_ready;
   // Aléatoire et répétition par défaut s'appliquent à chaque démarrage, reprise ou non.
   state.shuffle = !!boot.settings.shuffle_default;
   state.repeat = boot.settings.repeat_default || "off";
@@ -1714,6 +2262,14 @@ function prepareResume() {
 
 function bindOnce() {
   bindEditor();
+  bindPlaylists();
+  // Un clic ailleurs, un défilement ou une autre fenêtre ferment le menu d'un morceau.
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#ctx-menu")) closeTrackMenu();
+  });
+  document.addEventListener("scroll", closeTrackMenu, true);
+  window.addEventListener("blur", closeTrackMenu);
+  window.addEventListener("resize", closeTrackMenu);
   document.querySelectorAll(".nav-item").forEach((btn) => {
     btn.addEventListener("click", () => switchView(btn.dataset.view));
   });
@@ -1764,7 +2320,7 @@ function bindOnce() {
   el("btn-repeat").addEventListener("click", cycleRepeat);
 
   const toggleMute = () => {
-    audio.muted = !audio.muted;
+    Sound.setMuted(!Sound.muted);
     refreshToggles();
   };
   el("btn-mute").addEventListener("click", toggleMute);
@@ -1774,7 +2330,7 @@ function bindOnce() {
   el("volume").addEventListener("input", (e) => {
     const v = Number(e.target.value);
     e.target.style.setProperty("--p", `${v}%`);
-    audio.volume = v / 100;
+    Sound.setVolume(v / 100);
     saveSettings({ volume: v }, { refresh: false });
   });
 
@@ -1808,6 +2364,12 @@ function bindOnce() {
     el("search").focus();
   });
   el("dock-library").addEventListener("click", () => openSheet(el("library-panel"), "Bibliothèque"));
+  const openPlaylists = () => {
+    openSheet(el("playlists-panel"), "Playlists");
+    renderPlaylists();
+  };
+  el("dock-playlists").addEventListener("click", openPlaylists);
+  el("min-playlists").addEventListener("click", openPlaylists);
   el("dock-settings").addEventListener("click", () => openSheet(el("settings-panel"), "Réglages", { flush: true }));
   el("comp-settings").addEventListener("click", () => openSheet(el("settings-panel"), "Réglages", { flush: true }));
   el("comp-queue").addEventListener("click", () => {
@@ -1837,28 +2399,34 @@ function bindOnce() {
   // Nombre de fichiers d'affilée qui n'ont pas pu être lus : au-delà, on s'arrête.
   let errorStreak = 0;
 
-  [audio].forEach((media) => {
+  Sound.players.forEach((media) => {
+    // Seul le lecteur actif compte : celui qui s'éteint dans un fondu est ignoré.
+    const on = (name, handler) => media.addEventListener(name, (e) => media === audio && handler(e));
     // WebKit envoie timeupdate quatre fois par seconde : l'affichage ne change qu'à
     // chaque seconde, inutile de redessiner entre-temps.
     let shownSecond = -1;
-    media.addEventListener("timeupdate", () => {
+    on("timeupdate", () => {
+      maybeCrossfade();
       const second = Math.floor(media.currentTime);
       if (second === shownSecond) return;
       shownSecond = second;
       updateProgress();
     });
-    media.addEventListener("loadedmetadata", updateProgress);
-    media.addEventListener("playing", () => {
+    on("loadedmetadata", () => {
+      updateProgress();
+      learnDuration(media);
+    });
+    on("playing", () => {
       errorStreak = 0;
     });
-    media.addEventListener("play", () => {
+    on("play", () => {
       updateProgress();
       pushPlayback(true);
       renderCarousel();
       renderMinimal();
       renderLibrary();
     });
-    media.addEventListener("pause", () => {
+    on("pause", () => {
       updateProgress();
       pushPlayback(true);
       saveProgress(true);
@@ -1866,8 +2434,8 @@ function bindOnce() {
       renderMinimal();
       renderLibrary();
     });
-    media.addEventListener("ended", () => step(1, true));
-    media.addEventListener("error", () => {
+    on("ended", () => step(1, true));
+    on("error", () => {
       if (!currentTrack()) return;
       errorStreak += 1;
       if (errorStreak >= 3) {
@@ -1882,6 +2450,15 @@ function bindOnce() {
   });
 
   document.addEventListener("keydown", (e) => {
+    if (!el("ctx-menu").hidden) {
+      if (e.code === "Escape") {
+        e.preventDefault();
+        closeTrackMenu();
+      }
+      return;
+    }
+    // Fenêtre « Modifier » ouverte : le clavier sert à ses champs et boutons, pas au lecteur.
+    if (!el("edit-dialog").hidden && e.code !== "Escape") return;
     if (e.code === "Escape" && !el("edit-dialog").hidden) {
       closeEditor();
       return;
@@ -1924,10 +2501,10 @@ function refreshToggles() {
   el("btn-repeat").classList.toggle("is-on", repeat !== "off");
   el("btn-repeat").classList.toggle("is-one", repeat === "one");
   el("btn-repeat").setAttribute("aria-pressed", String(repeat !== "off"));
-  el("btn-mute").classList.toggle("is-muted", audio.muted);
-  el("btn-mute").setAttribute("aria-pressed", String(audio.muted));
-  el("dock-volume").classList.toggle("on", audio.muted);
-  el("min-volume").classList.toggle("on", audio.muted);
+  el("btn-mute").classList.toggle("is-muted", Sound.muted);
+  el("btn-mute").setAttribute("aria-pressed", String(Sound.muted));
+  el("dock-volume").classList.toggle("on", Sound.muted);
+  el("min-volume").classList.toggle("on", Sound.muted);
 }
 
 /// Bibliothèque arrivée avant la fin du démarrage : appliquée juste après.
@@ -1978,6 +2555,8 @@ async function start() {
   el("dock-search").innerHTML = icon("search", 19);
   el("dock-library").innerHTML = icon("library", 19);
   el("dock-settings").innerHTML = icon("settings", 19);
+  el("dock-playlists").innerHTML = icon("playlist", 19);
+  el("min-playlists").innerHTML = icon("playlist", 18);
   el("dock-volume").innerHTML = icon("volume_high", 19);
   el("min-theme").innerHTML = icon("moon", 18);
   el("min-settings").innerHTML = icon("settings", 18);
@@ -1989,6 +2568,7 @@ async function start() {
   // Les écouteurs d'abord : un scan qui finit pendant le démarrage ne doit pas être perdu.
   await Promise.all([bindMediaKeys(), bindBackendEvents()]).catch(() => {});
 
+  state.playlists = await invoke("get_playlists").catch(() => []);
   const boot = await invoke("bootstrap");
   applyBootstrap(boot);
   if (pendingLibrary) {

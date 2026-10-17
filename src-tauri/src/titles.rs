@@ -1,0 +1,245 @@
+//! Devine l'artiste et un titre propre à partir d'un nom de fichier ou d'un titre
+//! de vidéo : « 21 Savage - a lot (Official Video) ft. J. Cole » donne
+//! l'artiste « 21 Savage » et le titre « a lot (feat. J. Cole) ».
+
+/// Version des règles de lecture des fichiers (titres, pistes) : quand elle change,
+/// les morceaux déjà connus sont relus une fois.
+pub const VERSION: u32 = 2;
+
+/// Mots qui signalent un ajout de la plateforme vidéo, pas une partie du titre.
+const NOISE: &[&str] = &[
+    "official", "officiel", "officielle", "video", "vidéo", "clip", "audio", "lyric", "lyrics", "paroles",
+    "visualizer", "visualiser", "visual", "hd", "hq", "4k", "explicit", "closed captioned", "exclu",
+    "mv",
+];
+
+/// Résultat : l'artiste deviné (vide si rien de sûr) et le titre nettoyé.
+pub fn guess(raw: &str) -> (String, String) {
+    let text = normalize(raw);
+    let text = strip_noise(&text);
+    let (artist, title) = split_artist(&text);
+    let (title, mut feats) = take_feat(&title);
+    let (artist, artist_feat) = take_feat(&artist);
+    feats.extend(artist_feat);
+
+    let mut title = tidy(&title);
+    let artist = tidy(&artist.replace('@', ""));
+    if !feats.is_empty() {
+        title = format!("{title} (feat. {})", feats.join(", "));
+    }
+    if title.is_empty() {
+        return (artist, tidy(&text));
+    }
+    (artist, title)
+}
+
+/// Caractères « pleine largeur » et autres variantes que les sites de vidéo
+/// mettent à la place de ceux interdits dans les noms de fichiers.
+fn normalize(raw: &str) -> String {
+    let mut s: String = raw
+        .chars()
+        .map(|c| match c {
+            '｜' => '|',
+            '⧸' | '／' => '/',
+            '：' => ':',
+            '＂' => '"',
+            '＊' => '*',
+            '？' => '?',
+            '–' | '—' => '-',
+            _ => c,
+        })
+        .collect();
+    // Suffixe de format de yt-dlp : « .f616 », « .f140 ».
+    if let Some(pos) = s.rfind(".f") {
+        if s[pos + 2..].chars().all(|c| c.is_ascii_digit()) && s.len() > pos + 2 {
+            s.truncate(pos);
+        }
+    }
+    s
+}
+
+fn is_noise(inner: &str) -> bool {
+    let lower = inner.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.is_empty() {
+        return false;
+    }
+    // Groupe entièrement fait de mots « bruit » : (Official Music Video), [HD]…
+    // Un groupe qui en contient seulement quelques-uns est gardé : (Live), (Remix)…
+    let noisy = words
+        .iter()
+        .filter(|w| {
+            NOISE.contains(w)
+                || matches!(**w, "music" | "the" | "version" | "dirty" | "clean" | "uncut" | "closed" | "captioned" | "full")
+        })
+        .count();
+    let has_strong = words.iter().any(|w| {
+        matches!(
+            *w,
+            "official" | "officiel" | "officielle" | "video" | "vidéo" | "clip" | "audio" | "lyrics" | "lyric"
+                | "visualizer" | "hd" | "hq" | "4k" | "exclu" | "mv" | "explicit"
+        )
+    }) || lower.contains("closed captioned");
+    has_strong && noisy * 2 >= words.len()
+}
+
+/// Retire les groupes (…) et […] de bruit, les hashtags et la partie « | chaîne ».
+fn strip_noise(text: &str) -> String {
+    // « Titre | GRM Daily » : ce qui suit la barre est le nom de la chaîne.
+    let text = match text.find(" | ") {
+        Some(pos) if pos > 0 => &text[..pos],
+        _ => text,
+    };
+    let mut out = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '(' || c == '[' {
+            let close = if c == '(' { ')' } else { ']' };
+            if let Some(len) = chars[i + 1..].iter().position(|x| *x == close) {
+                let inner: String = chars[i + 1..i + 1 + len].iter().collect();
+                // « (Explicit Version/Closed Captioned) » : chaque partie est du bruit.
+                let all_noise = inner.split('/').all(|part| is_noise(part) || part.trim().is_empty());
+                if is_noise(&inner) || all_noise {
+                    i += len + 2;
+                    continue;
+                }
+            }
+        }
+        if c == '#' {
+            // Hashtag de chaîne (#PlanèteRap) : retiré. Un numéro (#5) reste.
+            let word_len = chars[i + 1..].iter().take_while(|x| x.is_alphanumeric()).count();
+            let word: String = chars[i + 1..i + 1 + word_len].iter().collect();
+            if word_len > 0 && !word.chars().all(|x| x.is_ascii_digit()) {
+                i += word_len + 1;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    // « … (Music Video) HD » : mention de qualité laissée seule en fin de titre.
+    let mut out = tidy(&out);
+    for tail in [" HD", " HQ", " 4K"] {
+        if out.to_uppercase().ends_with(tail) {
+            out.truncate(out.len() - tail.len());
+        }
+    }
+    tidy(&out)
+}
+
+/// « Artiste - Titre » : coupe au premier tiret entouré d'espaces.
+/// À défaut, « Artiste "Titre" (…) » : le titre est entre guillemets.
+fn split_artist(text: &str) -> (String, String) {
+    if let Some(pos) = text.find(" - ").filter(|p| *p > 0) {
+        return (text[..pos].to_string(), text[pos + 3..].to_string());
+    }
+    let quotes = ['"', '“', '”', '«', '»'];
+    if let Some(open) = text.find(quotes).filter(|p| *p > 0) {
+        let after = &text[open + 1..];
+        if let Some(len) = after.find(quotes) {
+            let artist = text[..open].trim().to_string();
+            let title = format!("{} {}", &after[..len], &after[len + 1..]);
+            if !artist.is_empty() && len > 0 {
+                return (artist, title);
+            }
+        }
+    }
+    (String::new(), text.to_string())
+}
+
+/// Sépare les artistes invités : « ft. », « feat. », « featuring », y compris entre parenthèses.
+fn take_feat(text: &str) -> (String, Vec<String>) {
+    let lower = text.to_lowercase();
+    let markers = ["(feat. ", "(feat ", "(ft. ", "(ft ", "[feat. ", " feat. ", " feat ", " ft. ", " ft ", " featuring "];
+    let mut best: Option<(usize, &str)> = None;
+    for m in markers {
+        if let Some(pos) = lower.find(m) {
+            if best.map(|(p, _)| pos < p).unwrap_or(true) {
+                best = Some((pos, m));
+            }
+        }
+    }
+    let Some((pos, marker)) = best else {
+        return (text.to_string(), Vec::new());
+    };
+    let before = text[..pos].to_string();
+    let after = &text[pos + marker.len()..];
+    let (guests, rest) = if marker.starts_with('(') || marker.starts_with('[') {
+        let close = if marker.starts_with('(') { ')' } else { ']' };
+        match after.find(close) {
+            Some(end) => (after[..end].to_string(), after[end + 1..].to_string()),
+            None => (after.to_string(), String::new()),
+        }
+    } else {
+        // Sans parenthèses, les invités vont jusqu'au prochain groupe ou à la fin.
+        match after.find(['(', '[']) {
+            Some(end) => (after[..end].to_string(), after[end..].to_string()),
+            None => (after.to_string(), String::new()),
+        }
+    };
+    let guests = tidy(&guests);
+    let rest_clean = format!("{} {}", before.trim_end(), rest.trim_start());
+    if guests.is_empty() {
+        return (tidy(&rest_clean), Vec::new());
+    }
+    (tidy(&rest_clean), vec![guests])
+}
+
+/// Espaces en trop, séparateurs orphelins en bout de chaîne.
+fn tidy(text: &str) -> String {
+    let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    joined
+        .trim_matches(|c: char| c == '-' || c == '|' || c == ',' || c == ':' || c.is_whitespace())
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::guess;
+
+    /// Les vrais noms de fichiers de la bibliothèque de l'utilisateur.
+    #[test]
+    fn noms_de_videos_reels() {
+        let cases = [
+            ("21 Savage - a lot (Official Video) ft. J. Cole", "21 Savage", "a lot (feat. J. Cole)"),
+            ("2Pac - Hit 'Em Up (Dirty) (Music Video) HD", "2Pac", "Hit 'Em Up (Dirty)"),
+            ("50 Cent - Many Men (Wish Death) (Dirty Version).f616", "50 Cent", "Many Men (Wish Death) (Dirty Version)"),
+            ("Central Cee - Doja (Official Music Video)", "Central Cee", "Doja"),
+            ("CENTRAL CEE FT. LIL BABY - BAND4BAND (MUSIC VIDEO)", "CENTRAL CEE", "BAND4BAND (feat. LIL BABY)"),
+            ("Central Cee - Loading [Music Video] ｜ GRM Daily", "Central Cee", "Loading"),
+            ("Central Cee x Dave - Sprinter [Music Video]", "Central Cee x Dave", "Sprinter"),
+            ("Chief Keef - Love Sosa", "Chief Keef", "Love Sosa"),
+            ("[EXCLU] Genezio - Big boss #PlanèteRap", "Genezio", "Big boss"),
+            ("Kendrick Lamar, SZA - All The Stars", "Kendrick Lamar, SZA", "All The Stars"),
+            ("KOBA LA D x @Binkszola91  - TEMPS EN TEMPS", "KOBA LA D x Binkszola91", "TEMPS EN TEMPS"),
+            ("La Rvfleuze - Argent Sale ｜ A COLORS SHOW", "La Rvfleuze", "Argent Sale"),
+            ("La Rvfleuze - Serrure #5", "La Rvfleuze", "Serrure #5"),
+            ("Leto (feat. iDS) - MATHÉMATIQUE (Clip officiel)", "Leto", "MATHÉMATIQUE (feat. iDS)"),
+            ("Lil Nas X - Old Town Road (Official Video) ft. Billy Ray Cyrus", "Lil Nas X", "Old Town Road (feat. Billy Ray Cyrus)"),
+            ("Lil Wayne - Love Me (Explicit Version⧸Closed Captioned) ft. Drake, Future", "Lil Wayne", "Love Me (feat. Drake, Future)"),
+            ("Migos - Walk It Talk It ft. Drake (Official Video)", "Migos", "Walk It Talk It (feat. Drake)"),
+            ("OrelSan - Encore une fois (feat. Yamê) [CLIP OFFICIEL]", "OrelSan", "Encore une fois (feat. Yamê)"),
+            ("Post Malone, Swae Lee - Sunflower (Spider-Man： Into the Spider-Verse)", "Post Malone, Swae Lee", "Sunflower (Spider-Man: Into the Spider-Verse)"),
+            ("Roddy Ricch - The Box [Official Audio]", "Roddy Ricch", "The Box"),
+            ("Tiakola - Coucher de soleil (Live) ｜ Vevo Rounds", "Tiakola", "Coucher de soleil (Live)"),
+            ("Tiakola feat. La Mano 19 & Niska - GANG #PlanèteRap", "Tiakola", "GANG (feat. La Mano 19 & Niska)"),
+            ("Tiakola x SDM x Liim's - PLAISIR NOCIF (Visual Mixtape)", "Tiakola x SDM x Liim's", "PLAISIR NOCIF (Visual Mixtape)"),
+            ("YNW Melly \"Murder On My Mind\" (Live Performance)", "YNW Melly", "Murder On My Mind (Live Performance)"),
+            ("Werenoi - 3 singes (feat. Ninho)", "Werenoi", "3 singes (feat. Ninho)"),
+        ];
+        for (raw, artist, title) in cases {
+            assert_eq!(guess(raw), (artist.to_string(), title.to_string()), "pour « {raw} »");
+        }
+    }
+
+    #[test]
+    fn sans_tiret_pas_d_artiste_invente() {
+        assert_eq!(guess("Ma chanson (Live)"), (String::new(), "Ma chanson (Live)".to_string()));
+        assert_eq!(guess("Piste 03"), (String::new(), "Piste 03".to_string()));
+    }
+}
