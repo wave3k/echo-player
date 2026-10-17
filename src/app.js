@@ -127,14 +127,39 @@ function coverSrc(id) {
 }
 
 /// Pose la pochette (ou un dégradé) sur un élément, sans toucher à sa taille.
-function paintCover(node, track) {
+/// Sans pochette du tout, le dégradé porte le titre et l'artiste.
+function paintCover(node, track, label = true) {
   const url = track && track.cover ? coverUrls.get(track.cover) : null;
   if (url) {
     node.style.background = `#222 url("${url}") center / cover no-repeat`;
+    coverLabel(node, null);
     return;
   }
   const hue = hueFor(track && track.id ? track.id : "x");
   node.style.background = `linear-gradient(140deg, hsl(${hue} 45% 30%), hsl(${(hue + 45) % 360} 45% 17%))`;
+  coverLabel(node, label && track && !track.cover ? track : null);
+}
+
+/// Titre et artiste écrits sur une pochette vide (masqués sur les petites vignettes).
+function coverLabel(node, track) {
+  let label = node.querySelector(":scope > .cover-label");
+  if (!track) {
+    if (label) label.remove();
+    return;
+  }
+  if (!label) {
+    if (!node.dataset.positioned) {
+      node.dataset.positioned = "1";
+      if (getComputedStyle(node).position === "static") node.style.position = "relative";
+    }
+    label = document.createElement("span");
+    label.className = "cover-label";
+    label.setAttribute("aria-hidden", "true");
+    label.append(document.createElement("b"), document.createElement("i"));
+    node.appendChild(label);
+  }
+  label.firstChild.textContent = track.title || "Sans titre";
+  label.lastChild.textContent = track.artist || "";
 }
 
 function noCover(node) {
@@ -143,7 +168,8 @@ function noCover(node) {
   node.innerHTML = icon("note", 16);
 }
 
-function fillCover(node, track) {
+/// `label` : faux pour une pochette d'album ou de playlist (le titre d'un morceau y tromperait).
+function fillCover(node, track, label = true) {
   if (!node) return;
   if (!track || !state.settings.show_covers) {
     noCover(node);
@@ -151,13 +177,15 @@ function fillCover(node, track) {
   }
   node.classList.remove("no-cover");
   node.innerHTML = "";
-  paintCover(node, track);
+  // Les petites vignettes des listes restent sans texte : illisible, et redessiné au défilement.
+  if (node.classList.contains("thumb")) label = false;
+  paintCover(node, track, label);
 
   if (!track.cover || coverUrls.has(track.cover)) return;
   // La pochette est reconnue : on la pose dès que son adresse est prête.
   const wanted = track.cover;
   coverSrc(wanted).then((url) => {
-    if (url && track.cover === wanted) paintCover(node, track);
+    if (url && track.cover === wanted) paintCover(node, track, label);
   });
 }
 
@@ -474,7 +502,7 @@ function sectionAbout() {
       <div class="about">
         <div class="about-mark">${icon("waveform", 24)}</div>
         <div>
-          <div class="about-name">Écho <span class="badge">1.1</span></div>
+          <div class="about-name">Écho <span class="badge">1.1.1</span></div>
           <div class="about-desc">Lecteur de musique, pour tes fichiers, sur ton ordinateur.</div>
           <div class="about-facts">
             <span>${icon("dashboard", 13)} Léger sur la mémoire</span>
@@ -815,7 +843,7 @@ function renderLibrary() {
       row.dataset.index = String(i);
       row.dataset.trackId = track.id;
       row.innerHTML = rowHtml(track, i, track.id === currentId(), playing);
-      fillCover(row.querySelector(".thumb"), track, true);
+      fillCover(row.querySelector(".thumb"), track);
       row.addEventListener("click", () => playFromList(i));
       frag.appendChild(row);
     }
@@ -1025,7 +1053,7 @@ function renderMinimal() {
   });
 
   const cover = el("min-cover");
-  fillCover(cover, album.tracks[0]);
+  fillCover(cover, album.tracks[0], false);
   if (cover.dataset.album !== album.key) {
     // Changement d'album : la pochette et la fiche s'animent ensemble.
     playAnim(cover, "swap");
@@ -1071,7 +1099,7 @@ function setPeek(node, album, currentKey) {
     return;
   }
   node.hidden = false;
-  fillCover(node, album.tracks[0]);
+  fillCover(node, album.tracks[0], false);
   node.onclick = () => {
     state.minimalAlbum = album.key;
     renderMinimal();
@@ -1995,7 +2023,7 @@ function renderPlaylists() {
             .join("")
         : `<div class="hint pl-empty">Playlist vide : clic droit sur un morceau de la bibliothèque → « Ajouter à une playlist ».</div>`
     }</div>`;
-  fillCover(el("pl-cover"), tracks.find((t) => t.cover) || tracks[0] || null);
+  fillCover(el("pl-cover"), tracks.find((t) => t.cover) || tracks[0] || null, false);
   detail.querySelectorAll(".pl-row").forEach((row, i) => fillCover(row.querySelector(".thumb"), tracks[i]));
 }
 
@@ -2091,7 +2119,7 @@ function squareFrame(video) {
   return { bytes, dark };
 }
 
-/// Ouvre la vidéo sans son, va au tiers, et capture une image (évite le noir du début).
+/// Windows : ouvre la vidéo sans son, va au tiers, et capture une image (évite le noir du début).
 /// Résultat : { bytes, missing } — `missing` : le fichier a bien une image (le cœur l'a
 /// vu), mais le système ne sait pas la décoder (AV1 sans greffon, par exemple).
 /// Rien n'est alors noté : on réessaiera au prochain lancement.
@@ -2157,12 +2185,19 @@ async function extractFrames() {
       const track = state.tracks.find((t) => t.video && !t.cover && !t.no_frame && !frameTried.has(t.id));
       if (!track) break;
       frameTried.add(track.id);
-      const result = await grabFrame(track);
-      if (result.bytes) {
-        const updated = await invoke("save_frame", { id: track.id, jpeg: result.bytes }).catch(() => null);
-        if (updated) replaceTrack(updated);
-      } else if (result.missing) {
-        missing += 1;
+      if (LINUX_WEBKIT) {
+        // Linux : le cœur décode une seule image avec GStreamer, sans passer par la page.
+        const result = await invoke("grab_frame", { id: track.id }).catch(() => null);
+        if (result && result.track) replaceTrack(result.track);
+        else if (result && result.missing) missing += 1;
+      } else {
+        const result = await grabFrame(track);
+        if (result.bytes) {
+          const updated = await invoke("save_frame", { id: track.id, jpeg: result.bytes }).catch(() => null);
+          if (updated) replaceTrack(updated);
+        } else if (result.missing) {
+          missing += 1;
+        }
       }
       await new Promise((r) => setTimeout(r, 200));
     }
@@ -2227,9 +2262,15 @@ function replaceTrack(track) {
   state.tracks[i] = track;
   trackIndex.set(track.id, track);
   libraryVersion += 1;
-  renderAll();
-  renderPlaylists();
+  // Plusieurs pochettes arrivent d'affilée : un seul rendu pour la série.
+  if (renderSoon) return;
+  renderSoon = setTimeout(() => {
+    renderSoon = null;
+    renderAll();
+    renderPlaylists();
+  }, 120);
 }
+let renderSoon = null;
 
 function applyBootstrap(boot) {
   state.settings = boot.settings;

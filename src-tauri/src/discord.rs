@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// de Discord (discord.com/developers/applications). Le nom de l'application est
 /// celui que Discord affiche. Vide : le statut Discord reste inactif.
 /// La variable d'environnement ECHO_DISCORD_APP_ID le remplace (pour essayer).
-pub const APP_ID: &str = "";
+pub const APP_ID: &str = "1560984989225586780";
 
 pub fn app_id() -> Option<String> {
     let id = std::env::var("ECHO_DISCORD_APP_ID").unwrap_or_else(|_| APP_ID.to_string());

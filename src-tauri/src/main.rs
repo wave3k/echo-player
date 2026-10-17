@@ -2,6 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod discord;
+#[cfg(target_os = "linux")]
+mod frames;
 mod library;
 mod matroska;
 mod mp4;
@@ -211,6 +213,12 @@ fn tracks_from_cache(cached: Vec<Track>, settings: &store::Settings) -> Vec<Trac
         .filter(|t| {
             let path = Path::new(&t.path);
             folders.iter().any(|f| path.starts_with(f)) && library::is_listed(path, &settings.formats)
+        })
+        .map(|mut t| {
+            if t.cover.as_deref().is_some_and(library::is_stale_frame) {
+                t.cover = None;
+            }
+            t
         })
         .collect()
 }
@@ -715,49 +723,105 @@ fn notify_track(app: tauri::AppHandle, title: String, body: String) {
     use tauri_plugin_notification::NotificationExt;
     let on = app.state::<AppSettings>().0.lock().map(|s| s.notify).unwrap_or(false);
     if on {
-        let _ = app.notification().builder().title(title).body(body).show();
+        let mut note = app.notification().builder().title(title).body(body);
+        if let Some(icon) = notify_icon(&app) {
+            note = note.icon(icon);
+        }
+        let _ = note.show();
     }
 }
 
-/// Image tirée d'une vidéo par l'interface (JPEG), ou `None` si la vidéo n'en a pas :
-/// elle devient la pochette du morceau. Renvoie le morceau à jour.
+/// Logo d'Écho pour les notifications : un fichier, pour qu'il s'affiche quel que soit
+/// le mode d'installation (paquet, AppImage, script, ou pas installé du tout).
+fn notify_icon(app: &tauri::AppHandle) -> Option<String> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let path = cache_dir(app).join("echo-icon.png");
+    if !path.is_file() {
+        std::fs::create_dir_all(path.parent()?).ok()?;
+        std::fs::write(&path, include_bytes!("../icons/128x128@2x.png")).ok()?;
+    }
+    Some(path.to_string_lossy().into_owned())
+}
+
+/// Enregistre l'image tirée d'une vidéo (JPEG) comme pochette du morceau, ou note
+/// qu'elle n'en a pas (`None`). Renvoie le morceau à jour.
+fn store_frame(app: &tauri::AppHandle, id: &str, jpeg: Option<Vec<u8>>) -> Option<Track> {
+    let covers = store::covers_dir(&cache_dir(app));
+    let state = app.state::<AppData>();
+    let mut data = state.0.lock().unwrap();
+    let index = data.tracks.iter().position(|t| t.id == id)?;
+    let mtime = data.tracks[index].mtime;
+    match jpeg.filter(|b| b.len() > 100 && b.len() < 8 * 1024 * 1024) {
+        Some(bytes) => {
+            let name = library::frame_name(id, mtime);
+            std::fs::write(covers.join(&name), bytes).ok()?;
+            data.covers.insert(name.clone(), covers.join(&name));
+            data.tracks[index].cover = Some(name);
+        }
+        None => {
+            let _ = std::fs::write(covers.join(library::no_frame_marker(id, mtime)), b"");
+            data.tracks[index].no_frame = true;
+        }
+    }
+    let track = data.tracks[index].clone();
+    let folders: Vec<PathBuf> = app
+        .state::<AppSettings>()
+        .0
+        .lock()
+        .unwrap()
+        .folders
+        .iter()
+        .map(PathBuf::from)
+        .filter(|f| f.is_dir())
+        .collect();
+    let cache = cache_of(&data.tracks, &folders);
+    drop(data);
+    store::save_cache(&config_dir(app), &cache);
+    Some(with_override(&track, &overrides_of(app)))
+}
+
+/// Image tirée d'une vidéo par l'interface (Windows, macOS).
 #[tauri::command]
 async fn save_frame(app: tauri::AppHandle, id: String, jpeg: Option<Vec<u8>>) -> Option<Track> {
-    offload(move || {
-        let covers = store::covers_dir(&cache_dir(&app));
-        let state = app.state::<AppData>();
-        let mut data = state.0.lock().unwrap();
-        let index = data.tracks.iter().position(|t| t.id == id)?;
-        let mtime = data.tracks[index].mtime;
-        match jpeg.filter(|b| b.len() > 100 && b.len() < 8 * 1024 * 1024) {
-            Some(bytes) => {
-                let name = library::frame_name(&id, mtime);
-                std::fs::write(covers.join(&name), bytes).ok()?;
-                data.covers.insert(name.clone(), covers.join(&name));
-                data.tracks[index].cover = Some(name);
-            }
-            None => {
-                let _ = std::fs::write(covers.join(library::no_frame_marker(&id, mtime)), b"");
-                data.tracks[index].no_frame = true;
-            }
-        }
-        let track = data.tracks[index].clone();
-        let folders: Vec<PathBuf> = app
-            .state::<AppSettings>()
-            .0
-            .lock()
-            .unwrap()
-            .folders
-            .iter()
-            .map(PathBuf::from)
-            .filter(|f| f.is_dir())
-            .collect();
-        let cache = cache_of(&data.tracks, &folders);
-        drop(data);
-        store::save_cache(&config_dir(&app), &cache);
-        Some(with_override(&track, &overrides_of(&app)))
-    })
-    .await
+    offload(move || store_frame(&app, &id, jpeg)).await
+}
+
+#[derive(Serialize)]
+struct Grabbed {
+    track: Option<Track>,
+    /// La vidéo a une image mais le système ne sait pas la décoder.
+    missing: bool,
+}
+
+/// Linux : l'image est décodée ici, par GStreamer, sans passer par la page.
+#[tauri::command]
+async fn grab_frame(app: tauri::AppHandle, id: String) -> Result<Grabbed, String> {
+    #[cfg(target_os = "linux")]
+    {
+        offload(move || {
+            let path = {
+                let state = app.state::<AppData>();
+                let data = state.0.lock().unwrap();
+                data.tracks.iter().find(|t| t.id == id).map(|t| PathBuf::from(&t.path))
+            };
+            let Some(path) = path else {
+                return Ok(Grabbed { track: None, missing: false });
+            };
+            Ok(match frames::grab(&path) {
+                frames::Frame::Image(bytes) => Grabbed { track: store_frame(&app, &id, Some(bytes)), missing: false },
+                frames::Frame::None => Grabbed { track: store_frame(&app, &id, None), missing: false },
+                frames::Frame::Undecodable => Grabbed { track: None, missing: true },
+            })
+        })
+        .await
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app, id);
+        Err("indisponible".into())
+    }
 }
 
 /// Durée trouvée par le lecteur quand les tags n'en donnaient pas.
@@ -1007,6 +1071,15 @@ fn main() {
 
             allow_media_paths(&handle, &settings.folders);
 
+            // Images de vidéos des anciennes versions (souvent noires) : refaites au besoin.
+            if let Ok(read) = std::fs::read_dir(store::covers_dir(&cache_dir(&handle))) {
+                for entry in read.flatten() {
+                    if library::is_stale_frame(&entry.file_name().to_string_lossy()) {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+
             // Met à jour le chemin du démarrage automatique (ancien nom de binaire, AppImage…).
             if settings.autostart {
                 let _ = set_autostart_impl(&handle, true);
@@ -1083,6 +1156,7 @@ fn main() {
             set_playback,
             notify_track,
             save_frame,
+            grab_frame,
             set_duration,
             get_playlists,
             save_playlists

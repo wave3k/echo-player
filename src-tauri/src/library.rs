@@ -49,12 +49,17 @@ pub fn is_video(path: &Path) -> bool {
 
 /// Nom du fichier de pochette tiré d'une vidéo : change avec le fichier.
 pub fn frame_name(id: &str, mtime: u64) -> String {
-    format!("frame-{:016x}-{mtime}.jpg", stable_hash(id.as_bytes()))
+    format!("still-{:016x}-{mtime}.jpg", stable_hash(id.as_bytes()))
+}
+
+/// Pochettes « frame-… » des versions 1.1.0 : souvent noires (vidéos AV1), on les refait.
+pub fn is_stale_frame(name: &str) -> bool {
+    name.starts_with("frame-")
 }
 
 /// Marque « aucune image trouvée » pour ne pas recommencer à chaque lancement.
 pub fn no_frame_marker(id: &str, mtime: u64) -> String {
-    format!("frame-{:016x}-{mtime}.none", stable_hash(id.as_bytes()))
+    format!("still-{:016x}-{mtime}.none", stable_hash(id.as_bytes()))
 }
 
 /// Extensions lues par la bibliotheque. Les conteneurs video (mp4, mkv...) sont lus
@@ -162,7 +167,7 @@ pub fn scan(
                 let cover_ok = old
                     .cover
                     .as_ref()
-                    .map(|name| covers_dir.join(name).is_file())
+                    .map(|name| !is_stale_frame(name) && covers_dir.join(name).is_file())
                     .unwrap_or(true);
                 let fresh = old.parsed == crate::titles::VERSION;
                 if old.mtime == mtime && old.size == size && old.mtime != 0 && cover_ok && fresh {

@@ -36,7 +36,7 @@ Tu lui montres un dossier, il joue tout ce qu'il contient.
 | | |
 |---|---|
 | 📁 **Bibliothèque** | Un ou plusieurs dossiers analysés en profondeur : titre, artiste, album, durée, pochette. Les nouveaux fichiers apparaissent tout seuls. Les analyses suivantes ne relisent que les fichiers modifiés. |
-| 🎬 **Vidéos musicales** | Les clips (webm, mp4, mkv) sont lus pour leur son. Leur pochette est une image tirée de la vidéo, et l'artiste est deviné dans le titre (« Artiste - Titre (Official Video) ft. Invité » → *Artiste* / *Titre (feat. Invité)*). Une vidéo téléchargée sans son est signalée « muet ». |
+| 🎬 **Vidéos musicales** | Les clips (webm, mp4, mkv) sont lus pour leur son. Leur pochette est une image tirée de la vidéo (sous Linux, une seule image décodée par GStreamer, en tâche de fond), et l'artiste est deviné dans le titre (« Artiste - Titre (Official Video) ft. Invité » → *Artiste* / *Titre (feat. Invité)*). Une vidéo téléchargée sans son est signalée « muet ». |
 | 🔊 **Son** | Volume égal (niveau des plateformes de streaming, sans saturer), égaliseur à 6 préréglages (Neutre, Basses, Rap, Voix, Aigus, Acoustique), fondu enchaîné de 3, 6 ou 10 s. |
 | 📃 **Playlists** | Crée tes playlists, ajoute un morceau par clic droit → « Ajouter à une playlist », lis-les dans l'ordre ou en aléatoire. |
 | 🔎 **Recherche et tri** | Recherche instantanée, sans tenir compte des accents. Tri par titre, artiste, album ou durée. Reste fluide avec des dizaines de milliers de morceaux. |
@@ -106,6 +106,7 @@ src/                 Interface : HTML, CSS et JavaScript, sans framework ni éta
 src-tauri/src/       Cœur en Rust
   main.rs            Commandes Tauri, état partagé, démarrage
   library.rs         Analyse des dossiers, tags et pochettes (lofty)
+  frames.rs          Pochette tirée d'une vidéo (Linux, GStreamer)
   store.rs           Réglages, cache et corrections : fichiers JSON écrits de façon atomique
   mpris.rs           Touches média et widget du bureau (souvlaki)
 packaging/           Compilation, installation et entrée .desktop
@@ -148,10 +149,8 @@ Distribué sous licence [MIT](LICENSE).
 
 ## Statut Discord
 
-Le statut « Écoute … » passe par une application Discord. Pour l'activer dans une version compilée soi-même :
+Le statut « Écoute … » passe par l'application Discord **Écho** (identifiant déjà intégré dans `APP_ID`, `src-tauri/src/discord.rs`). Active **Réglages → Système → Statut Discord**, avec l'app Discord ouverte sur le même PC.
 
-1. Crée une application sur [discord.com/developers/applications](https://discord.com/developers/applications) et nomme-la **Écho** (c'est le nom affiché sur ton profil).
-2. Copie son **Application ID** dans `APP_ID`, dans `src-tauri/src/discord.rs`, puis recompile.
-3. Active **Réglages → Système → Statut Discord**.
+Pour utiliser ta propre application Discord, crée-la sur [discord.com/developers/applications](https://discord.com/developers/applications) et remplace `APP_ID`.
 
 Pour essayer sans recompiler : lance Écho avec la variable `ECHO_DISCORD_APP_ID=<identifiant>`.
