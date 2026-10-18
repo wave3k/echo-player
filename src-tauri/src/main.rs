@@ -981,6 +981,17 @@ fn get_cover_path(state: State<AppData>, id: String) -> Option<String> {
         .map(|p| p.to_string_lossy().to_string())
 }
 
+/// Toutes les pochettes connues d'un coup (identifiant → chemin) : l'interface les
+/// pose tout de suite au défilement, sans une demande par ligne.
+#[tauri::command]
+fn get_cover_paths(state: State<AppData>) -> std::collections::HashMap<String, String> {
+    let data = state.0.lock().unwrap();
+    data.covers
+        .iter()
+        .map(|(id, p)| (id.clone(), p.to_string_lossy().to_string()))
+        .collect()
+}
+
 /// Réglages du moteur d'affichage à poser avant d'ouvrir la fenêtre.
 fn prepare_webview_env() {
     // Pilote NVIDIA propriétaire : le rendu DMA-BUF de WebKitGTK donne souvent une
@@ -1150,6 +1161,7 @@ fn main() {
             quit_app,
             save_progress,
             get_cover_path,
+            get_cover_paths,
             track_original,
             edit_track,
             set_now_playing,

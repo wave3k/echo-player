@@ -836,6 +836,8 @@ function virtualList(container, count, rowHeight, makeRow) {
   spacer.replaceChildren();
   const rows = new Map();
   const draw = () => {
+    // Liste cachée (panneau fermé, onglet inactif) : rien à mesurer, on garde les lignes.
+    if (!container.clientHeight) return;
     const top = container.scrollTop;
     const first = Math.max(0, Math.floor(top / rowHeight) - 6);
     const last = Math.min(count, Math.ceil((top + container.clientHeight) / rowHeight) + 6);
@@ -855,6 +857,12 @@ function virtualList(container, count, rowHeight, makeRow) {
     }
   };
   container.onscroll = onFrame(draw);
+  container.vlDraw = draw;
+  // Le panneau qui s'ouvre, la fenêtre qu'on agrandit : de nouvelles lignes deviennent visibles.
+  if (!container.vlObserved && window.ResizeObserver) {
+    container.vlObserved = true;
+    new ResizeObserver(() => container.vlDraw && container.vlDraw()).observe(container);
+  }
   draw();
   return rows;
 }
@@ -870,6 +878,7 @@ function renderLibrary() {
   state.listOrder = all.map((t) => t.id);
   // Même liste qu'avant (lecture, pause, changement de vue) : on ne met à jour que l'état.
   if (all === libShown && listEl.querySelector(":scope > .list-spacer")) {
+    if (listEl.vlDraw) listEl.vlDraw();
     markLibrary();
     return;
   }
@@ -929,6 +938,7 @@ function renderQueue() {
   // Même file qu'avant : on ne déplace que la marque du morceau en cours.
   const key = `${libraryVersion}\n${ids.join("\n")}`;
   if (key === queueShown && queue.querySelector(":scope > .list-spacer")) {
+    if (queue.vlDraw) queue.vlDraw();
     for (const [, item] of queueRows) item.classList.toggle("is-current", item.dataset.trackId === currentId());
     return;
   }
@@ -2308,6 +2318,38 @@ async function rescan() {
   applySnapshot(snap);
 }
 
+/// Chemins de toutes les pochettes en une fois : au défilement, une nouvelle ligne
+/// affiche sa pochette immédiatement au lieu d'un dégradé le temps de la demander.
+let coverPrefetch = null;
+function prefetchCovers() {
+  if (coverPrefetch) return coverPrefetch;
+  coverPrefetch = invoke("get_cover_paths")
+    .then((paths) => {
+      const fresh = [];
+      for (const [id, path] of Object.entries(paths || {})) {
+        if (coverUrls.get(id)) continue;
+        const url = convertFileSrc(path);
+        coverUrls.set(id, url);
+        fresh.push(url);
+      }
+      // Décodées d'avance (les premières seulement) : pas de case vide à l'affichage.
+      fresh.slice(0, 400).forEach((url) => {
+        const img = new Image();
+        img.decoding = "async";
+        img.src = url;
+      });
+      if (fresh.length) {
+        libShown = null;
+        renderAll();
+      }
+    })
+    .catch(() => {})
+    .finally(() => {
+      coverPrefetch = null;
+    });
+  return coverPrefetch;
+}
+
 function applySnapshot(snapshot) {
   if (!snapshot) return;
   state.folders = snapshot.folders || [];
@@ -2320,6 +2362,7 @@ function applySnapshot(snapshot) {
   renderAll();
   renderPlaylists();
   scheduleFrames();
+  if (state.settings && state.settings.show_covers) prefetchCovers();
 }
 
 /// Un seul morceau a changé (modification) : inutile de recharger toute la bibliothèque.
@@ -2614,6 +2657,17 @@ function refreshToggles() {
   el("btn-mute").setAttribute("aria-pressed", String(Sound.muted));
   el("dock-volume").classList.toggle("on", Sound.muted);
   el("min-volume").classList.toggle("on", Sound.muted);
+  // Coupé ou non : l'icône elle-même change, pas seulement sa couleur.
+  const volIcon = Sound.muted ? "volume_mute" : "volume_high";
+  for (const [id, size] of [["dock-volume", 19], ["min-volume", 18]]) {
+    const node = el(id);
+    if (node && node.dataset.icon !== volIcon) {
+      node.dataset.icon = volIcon;
+      node.innerHTML = icon(volIcon, size);
+    }
+  }
+  const label = Sound.muted ? "Remettre le son" : "Couper le son";
+  ["dock-volume", "min-volume"].forEach((id) => el(id) && (el(id).title = label, el(id).setAttribute("aria-label", label)));
 }
 
 /// Bibliothèque arrivée avant la fin du démarrage : appliquée juste après.
@@ -2633,14 +2687,22 @@ async function bindBackendEvents() {
       count.textContent = `${audios} morceau${audios > 1 ? "x" : ""}`;
     }
   });
+  // Plusieurs demandes de fermeture d'affilée (raccourci pressé deux fois) : une seule question.
+  let quitAsked = false;
   await listen("close-requested", async () => {
-    const quit = await ask("Quitter Écho ?", "La musique s'arrêtera.", [
-      { label: "Annuler", value: false },
-      { label: "Quitter", value: true, primary: true },
-    ]);
-    if (quit) {
-      saveProgress(true);
-      await invoke("quit_app");
+    if (quitAsked) return;
+    quitAsked = true;
+    try {
+      const quit = await ask("Quitter Écho ?", "La musique s'arrêtera.", [
+        { label: "Annuler", value: false },
+        { label: "Quitter", value: true, primary: true },
+      ]);
+      if (quit) {
+        saveProgress(true);
+        await invoke("quit_app");
+      }
+    } finally {
+      quitAsked = false;
     }
   });
 }
