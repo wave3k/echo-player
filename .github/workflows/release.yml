@@ -54,11 +54,45 @@ jobs:
           cd src-tauri && cargo test
           cd .. && node --test tests/logic.test.js
 
+      # Les fichiers de mise à jour (.sig, latest.json) sont signés avec la clé d'Écho.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "Écho ${{ github.event.inputs.tag || github.ref_name }}"
           releaseDraft: false
           args: --bundles ${{ matrix.bundles }}
+
+      # Installation par install.sh : le binaire seul, en archive signée.
+      - name: Archive signée du binaire Linux
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          tar -czf echo-player-linux-x86_64.tar.gz -C src-tauri/target/release echo-player
+          npx --yes @tauri-apps/cli@2 signer sign echo-player-linux-x86_64.tar.gz
+          gh release upload "$TAG" echo-player-linux-x86_64.tar.gz echo-player-linux-x86_64.tar.gz.sig --clobber
+
+  # latest.json reçoit l'entrée « linux-x86_64-bin » (binaire installé par install.sh).
+  updater-binary:
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ajoute l'archive du binaire à latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p latest.json -p echo-player-linux-x86_64.tar.gz.sig
+          sig=$(cat echo-player-linux-x86_64.tar.gz.sig)
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/echo-player-linux-x86_64.tar.gz"
+          jq --arg s "$sig" --arg u "$url" '.platforms["linux-x86_64-bin"] = {signature: $s, url: $u}' latest.json > merged.json
+          mv merged.json latest.json
+          gh release upload "$TAG" latest.json --repo "$GITHUB_REPOSITORY" --clobber

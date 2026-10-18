@@ -46,6 +46,8 @@ pub struct Info {
     pub has_video: bool,
     /// Pochette jointe : (type MIME, octets).
     pub cover: Option<(String, Vec<u8>)>,
+    /// Paroles écrites dans les tags (parfois au format LRC, synchronisées).
+    pub lyrics: Option<String>,
 }
 
 struct Reader<R> {
@@ -352,6 +354,7 @@ fn apply_tag(info: &mut Info, tag_duration: &mut Option<u64>, name: &str, value:
         "TITLE" if info.title.is_empty() => info.title = value,
         "ARTIST" | "ALBUM_ARTIST" | "PERFORMER" if info.artist.is_empty() => info.artist = value,
         "ALBUM" if info.album.is_empty() => info.album = value,
+        "LYRICS" | "UNSYNCEDLYRICS" if info.lyrics.is_none() => info.lyrics = Some(value),
         // ffmpeg écrit la durée de chaque piste en tag (« 00:05:56.881000000 »).
         "DURATION" if tag_duration.is_none() => *tag_duration = parse_clock(&value),
         _ => {}

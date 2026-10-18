@@ -28,6 +28,12 @@ souvlaki = "0.8"
 notify = "8"
 discord-rich-presence = "1"
 tauri-plugin-notification = "2"
+tauri-plugin-updater = "2"
+flate2 = "1"
+tar = "0.4"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio = { version = "1", default-features = false, features = ["time"] }
 
 # Déjà utilisé par Tauri sous Linux : seulement pour régler le cache du moteur d'affichage.
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -35,6 +41,7 @@ webkit2gtk = "2.0"
 # Pochettes des vidéos : une image décodée hors de l'interface (GStreamer est déjà là).
 gstreamer = "0.24"
 jpeg-encoder = "0.6"
+libc = "0.2"
 
 [profile.release]
 opt-level = "s"

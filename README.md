@@ -38,6 +38,7 @@ Tu lui montres un dossier, il joue tout ce qu'il contient.
 | 📁 **Bibliothèque** | Un ou plusieurs dossiers analysés en profondeur : titre, artiste, album, durée, pochette. Les nouveaux fichiers apparaissent tout seuls. Les analyses suivantes ne relisent que les fichiers modifiés. |
 | 🎬 **Vidéos musicales** | Les clips (webm, mp4, mkv) sont lus pour leur son. Leur pochette est une image tirée de la vidéo (sous Linux, une seule image décodée par GStreamer, en tâche de fond), et l'artiste est deviné dans le titre (« Artiste - Titre (Official Video) ft. Invité » → *Artiste* / *Titre (feat. Invité)*). Une vidéo téléchargée sans son est signalée « muet ». |
 | 🔊 **Son** | Volume égal (niveau des plateformes de streaming, sans saturer), égaliseur à 6 préréglages (Neutre, Basses, Rap, Voix, Aigus, Acoustique), fondu enchaîné de 3, 6 ou 10 s. |
+| 🎤 **Paroles** | Paroles synchronisées en plein écran (touche **L**) : la ligne chantée s'illumine, un clic sur une ligne y saute. Lues dans un fichier `.lrc` à côté du morceau, dans les tags du fichier, ou en ligne (à activer : seuls l'artiste, le titre et la durée sont envoyés) sur [LRCLIB](https://lrclib.net), base libre de paroles synchronisées, puis lyrics.ovh en secours (texte seul). Les noms de clips YouTube sont décomposés (« Tiakola x Dave - Meridian (Clip officiel) ») pour retrouver le bon morceau. Un clip plus long que le son (intro, scènes) se cale en un clic : on touche la ligne au moment où elle est chantée, et le calage est retenu. |
 | 📃 **Playlists** | Crée tes playlists, ajoute un morceau par clic droit → « Ajouter à une playlist », lis-les dans l'ordre ou en aléatoire. |
 | 🔎 **Recherche et tri** | Recherche instantanée, sans tenir compte des accents. Tri par titre, artiste, album ou durée. Reste fluide avec des dizaines de milliers de morceaux. |
 | ▶️ **Lecture** | Aléatoire (chaque morceau passe une fois), répétition de la file ou d'un titre, reprise au morceau et à la position de la dernière fois. |
@@ -45,6 +46,7 @@ Tu lui montres un dossier, il joue tout ce qu'il contient.
 | ✏️ **Modifier un morceau** | Titre, artiste, album et pochette, par clic droit ou avec le bouton **Modifier**. Tes fichiers ne sont jamais modifiés, et tu peux toujours revenir à l'original. |
 | 🌗 **Apparence** | Thème clair, sombre ou celui du système. Quatre palettes, trois polices, taille du texte et arrondis réglables, animations désactivables. |
 | ⌨️ **Intégration au bureau** | Touches média et widget du bureau (MPRIS), icône dans la barre du système, notification à chaque morceau, statut Discord « Écoute… » (activable), démarrage avec la session. |
+| 🔄 **Mises à jour** | Vérifiées toutes les 6 heures et installées toutes seules (ou juste signalées, au choix). Chaque version est signée : Écho refuse un fichier qui ne vient pas de lui. Windows, AppImage et installation par `install.sh` se mettent à jour d'un clic ; le paquet `.deb` passe par la page des versions. |
 
 ## Installation
 

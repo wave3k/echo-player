@@ -410,6 +410,10 @@ function sectionLecture() {
         ).join("")}</div>
       </div>
     </div>
+    <h4 style="margin-top:18px">Paroles</h4>
+    <div class="card">
+      ${rowSwitch("Chercher les paroles en ligne", "Sur LRCLIB, une base libre, quand le fichier n'en a pas. Seuls l'artiste, le titre et la durée sont envoyés.", "lyrics_online", s.lyrics_online)}
+    </div>
   </section>`;
 }
 
@@ -454,7 +458,7 @@ function sectionBiblio() {
     </div>
     <h4 style="margin-top:18px">Pochettes en cache</h4>
     <div class="card">
-      ${rowButton("Pochettes en cache", `${mo} Mo sur le disque`, `<button class="ghost-btn" data-action="clear-cache">Vider</button>`)}
+      ${rowButton("Cache (pochettes, son des clips)", `${mo} Mo sur le disque`, `<button class="ghost-btn" data-action="clear-cache">Vider</button>`)}
     </div>
     <div class="card" style="margin-top:10px">
       ${rowButton("Relire les dossiers", "Utile si tu viens d'ajouter des fichiers", `<button class="ghost-btn" data-action="rescan">${icon("refresh", 15)} Actualiser</button>`)}
@@ -478,6 +482,15 @@ function sectionSysteme() {
         { value: "ask", label: "Demander" },
         ...(s.tray ? [{ value: "tray", label: "Réduire" }] : []),
       ], s.close_to_tray && s.tray ? "tray" : s.ask_before_quit ? "ask" : "quit")}
+    </div>
+    <h4 style="margin-top:18px">Mises à jour</h4>
+    <div class="card">
+      ${rowSeg("Mises à jour", "Versions signées : un fichier qui ne vient pas d'Écho est refusé", "updates", [
+        { value: "auto", label: "Automatiques" },
+        { value: "notify", label: "Me prévenir" },
+        { value: "off", label: "Jamais" },
+      ], s.updates)}
+      ${updateRow()}
     </div>
   </section>`;
 }
@@ -507,7 +520,7 @@ function sectionAbout() {
       <div class="about">
         <div class="about-mark">${icon("waveform", 24)}</div>
         <div>
-          <div class="about-name">Écho <span class="badge">1.1.1</span></div>
+          <div class="about-name">Écho <span class="badge">${escapeHtml(state.version || "")}</span></div>
           <div class="about-desc">Lecteur de musique, pour tes fichiers, sur ton ordinateur.</div>
           <div class="about-facts">
             <span>${icon("dashboard", 13)} Léger sur la mémoire</span>
@@ -705,6 +718,18 @@ function bindSettings(panel) {
     const action = e.target.closest("[data-action]");
     if (!action) return;
     switch (action.dataset.action) {
+      case "update-check":
+        updateAction("check");
+        break;
+      case "update-install":
+        updateAction("install");
+        break;
+      case "update-restart":
+        updateAction("restart");
+        break;
+      case "update-page":
+        updateAction("page");
+        break;
       case "add-folder":
         addFolder();
         break;
@@ -717,6 +742,7 @@ function bindSettings(panel) {
         const cleared = await invoke("clear_cover_cache");
         coverUrls.clear();
         frameTried.clear();
+        audioPaths.clear();
         state.cacheBytes = cleared.cache_bytes;
         applySnapshot(cleared.snapshot);
         refreshSettingsPanel();
@@ -1089,6 +1115,7 @@ function renderMinimal() {
   if (!right || state.settings.mode !== "minimal") return;
 
   if (state.minSearch.trim()) {
+    right.dataset.shown = "";
     const q = normalize(state.minSearch);
     const matches = audioTracks().filter((t) => searchKey(t).includes(q));
     const results = matches.slice(0, 200);
@@ -1110,10 +1137,28 @@ function renderMinimal() {
 
   const album = currentAlbum();
   if (!album) {
+    right.dataset.shown = "";
     right.innerHTML = `<div class="album-title">Aucun album</div>
       <div class="album-meta">Choisis un dossier dans les réglages, ou ajoute un morceau à ta bibliothèque.</div>`;
     return;
   }
+
+  // Même album qu'au dernier rendu (lecture, pause, morceau suivant) : seul l'état change.
+  const key = `${album.key}|${libraryVersion}`;
+  if (right.dataset.shown === key && right.querySelector(".album-tracks")) {
+    const playing = isPlaying();
+    right.querySelectorAll("[data-min-id]").forEach((node, i) => {
+      const current = node.dataset.minId === currentId();
+      node.classList.toggle("is-current", current);
+      const first = node.firstElementChild;
+      const wantWave = current && playing;
+      if (first && first.classList.contains("playing") !== wantWave) {
+        first.outerHTML = wantWave ? `<span class="playing">${ICONS.waveform}</span>` : `<span class="trk-n">${i + 1}</span>`;
+      }
+    });
+    return;
+  }
+  right.dataset.shown = key;
 
   const total = album.tracks.reduce((sum, t) => sum + (t.duration_ms || 0), 0);
   right.innerHTML = `
@@ -1271,27 +1316,68 @@ function playCurrent({ autoplay = true } = {}) {
   }
   silentSkips = 0;
   Sound.cancelFade();
-  audio = Sound.element;
-  audio.src = mediaSrc(track.path);
-  Sound.beginTrack(track.id);
-  if (autoplay) {
-    startPlayback();
-    notifyTrack(track);
-  }
+  const token = ++playToken;
+  const begin = () => {
+    // Un autre morceau a été lancé entre-temps : celui-ci n'est plus d'actualité.
+    if (token !== playToken) return;
+    audio = Sound.element;
+    audio.src = playableSrc(track);
+    Sound.beginTrack(track.id);
+    if (autoplay) {
+      startPlayback();
+      notifyTrack(track);
+    }
+    if (state.resuming && state.resuming.id === track.id && state.settings.remember_position) {
+      const target = state.resuming.position;
+      state.resuming = null;
+      const media = audio;
+      const apply = () => {
+        if (isFinite(media.duration) && media.duration > 0) {
+          media.currentTime = Math.min(target / 1000, Math.max(0, media.duration - 1));
+        }
+        media.removeEventListener("loadedmetadata", apply);
+      };
+      media.addEventListener("loadedmetadata", apply);
+    }
+    // Le suivant est préparé pendant l'écoute : il démarrera sans attendre.
+    prepareAudio(trackById(state.queue[(state.queueIndex + 1) % Math.max(1, state.queue.length)]));
+  };
+  if (needsAudioCopy(track)) prepareAudio(track).then(begin);
+  else begin();
   pushNowPlaying(track);
   pushPlayback(true);
   renderAll();
-  if (state.resuming && state.resuming.id === track.id && state.settings.remember_position) {
-    const target = state.resuming.position;
-    state.resuming = null;
-    const apply = () => {
-      if (isFinite(audio.duration) && audio.duration > 0) {
-        audio.currentTime = Math.min(target / 1000, Math.max(0, audio.duration - 1));
-      }
-      audio.removeEventListener("loadedmetadata", apply);
-    };
-    audio.addEventListener("loadedmetadata", apply);
+}
+
+/// Linux : un clip est lu par sa piste audio seule (copie préparée par le cœur), sinon
+/// le lecteur de WebKit décoderait aussi toute la vidéo, pour rien.
+const audioPaths = new Map();
+let playToken = 0;
+
+function needsAudioCopy(track) {
+  return LINUX_WEBKIT && !!track && track.video && track.has_audio !== false && !audioPaths.has(track.id);
+}
+
+function playableSrc(track) {
+  const copy = LINUX_WEBKIT && track.video ? audioPaths.get(track.id) : null;
+  return mediaSrc(copy || track.path);
+}
+
+/// Copies en cours de préparation : une seule demande par morceau.
+const audioPending = new Map();
+
+function prepareAudio(track) {
+  if (!needsAudioCopy(track)) return Promise.resolve();
+  if (!audioPending.has(track.id)) {
+    const job = invoke("audio_source", { id: track.id })
+      .then((path) => {
+        if (path && path !== track.path) audioPaths.set(track.id, path);
+      })
+      .catch(() => {})
+      .finally(() => audioPending.delete(track.id));
+    audioPending.set(track.id, job);
   }
+  return audioPending.get(track.id);
 }
 
 function togglePlay() {
@@ -1317,8 +1403,9 @@ function maybeCrossfade() {
   if (!next || next.has_audio === false) return;
   if (state.shuffle) shuffleBag.history.push(state.queueIndex);
   state.queueIndex = i;
-  Sound.other.src = mediaSrc(next.path);
+  Sound.other.src = playableSrc(next);
   audio = Sound.crossfade(seconds);
+  prepareAudio(trackById(state.queue[(i + 1) % state.queue.length]));
   Sound.beginTrack(next.id);
   startPlayback();
   notifyTrack(next);
@@ -1581,6 +1668,7 @@ function renderNowPlaying() {
   const track = currentTrack();
   if ((track ? track.id : null) !== lastNowId) {
     lastNowId = track ? track.id : null;
+    if (lyricsOpen) loadLyrics();
     ["listen-cover", "mini-cover", "min-mini-cover"].forEach((id) => playAnim(el(id), "swap"));
     ["listen-title", "listen-artist", "comp-title", "comp-artist", "mini-title", "mini-artist", "min-title", "min-artist"]
       .forEach((id) => playAnim(el(id), "swap-text"));
@@ -2332,8 +2420,9 @@ function prefetchCovers() {
         coverUrls.set(id, url);
         fresh.push(url);
       }
-      // Décodées d'avance (les premières seulement) : pas de case vide à l'affichage.
-      fresh.slice(0, 400).forEach((url) => {
+      // Les toutes premières décodées d'avance (celles visibles au démarrage) : au-delà,
+      // des centaines d'images décodées pèseraient lourd en mémoire pour rien.
+      fresh.slice(0, 24).forEach((url) => {
         const img = new Image();
         img.decoding = "async";
         img.src = url;
@@ -2356,6 +2445,8 @@ function applySnapshot(snapshot) {
   state.foldersMissing = snapshot.folders_missing || [];
   state.tracks = snapshot.tracks || [];
   trackIndex = new Map(state.tracks.map((t) => [t.id, t]));
+  // Un fichier a pu changer : sa copie audio sera redemandée (le cœur garde le cache disque).
+  audioPaths.clear();
   // Sans ça, le prochain réglage enregistré renverrait l'ancienne liste de dossiers.
   EchoLogic.syncFolders(state.settings, snapshot);
   libraryVersion += 1;
@@ -2388,6 +2479,7 @@ function applyBootstrap(boot) {
   state.formats = boot.formats || [];
   state.cacheBytes = boot.cache_bytes || 0;
   state.discordReady = !!boot.discord_ready;
+  state.version = boot.version || "";
   // Aléatoire et répétition par défaut s'appliquent à chaque démarrage, reprise ou non.
   state.shuffle = !!boot.settings.shuffle_default;
   state.repeat = boot.settings.repeat_default || "off";
@@ -2630,8 +2722,11 @@ function bindOnce() {
       media.currentTime = Math.min(media.duration || 0, media.currentTime + state.settings.skip_seconds);
     } else if (e.code === "ArrowLeft") {
       media.currentTime = Math.max(0, media.currentTime - state.settings.skip_seconds);
+    } else if (e.code === "KeyL" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      toggleLyrics();
     } else if (e.code === "Escape") {
       if (!el("modal").hidden && modalCancel) modalCancel();
+      else if (lyricsOpen) toggleLyrics(false);
       else if (!el("sheet").hidden) closeSheet();
     }
   });
@@ -2687,6 +2782,8 @@ async function bindBackendEvents() {
       count.textContent = `${audios} morceau${audios > 1 ? "x" : ""}`;
     }
   });
+  // Le cœur a trouvé (ou installé) une mise à jour en tâche de fond.
+  await listen("update-status", (event) => showUpdate(event.payload));
   // Plusieurs demandes de fermeture d'affilée (raccourci pressé deux fois) : une seule question.
   let quitAsked = false;
   await listen("close-requested", async () => {
@@ -2708,6 +2805,361 @@ async function bindBackendEvents() {
 }
 
 /* ============================================================
+   Paroles
+   ============================================================ */
+
+/// Paroles déjà chargées, par morceau.
+const lyricsCache = new Map();
+let lyricsOpen = false;
+let lyricsFor = null;
+let lyricsLines = null;
+let lyricsActive = -1;
+let lyricsTimer = null;
+/// Paroles affichées (avec leurs calages), et le mode « Caler » en cours.
+let lyricsData = null;
+let lyricsCalibrating = false;
+/// Défilement à la main : le suivi automatique s'efface quelques secondes.
+let lyricsUserScroll = 0;
+
+const LYRICS_SOURCES = { lrc: "Fichier .lrc", file: "Dans le fichier", lrclib: "LRCLIB", lyricsovh: "lyrics.ovh" };
+
+function toggleLyrics(force) {
+  const open = force === undefined ? !lyricsOpen : !!force;
+  if (open === lyricsOpen) return;
+  lyricsOpen = open;
+  el("lyrics").hidden = !open;
+  ["btn-lyrics", "comp-lyrics", "min-lyrics"].forEach((id) => el(id) && el(id).classList.toggle("on", open));
+  if (open) {
+    loadLyrics();
+    clearInterval(lyricsTimer);
+    lyricsTimer = setInterval(syncLyrics, 100);
+  } else {
+    clearInterval(lyricsTimer);
+    lyricsTimer = null;
+  }
+}
+
+function lyricsMessage(title, text, extra = "") {
+  return `<div class="lyr-empty"><div class="lyr-empty-ic">${icon("mic", 26)}</div><div class="lyr-empty-t">${escapeHtml(title)}</div>${
+    text ? `<div class="lyr-empty-d">${escapeHtml(text)}</div>` : ""
+  }${extra}</div>`;
+}
+
+function paintLyricsHead(track) {
+  el("lyr-title").textContent = track ? track.title : "Rien en cours";
+  el("lyr-artist").textContent = track ? track.artist || "—" : "";
+  const cover = el("lyr-cover");
+  const bg = el("lyr-bg");
+  if (track) {
+    fillCover(cover, track, false);
+    const paint = (url) => {
+      bg.style.background = url ? `url("${url}") center / cover no-repeat` : cover.style.background;
+    };
+    if (track.cover && coverUrls.has(track.cover)) paint(coverUrls.get(track.cover));
+    else if (track.cover) coverSrc(track.cover).then(paint);
+    else paint(null);
+  } else {
+    bg.style.background = "";
+  }
+}
+
+async function loadLyrics(online = false) {
+  const track = currentTrack();
+  paintLyricsHead(track);
+  const body = el("lyr-body");
+  el("lyr-src").textContent = "";
+  lyricsLines = null;
+  lyricsData = null;
+  lyricsActive = -1;
+  lyricsCalibrating = false;
+  paintLyricsBar();
+  if (!track) {
+    lyricsFor = null;
+    body.innerHTML = lyricsMessage("Rien en cours", "Lance un morceau pour voir ses paroles.");
+    return;
+  }
+  lyricsFor = track.id;
+  let lyrics = online ? null : lyricsCache.get(track.id);
+  if (!lyrics) {
+    body.innerHTML = `<div class="lyr-loading">Recherche des paroles…</div>`;
+    lyrics = await invoke("get_lyrics", { id: track.id, online }).catch(() => null);
+    // Introuvable sans avoir cherché en ligne : on ne le retient pas, la recherche peut venir.
+    if (lyrics && (lyrics.source !== "none" || online || state.settings.lyrics_online)) lyricsCache.set(track.id, lyrics);
+    if (lyricsFor !== track.id || !lyricsOpen) return;
+  }
+  renderLyrics(lyrics || { source: "none" });
+}
+
+function renderLyrics(lyrics) {
+  const body = el("lyr-body");
+  const src = LYRICS_SOURCES[lyrics.source];
+  lyricsData = lyrics;
+  if (!lyricsData.anchors) lyricsData.anchors = [];
+  paintLyricsBar();
+  if (lyrics.synced && lyrics.synced.length) {
+    lyricsLines = lyrics.synced;
+    el("lyr-src").textContent = src ? `Synchronisées · ${src}` : "Synchronisées";
+    el("lyr-src").title = lyrics.matched ? `Trouvées pour : ${lyrics.matched}` : "";
+    body.innerHTML = `<div class="lyr-pad"></div>${lyricsLines
+      .map((l, i) => `<p class="lyr-line" data-i="${i}">${escapeHtml(l.text) || "♪"}</p>`)
+      .join("")}<div class="lyr-pad"></div>`;
+    body.scrollTop = 0;
+    syncLyrics(true);
+    return;
+  }
+  if (lyrics.plain) {
+    el("lyr-src").textContent = src ? `Non synchronisées · ${src}` : "";
+    el("lyr-src").title = lyrics.matched ? `Trouvées pour : ${lyrics.matched}` : "";
+    body.innerHTML = `<div class="lyr-plain">${lyrics.plain
+      .split(/\r?\n/)
+      .map((l) => `<p>${escapeHtml(l) || "&nbsp;"}</p>`)
+      .join("")}</div>`;
+    body.scrollTop = 0;
+    return;
+  }
+  if (lyrics.instrumental) {
+    body.innerHTML = lyricsMessage("Morceau instrumental", "Pas de paroles sur celui-là, profite.");
+    return;
+  }
+  const offer = state.settings.lyrics_online
+    ? ""
+    : `<button class="primary-btn" data-lyr="online">${icon("search", 15)} Chercher en ligne</button>
+       <div class="lyr-empty-d small">Sur LRCLIB, une base libre et gratuite : seuls l'artiste, le titre et la durée sont envoyés.</div>`;
+  body.innerHTML = lyricsMessage(
+    "Paroles introuvables",
+    state.settings.lyrics_online
+      ? "Ni le fichier ni LRCLIB n'ont ce morceau. Un fichier .lrc du même nom à côté du morceau marche aussi."
+      : "Le fichier n'en contient pas.",
+    offer
+  );
+}
+
+/// La ligne chantée s'illumine et vient au centre.
+function syncLyrics(jump = false) {
+  if (!lyricsOpen || !lyricsLines) return;
+  const anchors = lyricsData ? lyricsData.anchors : [];
+  const t = EchoLogic.lyricTime(anchors, mediaEl().currentTime * 1000) + 180;
+  let lo = 0;
+  let hi = lyricsLines.length - 1;
+  let idx = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (lyricsLines[mid].ms <= t) {
+      idx = mid;
+      lo = mid + 1;
+    } else hi = mid - 1;
+  }
+  if (idx === lyricsActive && !jump) return;
+  const body = el("lyr-body");
+  const old = body.querySelector(".lyr-line.now");
+  if (old) old.classList.remove("now");
+  body.querySelectorAll(".lyr-line").forEach((p, i) => p.classList.toggle("past", i < idx));
+  lyricsActive = idx;
+  const line = idx >= 0 ? body.querySelector(`.lyr-line[data-i="${idx}"]`) : null;
+  if (line) line.classList.add("now");
+  if (Date.now() - lyricsUserScroll < 3500) return;
+  const target = line ? line.offsetTop - body.clientHeight * 0.4 + line.offsetHeight / 2 : 0;
+  body.scrollTo({ top: Math.max(0, target), behavior: jump || !state.settings.animations ? "auto" : "smooth" });
+}
+
+/// Calages du morceau affiché : appliqués tout de suite, gardés pour la prochaine fois.
+function setAnchors(anchors) {
+  if (!lyricsData || !lyricsFor) return;
+  lyricsData.anchors = anchors;
+  const cached = lyricsCache.get(lyricsFor);
+  if (cached) cached.anchors = anchors;
+  invoke("save_lyrics_sync", { id: lyricsFor, anchors }).catch(() => {});
+  paintLyricsBar();
+  syncLyrics(true);
+}
+
+/// Avance ou recule les paroles du passage en cours (un calage est créé s'il n'y en a pas).
+function nudgeLyrics(deltaMs) {
+  if (!lyricsData) return;
+  const now = mediaEl().currentTime * 1000;
+  const anchors = [...(lyricsData.anchors || [])];
+  const current = anchors.filter((a) => a.at_ms <= now).sort((x, y) => y.at_ms - x.at_ms)[0];
+  if (current) {
+    const i = anchors.indexOf(current);
+    anchors[i] = { at_ms: current.at_ms, lyric_ms: Math.max(0, current.lyric_ms - deltaMs) };
+    setAnchors(anchors);
+  } else {
+    const lyricNow = EchoLogic.lyricTime(anchors, now);
+    setAnchors(EchoLogic.addAnchor(anchors, now, Math.max(0, lyricNow - deltaMs)));
+  }
+}
+
+/// Barre sous l'en-tête : conseil pour un clip, ou commandes du mode « Caler ».
+function paintLyricsBar() {
+  const bar = el("lyr-bar");
+  const tool = el("lyr-sync");
+  const track = currentTrack();
+  const synced = !!(lyricsData && lyricsData.synced && lyricsData.synced.length);
+  tool.hidden = !synced;
+  tool.classList.toggle("on", lyricsCalibrating);
+  tool.innerHTML = `${icon("clock", 14)}<span>${lyricsCalibrating ? "Terminé" : "Caler"}</span>`;
+  const anchors = (lyricsData && lyricsData.anchors) || [];
+  if (synced && lyricsCalibrating) {
+    bar.hidden = false;
+    bar.innerHTML = `<span class="lyr-bar-t">Clique sur la ligne <b>au moment où elle est chantée</b> : tout se cale à partir de là.</span>
+      <span class="lyr-bar-ctl">
+        <button class="lyr-chip" data-lyr="nudge" data-ms="-500" title="Les paroles arrivent trop tard">−0,5 s</button>
+        <button class="lyr-chip" data-lyr="nudge" data-ms="500" title="Les paroles arrivent trop tôt">+0,5 s</button>
+        ${anchors.length ? `<button class="lyr-chip" data-lyr="reset">Effacer les calages</button>` : ""}
+      </span>`;
+  } else if (synced && track && track.video && !anchors.length) {
+    bar.hidden = false;
+    bar.innerHTML = `<span class="lyr-bar-t">C'est un clip : s'il a une intro ou des scènes en plus, les paroles seront décalées.</span>
+      <span class="lyr-bar-ctl"><button class="lyr-chip" data-lyr="calibrate">Caler les paroles</button></span>`;
+  } else {
+    bar.hidden = true;
+    bar.innerHTML = "";
+  }
+}
+
+function bindLyrics() {
+  el("lyr-close").innerHTML = icon("close", 18);
+  el("comp-lyrics").innerHTML = icon("mic", 19);
+  el("min-lyrics").innerHTML = icon("mic", 18);
+  ["btn-lyrics", "comp-lyrics", "min-lyrics"].forEach((id) => el(id).addEventListener("click", () => toggleLyrics()));
+  el("lyr-close").addEventListener("click", () => toggleLyrics(false));
+  el("lyr-sync").addEventListener("click", () => {
+    lyricsCalibrating = !lyricsCalibrating;
+    paintLyricsBar();
+  });
+  el("lyr-bar").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-lyr]");
+    if (!btn) return;
+    if (btn.dataset.lyr === "calibrate") {
+      lyricsCalibrating = true;
+      paintLyricsBar();
+    } else if (btn.dataset.lyr === "nudge") {
+      nudgeLyrics(Number(btn.dataset.ms));
+    } else if (btn.dataset.lyr === "reset") {
+      setAnchors([]);
+    }
+  });
+  const body = el("lyr-body");
+  ["wheel", "touchmove"].forEach((ev) => body.addEventListener(ev, () => (lyricsUserScroll = Date.now()), { passive: true }));
+  body.addEventListener("click", async (e) => {
+    const line = e.target.closest(".lyr-line");
+    if (line && lyricsLines) {
+      const l = lyricsLines[Number(line.dataset.i)];
+      if (!l) return;
+      const now = mediaEl().currentTime * 1000;
+      if (lyricsCalibrating) {
+        // « Cette ligne est chantée maintenant » : tout se cale à partir d'ici.
+        setAnchors(EchoLogic.addAnchor(lyricsData.anchors, now, l.ms));
+        toast("Paroles calées. Si le clip coupe le morceau plus loin, recale à la reprise.");
+      } else {
+        mediaEl().currentTime = EchoLogic.fileTime(lyricsData ? lyricsData.anchors : [], l.ms, now) / 1000;
+      }
+      lyricsUserScroll = 0;
+      syncLyrics(true);
+      return;
+    }
+    if (e.target.closest('[data-lyr="online"]')) {
+      saveSettings({ lyrics_online: true });
+      loadLyrics(true);
+    }
+  });
+}
+
+/* ============================================================
+   Mises à jour
+   ============================================================ */
+
+let updateDismissed = "";
+let updateBusy = false;
+let updateChecking = false;
+
+function showUpdate(status) {
+  if (!status) return;
+  state.update = status;
+  const bar = el("update-bar");
+  const v = status.available;
+  const key = v ? `${v}:${status.ready ? "ready" : "new"}` : "";
+  if (!v || updateDismissed === key) {
+    bar.hidden = true;
+  } else {
+    el("update-text").textContent = status.ready ? `Écho ${v} est installé.` : `Écho ${v} est disponible.`;
+    const act = el("update-act");
+    act.disabled = updateBusy;
+    act.textContent = updateBusy ? "Installation…" : status.ready ? "Redémarrer" : status.can_install ? "Installer" : "Télécharger";
+    act.dataset.act = status.ready ? "restart" : status.can_install ? "install" : "page";
+    bar.hidden = false;
+  }
+  if (state.view === "settings" || !el("sheet").hidden) refreshSettingsPanel();
+}
+
+async function updateAction(kind) {
+  if (kind === "check") {
+    updateChecking = true;
+    refreshSettingsPanel();
+    const status = await invoke("check_update").catch((e) => ({ error: String(e) }));
+    updateChecking = false;
+    updateDismissed = "";
+    showUpdate(status);
+    refreshSettingsPanel();
+    if (status.error) toast("Vérification impossible pour le moment (connexion ?).");
+    else if (!status.available) toast(`Écho ${state.version} est la dernière version.`);
+  } else if (kind === "install") {
+    updateBusy = true;
+    showUpdate(state.update);
+    const status = await invoke("install_update").catch((e) => ({ ...state.update, error: String(e) }));
+    updateBusy = false;
+    showUpdate(status);
+    if (status.error) toast(`La mise à jour n'a pas pu s'installer : ${status.error}`);
+  } else if (kind === "restart") {
+    saveProgress(true);
+    await invoke("restart_to_update");
+  } else if (kind === "page") {
+    invoke("open_releases");
+  }
+}
+
+function bindUpdates() {
+  el("update-close").innerHTML = icon("close", 15);
+  el("update-act").addEventListener("click", () => updateAction(el("update-act").dataset.act));
+  el("update-close").addEventListener("click", () => {
+    const s = state.update;
+    if (s && s.available) updateDismissed = `${s.available}:${s.ready ? "ready" : "new"}`;
+    el("update-bar").hidden = true;
+  });
+}
+
+/// Ligne « Mises à jour » des réglages : version, état, et le bon bouton.
+function updateRow() {
+  const u = state.update;
+  let desc;
+  let btn;
+  if (updateBusy) {
+    desc = "Téléchargement et installation…";
+    btn = "";
+  } else if (u && u.ready) {
+    desc = `Écho ${u.available} est installé : il s'applique au redémarrage.`;
+    btn = `<button class="primary-btn" data-action="update-restart">Redémarrer</button>`;
+  } else if (u && u.available) {
+    desc = u.can_install
+      ? `Écho ${u.available} est disponible.`
+      : `Écho ${u.available} est disponible. Installé par paquet : récupère-le sur la page des versions.`;
+    btn = u.can_install
+      ? `<button class="primary-btn" data-action="update-install">${icon("download", 15)} Installer</button>`
+      : `<button class="ghost-btn" data-action="update-page">${icon("download", 15)} Télécharger</button>`;
+  } else {
+    desc = updateChecking
+      ? "Vérification…"
+      : u && u.error
+        ? "Dernière vérification impossible (pas de connexion ?)."
+        : u
+          ? "Tu as la dernière version."
+          : "Vérifiées toutes les 6 heures.";
+    btn = `<button class="ghost-btn" data-action="update-check"${updateChecking ? " disabled" : ""}>${icon("refresh", 15)} Vérifier maintenant</button>`;
+  }
+  return rowButton(`Écho ${escapeHtml(state.version || "")}`, desc, btn);
+}
+
+/* ============================================================
    Démarrage
    ============================================================ */
 
@@ -2718,6 +3170,8 @@ async function start() {
   el("comp-settings").innerHTML = icon("settings", 18);
   el("comp-theme").innerHTML = icon("moon", 18);
   el("comp-queue").innerHTML = icon("queue", 19);
+  bindLyrics();
+  bindUpdates();
   el("comp-prev").innerHTML = icon("prev", 22);
   el("comp-next").innerHTML = icon("next", 22);
   el("comp-play").innerHTML = icon("play", 20);

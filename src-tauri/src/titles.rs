@@ -125,8 +125,9 @@ fn strip_noise(text: &str) -> String {
     // « … (Music Video) HD » : mention de qualité laissée seule en fin de titre.
     let mut out = tidy(&out);
     for tail in [" HD", " HQ", " 4K"] {
-        if out.to_uppercase().ends_with(tail) {
-            out.truncate(out.len() - tail.len());
+        let cut = out.len().saturating_sub(tail.len());
+        if out.len() > tail.len() && out.is_char_boundary(cut) && out[cut..].eq_ignore_ascii_case(tail) {
+            out.truncate(cut);
         }
     }
     tidy(&out)
@@ -140,10 +141,13 @@ fn split_artist(text: &str) -> (String, String) {
     }
     let quotes = ['"', '“', '”', '«', '»'];
     if let Some(open) = text.find(quotes).filter(|p| *p > 0) {
-        let after = &text[open + 1..];
+        // « et “ font 2 à 3 octets : on avance de la taille réelle du guillemet.
+        let open_len = text[open..].chars().next().map(char::len_utf8).unwrap_or(1);
+        let after = &text[open + open_len..];
         if let Some(len) = after.find(quotes) {
+            let close_len = after[len..].chars().next().map(char::len_utf8).unwrap_or(1);
             let artist = text[..open].trim().to_string();
-            let title = format!("{} {}", &after[..len], &after[len + 1..]);
+            let title = format!("{} {}", &after[..len], &after[len + close_len..]);
             if !artist.is_empty() && len > 0 {
                 return (artist, title);
             }
@@ -152,23 +156,55 @@ fn split_artist(text: &str) -> (String, String) {
     (String::new(), text.to_string())
 }
 
+/// Cherche `needle` (en minuscules ASCII) sans tenir compte de la casse, et renvoie
+/// début et fin **dans le texte d'origine**. Chercher dans `text.to_lowercase()` puis
+/// couper `text` à la même position plante : « İ » ou « ẞ » changent de longueur.
+pub fn find_ci(text: &str, needle: &str) -> Option<(usize, usize)> {
+    let lower = |c: char| {
+        let mut l = c.to_lowercase();
+        let first = l.next();
+        if l.next().is_some() {
+            None
+        } else {
+            first
+        }
+    };
+    for (start, _) in text.char_indices() {
+        let mut rest = text[start..].char_indices();
+        let mut end = start;
+        let mut ok = true;
+        for n in needle.chars() {
+            match rest.next() {
+                Some((at, c)) if lower(c) == Some(n) => end = start + at + c.len_utf8(),
+                _ => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if ok && !needle.is_empty() {
+            return Some((start, end));
+        }
+    }
+    None
+}
+
 /// Sépare les artistes invités : « ft. », « feat. », « featuring », y compris entre parenthèses.
 fn take_feat(text: &str) -> (String, Vec<String>) {
-    let lower = text.to_lowercase();
     let markers = ["(feat. ", "(feat ", "(ft. ", "(ft ", "[feat. ", " feat. ", " feat ", " ft. ", " ft ", " featuring "];
-    let mut best: Option<(usize, &str)> = None;
+    let mut best: Option<(usize, usize, &str)> = None;
     for m in markers {
-        if let Some(pos) = lower.find(m) {
-            if best.map(|(p, _)| pos < p).unwrap_or(true) {
-                best = Some((pos, m));
+        if let Some((start, end)) = find_ci(text, m) {
+            if best.map(|(p, _, _)| start < p).unwrap_or(true) {
+                best = Some((start, end, m));
             }
         }
     }
-    let Some((pos, marker)) = best else {
+    let Some((pos, end, marker)) = best else {
         return (text.to_string(), Vec::new());
     };
     let before = text[..pos].to_string();
-    let after = &text[pos + marker.len()..];
+    let after = &text[end..];
     let (guests, rest) = if marker.starts_with('(') || marker.starts_with('[') {
         let close = if marker.starts_with('(') { ')' } else { ']' };
         match after.find(close) {
@@ -241,5 +277,23 @@ mod tests {
     fn sans_tiret_pas_d_artiste_invente() {
         assert_eq!(guess("Ma chanson (Live)"), (String::new(), "Ma chanson (Live)".to_string()));
         assert_eq!(guess("Piste 03"), (String::new(), "Piste 03".to_string()));
+    }
+
+    #[test]
+    fn les_noms_pieges_ne_font_pas_planter() {
+        // Caractères dont la minuscule ou la majuscule change de longueur, guillemets sur 2-3 octets.
+        let (a, t) = guess("İSTANBUL ft. Dave - Gece");
+        assert!(!a.is_empty() && !t.is_empty());
+        let (a, t) = guess("Nekfeu «Énergie sombre» (Clip officiel)");
+        assert_eq!(a, "Nekfeu");
+        assert!(t.contains("Énergie sombre"));
+        let (_, t) = guess("Artiste “Titre” HD");
+        assert!(t.contains("Titre"));
+        let (_, t) = guess("Straße HD");
+        assert_eq!(t, "Straße");
+        let (_, t) = guess("ẞ FEAT. İ");
+        assert!(!t.is_empty());
+        assert_eq!(super::find_ci("A FEAT. B", " feat. "), Some((1, 8)));
+        assert_eq!(super::find_ci("İ ft. X", " ft. "), Some((2, 7)));
     }
 }

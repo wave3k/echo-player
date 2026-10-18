@@ -547,12 +547,12 @@ body[data-theme="light"] .car-cover.side:hover { opacity: .9; }
   text-transform: uppercase; color: var(--muted); font-weight: 500;
 }
 .card { background: var(--panel2); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 2px 16px; }
-.set-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.set-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
 .card > .set-row:last-child, .card > *:last-child { border-bottom: 0; }
 .set-row .lab { font-size: .9rem; }
 .set-row .desc { font-size: .8rem; color: var(--muted); margin-top: 2px; line-height: 1.45; }
 .set-row .set-ctl { display: flex; align-items: center; gap: 8px; flex: none; min-width: 0; }
-.set-row .left { flex: 1; min-width: 0; }
+.set-row .left { flex: 1 1 240px; min-width: 0; }
 .path-row { display: flex; align-items: center; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }
 .path-row:last-child { border-bottom: 0; }
 .path {
@@ -1004,3 +1004,90 @@ body[data-mode="minimal"] .minimal { animation: modeIn .35s cubic-bezier(.2, .7,
 @container (max-width: 76px) { .cover-label > * { display: none; } }
 /* L'onde « en lecture » est en bas de la pochette du carrousel : le texte remonte. */
 .car-cover.now.playing .cover-label { padding-bottom: 24%; }
+
+/* ---------- 15. Paroles ---------- */
+.ctl.on { color: var(--accent); }
+.lyrics {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; flex-direction: column;
+  color: #fff; background: #0b0b10; overflow: hidden;
+}
+.lyrics[hidden] { display: none; }
+.lyr-bg {
+  position: absolute; inset: -60px;
+  filter: blur(60px) saturate(1.35) brightness(.55);
+  transform: scale(1.1);
+}
+.lyrics::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(180deg, rgb(0 0 0 / .45), rgb(0 0 0 / .15) 30%, rgb(0 0 0 / .25) 70%, rgb(0 0 0 / .6));
+}
+.lyr-head {
+  position: relative; z-index: 1;
+  display: flex; align-items: center; gap: 14px; padding: 18px 24px;
+}
+.lyr-cover { width: 54px; height: 54px; border-radius: 10px; flex: none; box-shadow: 0 10px 30px rgb(0 0 0 / .35); }
+.lyr-meta { min-width: 0; }
+.lyr-title { font-weight: 700; font-size: 1.05rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lyr-artist { color: rgb(255 255 255 / .7); font-size: .9rem; }
+.lyr-src { margin-left: auto; font-size: .78rem; color: rgb(255 255 255 / .6); letter-spacing: .02em; }
+.lyr-head .icon-btn { color: #fff; }
+.lyr-body {
+  position: relative; z-index: 1; flex: 1; overflow-y: auto;
+  padding: 0 clamp(24px, 9vw, 140px);
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(180deg, transparent, #000 12%, #000 82%, transparent);
+  mask-image: linear-gradient(180deg, transparent, #000 12%, #000 82%, transparent);
+}
+.lyr-body::-webkit-scrollbar { display: none; }
+.lyr-pad { height: 38vh; }
+.lyr-line {
+  font-size: clamp(1.4rem, 3.2vw, 2.4rem); font-weight: 700; line-height: 1.25; letter-spacing: -.01em;
+  margin: 0 0 .55em; color: rgb(255 255 255 / .38);
+  cursor: pointer; transition: color .25s ease, transform .25s ease, opacity .25s ease;
+  transform-origin: left center;
+}
+.lyr-line:hover { color: rgb(255 255 255 / .7); }
+.lyr-line.past { color: rgb(255 255 255 / .55); }
+.lyr-line.now { color: #fff; transform: scale(1.03); text-shadow: 0 2px 24px rgb(0 0 0 / .25); }
+body[data-anim="off"] .lyr-line { transition: none; }
+.lyr-plain { padding: 8vh 0 14vh; }
+.lyr-plain p { font-size: clamp(1.1rem, 2.2vw, 1.6rem); font-weight: 600; line-height: 1.45; margin: 0; color: rgb(255 255 255 / .85); }
+.lyr-loading { padding-top: 30vh; text-align: center; color: rgb(255 255 255 / .6); }
+.lyr-empty { padding-top: 22vh; display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; }
+.lyr-empty-ic { width: 64px; height: 64px; border-radius: 50%; display: grid; place-items: center; background: rgb(255 255 255 / .1); }
+.lyr-empty-t { font-size: 1.4rem; font-weight: 700; }
+.lyr-empty-d { max-width: 460px; color: rgb(255 255 255 / .7); }
+.lyr-empty-d.small { font-size: .82rem; color: rgb(255 255 255 / .55); }
+
+/* ---------- 16. Mise à jour ---------- */
+.update-bar {
+  position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 70;
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 8px 8px 16px; border-radius: 999px;
+  background: var(--panel); border: 1px solid var(--line2); color: var(--text);
+  box-shadow: 0 16px 40px rgb(0 0 0 / .3); font-size: .9rem; white-space: nowrap;
+}
+.update-bar[hidden] { display: none; }
+.update-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+.update-bar .primary-btn { padding: 6px 14px; }
+@media (max-width: 560px) { .update-bar { left: 16px; right: 16px; transform: none; white-space: normal; } }
+
+/* Calage des paroles (clips plus longs que le morceau) */
+.lyr-tool {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px;
+  border: 1px solid rgb(255 255 255 / .25); background: rgb(255 255 255 / .08); color: #fff; font: inherit; font-size: .82rem; cursor: pointer;
+}
+.lyr-tool[hidden] { display: none; }
+.lyr-tool:hover { background: rgb(255 255 255 / .16); }
+.lyr-tool.on { background: #fff; color: #0b0b10; }
+.lyr-bar {
+  position: relative; z-index: 1; margin: 0 24px 6px; padding: 10px 14px; border-radius: 14px;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
+  background: rgb(0 0 0 / .28); border: 1px solid rgb(255 255 255 / .12); font-size: .88rem;
+}
+.lyr-bar[hidden] { display: none; }
+.lyr-bar-t { color: rgb(255 255 255 / .85); }
+.lyr-bar-ctl { display: flex; gap: 8px; flex-wrap: wrap; }
+.lyr-chip { padding: 6px 12px; border-radius: 999px; border: 1px solid rgb(255 255 255 / .25); background: rgb(255 255 255 / .1); color: #fff; font: inherit; font-size: .82rem; cursor: pointer; }
+.lyr-chip:hover { background: rgb(255 255 255 / .2); }

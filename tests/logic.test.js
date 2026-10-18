@@ -1,7 +1,7 @@
 // Règles de lecture d'Écho. Lancer : node --test tests/
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { freshBag, nextIndex, prevIndex, syncFolders } = require("../src/logic.js");
+const { freshBag, nextIndex, prevIndex, syncFolders, lyricTime, fileTime, addAnchor } = require("../src/logic.js");
 
 const ctx = (over = {}) => ({ n: 5, index: 0, shuffle: false, repeat: "off", bag: freshBag([]), ...over });
 
@@ -67,3 +67,35 @@ test("la copie locale des réglages suit les dossiers du cœur", () => {
   assert.deepEqual(settings.folders, ["/musique", "/nouveau"]);
   assert.equal(settings.volume, 70);
 });
+
+// God's Plan : dans le clip, le son démarre après 36 s de scène, puis reprend du début à 119,7 s.
+const godsPlan = [
+  { at_ms: 48900, lyric_ms: 12510 },
+  { at_ms: 119700, lyric_ms: 12510 },
+];
+
+test("paroles : sans calage, le fichier et les paroles avancent ensemble", () => {
+  assert.equal(lyricTime([], 5000), 5000);
+  assert.equal(fileTime([], 5000, 0), 5000);
+});
+
+test("paroles : chaque calage vaut jusqu'au suivant", () => {
+  assert.equal(lyricTime(godsPlan, 60000), 23610);
+  assert.equal(lyricTime(godsPlan, 119700), 12510);
+  assert.equal(lyricTime(godsPlan, 130000), 22810);
+  assert.ok(lyricTime(godsPlan, 10000) < 0, "l'intro du clip tombe avant les paroles");
+});
+
+test("paroles : un clic sur une ligne reste dans le passage en cours", () => {
+  // On écoute la 2e partie : la ligne à 20 s des paroles est jouée à 127,19 s, pas à 56,39 s.
+  assert.equal(fileTime(godsPlan, 20000, 125000), 127190);
+  assert.equal(fileTime(godsPlan, 20000, 60000), 56390);
+});
+
+test("paroles : recaler près d'un calage le remplace", () => {
+  const a = addAnchor(godsPlan, 49500, 12510);
+  assert.equal(a.length, 2);
+  assert.equal(a[0].at_ms, 49500);
+  assert.equal(addAnchor(godsPlan, 90000, 50000).length, 3);
+});
+

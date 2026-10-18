@@ -55,6 +55,10 @@ pub struct Settings {
     pub loudness: bool,
     /// Égaliseur : "flat", "bass", "vocal", "treble", "rap" ou "acoustic".
     pub eq: String,
+    /// Mises à jour : "auto" (installées toutes seules), "notify" (prévenir) ou "off".
+    pub updates: String,
+    /// Paroles cherchées en ligne (LRCLIB) quand le fichier n'en a pas.
+    pub lyrics_online: bool,
 
     pub volume: u32,
     pub last_track: Option<String>,
@@ -97,6 +101,8 @@ impl Default for Settings {
             crossfade: 0,
             loudness: true,
             eq: "flat".into(),
+            updates: "auto".into(),
+            lyrics_online: false,
             volume: 90,
             last_track: None,
             last_position_ms: 0,
@@ -132,6 +138,7 @@ impl Settings {
         pick(&mut self.text_size, &["petit", "normal", "grand"], "normal");
         pick(&mut self.repeat_default, &["off", "all", "one"], "off");
         pick(&mut self.eq, &["flat", "bass", "vocal", "treble", "rap", "acoustic"], "flat");
+        pick(&mut self.updates, &["auto", "notify", "off"], "auto");
         if !matches!(self.crossfade, 0 | 3 | 6 | 10) {
             self.crossfade = 0;
         }
@@ -309,6 +316,21 @@ pub fn save_overrides(dir: &Path, overrides: &Overrides) {
     if let Ok(json) = serde_json::to_string_pretty(overrides) {
         let _ = write_atomic(&dir.join("overrides.json"), json.as_bytes());
     }
+}
+
+/// Calages des paroles faits à la main, par morceau (lyrics_sync.json).
+pub fn load_lyrics_sync(dir: &Path) -> HashMap<String, Vec<crate::lyrics::Anchor>> {
+    std::fs::read(dir.join("lyrics_sync.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_lyrics_sync(dir: &Path, map: &HashMap<String, Vec<crate::lyrics::Anchor>>) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join("lyrics_sync.json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec(map).map_err(std::io::Error::other)?)?;
+    std::fs::rename(tmp, dir.join("lyrics_sync.json"))
 }
 
 #[cfg(test)]

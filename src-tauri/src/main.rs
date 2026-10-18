@@ -1,15 +1,19 @@
 // Pas de console à côté de la fenêtre sous Windows (version publiée).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(target_os = "linux")]
+mod audio_only;
 mod discord;
 #[cfg(target_os = "linux")]
 mod frames;
 mod library;
+mod lyrics;
 mod matroska;
 mod mp4;
 mod mpris;
 mod store;
 mod titles;
+mod updates;
 mod watch;
 
 use library::Track;
@@ -274,9 +278,32 @@ where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
 {
-    tauri::async_runtime::spawn_blocking(f)
-        .await
-        .expect("tâche de fond interrompue")
+    let out = tauri::async_runtime::spawn_blocking(move || {
+        let out = f();
+        release_memory();
+        out
+    })
+    .await
+    .expect("tâche de fond interrompue");
+    out
+}
+
+/// Rend au système la mémoire libérée par un travail lourd (scan, copie audio, image
+/// d'une vidéo). Sans ça, l'allocateur de glibc la garde pour lui : des dizaines de Mo.
+fn release_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
+/// Deux réserves de mémoire en tout, au lieu d'une par thread : moins de mémoire
+/// éparpillée, sans effet sensible pour une app de ce genre.
+fn limit_allocator() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+    }
 }
 
 /// Relit les dossiers choisis et remplit la memoire + le cache disque.
@@ -338,6 +365,7 @@ fn scan_with_events(app: &tauri::AppHandle) -> Snapshot {
     let _ = app.emit("scanning", true);
     let settings = app.state::<AppSettings>().0.lock().unwrap().clone();
     let result = do_scan(app, &settings);
+    release_memory();
     let _ = app.emit("scanning", false);
     result
 }
@@ -362,15 +390,18 @@ struct Bootstrap {
     formats: Vec<String>,
     /// Faux tant que l'identifiant de l'application Discord n'est pas renseigné.
     discord_ready: bool,
+    /// Version d'Écho (À propos, mises à jour).
+    version: String,
 }
 
 fn bootstrap_with(app: &tauri::AppHandle, settings: store::Settings, snapshot: Snapshot) -> Bootstrap {
     Bootstrap {
         settings,
         snapshot,
-        cache_bytes: folder_size(&store::covers_dir(&cache_dir(app))),
+        cache_bytes: cache_size(app),
         formats: store::FORMAT_CATALOG.iter().map(|f| f.to_string()).collect(),
         discord_ready: discord::app_id().is_some(),
+        version: app.package_info().version.to_string(),
     }
 }
 
@@ -469,11 +500,19 @@ struct Cleared {
     snapshot: Snapshot,
 }
 
+/// Place prise par le cache : pochettes et copies audio des clips.
+fn cache_size(app: &tauri::AppHandle) -> u64 {
+    let cache = cache_dir(app);
+    folder_size(&store::covers_dir(&cache)) + folder_size(&cache.join("audio"))
+}
+
 /// Efface les pochettes mises en cache puis relit les fichiers pour les reconstruire.
 #[tauri::command]
 async fn clear_cover_cache(app: tauri::AppHandle) -> Cleared {
     offload(move || {
         let dir = store::covers_dir(&cache_dir(&app));
+        // Les copies audio des clips se refont à la demande.
+        let _ = std::fs::remove_dir_all(cache_dir(&app).join("audio"));
         // Les pochettes choisies à la main restent : elles ne sont pas une copie à reconstruire.
         let keep: std::collections::HashSet<String> =
             overrides_of(&app).values().filter_map(|o| o.cover.clone()).collect();
@@ -499,7 +538,7 @@ async fn clear_cover_cache(app: tauri::AppHandle) -> Cleared {
         drop(data);
         let snapshot = scan_with_events(&app);
         Cleared {
-            cache_bytes: folder_size(&dir),
+            cache_bytes: cache_size(&app),
             snapshot,
         }
     })
@@ -637,7 +676,113 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
 
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
+    // Une mise à jour en attente s'installe à la sortie (voir RunEvent::Exit).
     app.exit(0);
+}
+
+/// Paroles du morceau : sur l'ordinateur d'abord, puis en ligne si le réglage le permet
+/// (ou si l'interface le demande explicitement avec `online`).
+#[tauri::command]
+async fn get_lyrics(app: tauri::AppHandle, id: String, online: bool) -> lyrics::Lyrics {
+    let track = {
+        let state = app.state::<AppData>();
+        let data = state.0.lock().unwrap();
+        data.tracks.iter().find(|t| t.id == id).cloned()
+    };
+    let Some(track) = track else { return lyrics::Lyrics::none() };
+    let track = with_override(&track, &overrides_of(&app));
+    let path = PathBuf::from(&track.path);
+    if let Some(mut found) = offload(move || lyrics::local(&path)).await {
+        found.anchors = store::load_lyrics_sync(&config_dir(&app)).remove(&id).unwrap_or_default();
+        return found;
+    }
+    let allowed = online || app.state::<AppSettings>().0.lock().map(|s| s.lyrics_online).unwrap_or(false);
+    if !allowed || track.title.trim().is_empty() {
+        return lyrics::Lyrics::none();
+    }
+    let query = lyrics::Query {
+        artist: track.artist.clone(),
+        title: track.title.clone(),
+        album: track.album.clone(),
+        duration_ms: track.duration_ms,
+        video: track.video,
+    };
+    let mut found = lyrics::online(&cache_dir(&app), &query).await;
+    found.anchors = store::load_lyrics_sync(&config_dir(&app)).remove(&id).unwrap_or_default();
+    found
+}
+
+/// Garde les calages faits à la main pour ce morceau (liste vide : on les oublie).
+#[tauri::command]
+async fn save_lyrics_sync(app: tauri::AppHandle, id: String, anchors: Vec<lyrics::Anchor>) -> Result<(), String> {
+    offload(move || {
+        let dir = config_dir(&app);
+        let mut map = store::load_lyrics_sync(&dir);
+        let mut anchors = anchors;
+        anchors.sort_by_key(|a| a.at_ms);
+        anchors.truncate(64);
+        if anchors.is_empty() {
+            map.remove(&id);
+        } else {
+            map.insert(id, anchors);
+        }
+        store::save_lyrics_sync(&dir, &map).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// Fichier à donner au lecteur audio. Linux : un clip est remplacé par sa piste audio
+/// seule (sinon WebKit décode aussi la vidéo). Ailleurs, ou en cas d'échec : l'original.
+#[tauri::command]
+async fn audio_source(app: tauri::AppHandle, id: String) -> Option<String> {
+    let track = {
+        let state = app.state::<AppData>();
+        let data = state.0.lock().unwrap();
+        data.tracks.iter().find(|t| t.id == id).cloned()
+    }?;
+    #[cfg(target_os = "linux")]
+    if track.video {
+        let cache = cache_dir(&app);
+        let path = PathBuf::from(&track.path);
+        let mtime = track.mtime;
+        if let Some(audio) = offload(move || audio_only::ensure(&path, mtime, &cache)).await {
+            return Some(audio.to_string_lossy().into_owned());
+        }
+    }
+    Some(track.path)
+}
+
+/// Cherche une nouvelle version (bouton « Vérifier maintenant »).
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> updates::Status {
+    updates::check(&app).await
+}
+
+/// Télécharge et installe la version trouvée ; elle s'applique au redémarrage.
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> updates::Status {
+    updates::install(&app).await
+}
+
+/// Relance Écho sur la version installée.
+#[tauri::command]
+fn restart_to_update(app: tauri::AppHandle) {
+    updates::restart(&app);
+}
+
+/// Ouvre la page des versions dans le navigateur (paquet .deb : mise à jour manuelle).
+#[tauri::command]
+fn open_releases() {
+    open_url(updates::RELEASES_URL);
+}
+
+fn open_url(url: &str) {
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
 
 /// On garde de quoi reprendre la lecture au prochain demarrage.
@@ -1025,10 +1170,13 @@ fn lighten_webview(window: &tauri::WebviewWindow) {
 }
 
 fn main() {
+    limit_allocator();
     prepare_webview_env();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updates::Updates::default())
         .manage(AppData(Mutex::new(Data::default())))
         .manage(AppSettings(Mutex::new(store::Settings::default())))
         .manage(AppOverrides(Mutex::new(store::Overrides::new())))
@@ -1081,6 +1229,18 @@ fn main() {
             }
 
             allow_media_paths(&handle, &settings.folders);
+
+            // Copies audio des clips : le cache reste sous sa limite.
+            #[cfg(target_os = "linux")]
+            {
+                let cache = cache_dir(&handle);
+                std::thread::spawn(move || audio_only::prune(&cache));
+            }
+
+            // Mises à jour : vérifiées en fond, selon le réglage du moment.
+            updates::start_background(handle.clone(), |app| {
+                app.state::<AppSettings>().0.lock().map(|s| s.updates.clone()).unwrap_or_else(|_| "off".into())
+            });
 
             // Images de vidéos des anciennes versions (souvent noires) : refaites au besoin.
             if let Ok(read) = std::fs::read_dir(store::covers_dir(&cache_dir(&handle))) {
@@ -1162,6 +1322,13 @@ fn main() {
             save_progress,
             get_cover_path,
             get_cover_paths,
+            check_update,
+            get_lyrics,
+            audio_source,
+            save_lyrics_sync,
+            install_update,
+            restart_to_update,
+            open_releases,
             track_original,
             edit_track,
             set_now_playing,
@@ -1173,8 +1340,15 @@ fn main() {
             get_playlists,
             save_playlists
         ])
-        .run(tauri::generate_context!())
-        .expect("erreur au lancement d'Écho");
+        .build(tauri::generate_context!())
+        .expect("erreur au lancement d'Écho")
+        .run(|app, event| {
+            // Windows : une mise à jour téléchargée s'installe quand Écho se ferme,
+            // quelle que soit la façon de le quitter (croix, barre système, menu).
+            if let tauri::RunEvent::Exit = event {
+                updates::install_on_quit(app);
+            }
+        });
 }
 
 #[cfg(test)]

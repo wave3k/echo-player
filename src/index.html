@@ -165,6 +165,9 @@
       </div>
 
       <div class="player-right">
+        <button aria-label="Paroles" class="ctl" id="btn-lyrics" title="Paroles (L)">
+          <span data-icon="mic" data-size="17"></span>
+        </button>
         <button aria-label="Couper le son" class="ctl" id="btn-mute" title="Couper le son">
           <span data-icon="volume_high" data-size="17" class="i-vol-high"></span>
           <span data-icon="volume_mute" data-size="17" class="i-vol-mute"></span>
@@ -202,6 +205,7 @@
         <button aria-label="Lecture" class="icon-btn play" id="comp-play" title="Lecture"></button>
         <button aria-label="Suivant" class="icon-btn" id="comp-next" title="Suivant"></button>
         <button aria-label="Aléatoire" class="icon-btn" id="comp-shuffle" title="Aléatoire"></button>
+        <button aria-label="Paroles" class="icon-btn" id="comp-lyrics" title="Paroles (L)"></button>
       </div>
 
       <div class="dock">
@@ -251,10 +255,33 @@
           <div class="times"><span id="min-now-time">0:00</span><span id="min-total-time">0:00</span></div>
         </div>
         <div class="min-actions-r">
+          <button aria-label="Paroles" class="icon-btn" id="min-lyrics" title="Paroles (L)"></button>
           <button aria-label="File d'attente" class="icon-btn" id="min-queue" title="File d'attente"></button>
           <button aria-label="Couper le son" class="icon-btn" id="min-volume" title="Couper le son"></button>
         </div>
       </div>
+    </div>
+
+    <!-- ================= paroles ================= -->
+    <div class="lyrics" id="lyrics" hidden>
+      <div class="lyr-bg" id="lyr-bg"></div>
+      <header class="lyr-head">
+        <div class="lyr-cover" id="lyr-cover"></div>
+        <div class="lyr-meta"><div class="lyr-title" id="lyr-title"></div><div class="lyr-artist" id="lyr-artist"></div></div>
+        <span class="lyr-src" id="lyr-src"></span>
+        <button class="lyr-tool" id="lyr-sync" title="Caler les paroles sur le morceau" hidden></button>
+        <button aria-label="Fermer les paroles" class="icon-btn" id="lyr-close" title="Fermer (Échap)"></button>
+      </header>
+      <div class="lyr-bar" id="lyr-bar" hidden></div>
+      <div class="lyr-body" id="lyr-body"></div>
+    </div>
+
+    <!-- ================= mise à jour ================= -->
+    <div class="update-bar" id="update-bar" hidden>
+      <span class="update-dot"></span>
+      <span id="update-text"></span>
+      <button class="primary-btn" id="update-act"></button>
+      <button aria-label="Plus tard" class="icon-btn" id="update-close" title="Plus tard"></button>
     </div>
 
     <!-- ================= surfaces superposées ================= -->

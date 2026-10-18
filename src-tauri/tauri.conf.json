@@ -57,6 +57,18 @@
           "libayatana-appindicator3-1"
         ]
       }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMyRUIzRjM3OTlFN0YwNEMKUldSTThPZVpOei9yTXFpZkVBY2IwVEJPTkg5WXlGakJBeEM0M0VOU1NRTXFrbkhocTNyQmxpckkK",
+      "endpoints": [
+        "https://github.com/wave3k/echo-player/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }
