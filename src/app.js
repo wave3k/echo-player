@@ -163,6 +163,7 @@ function coverLabel(node, track) {
 }
 
 function noCover(node) {
+  delete node.dataset.shown;
   node.classList.add("no-cover");
   node.style.background = "";
   node.innerHTML = icon("note", 16);
@@ -175,6 +176,10 @@ function fillCover(node, track, label = true) {
     noCover(node);
     return;
   }
+  // Déjà affichée telle quelle : la repeindre la ferait clignoter.
+  const shown = `${track.id}|${track.cover || ""}|${coverUrls.has(track.cover) ? 1 : 0}|${label}`;
+  if (node.dataset.shown === shown && !node.classList.contains("no-cover")) return;
+  node.dataset.shown = shown;
   node.classList.remove("no-cover");
   node.innerHTML = "";
   // Les petites vignettes des listes restent sans texte : illisible, et redessiné au défilement.
@@ -818,44 +823,90 @@ function rowHtml(track, index, current, playing) {
     <div class="row-time">${track.has_audio === false ? '<span class="badge mute-badge" title="Vidéo sans piste son">muet</span>' : track.duration_ms ? formatTime(track.duration_ms) : "—"}</div>`;
 }
 
+/// Liste virtuelle : seules les lignes visibles existent, et une ligne déjà dessinée
+/// reste en place au défilement (sinon ses pochettes clignotent à chaque image).
+function virtualList(container, count, rowHeight, makeRow) {
+  let spacer = container.querySelector(":scope > .list-spacer");
+  if (!spacer) {
+    spacer = document.createElement("div");
+    spacer.className = "list-spacer";
+    container.replaceChildren(spacer);
+  }
+  spacer.style.height = `${count * rowHeight}px`;
+  spacer.replaceChildren();
+  const rows = new Map();
+  const draw = () => {
+    const top = container.scrollTop;
+    const first = Math.max(0, Math.floor(top / rowHeight) - 6);
+    const last = Math.min(count, Math.ceil((top + container.clientHeight) / rowHeight) + 6);
+    for (const [i, node] of rows) {
+      if (i < first || i >= last) {
+        node.remove();
+        rows.delete(i);
+      }
+    }
+    for (let i = first; i < last; i++) {
+      if (rows.has(i)) continue;
+      const node = makeRow(i);
+      if (!node) continue;
+      node.style.top = `${i * rowHeight}px`;
+      rows.set(i, node);
+      spacer.appendChild(node);
+    }
+  };
+  container.onscroll = onFrame(draw);
+  draw();
+  return rows;
+}
+
+/// Lignes de la bibliothèque à l'écran, et la liste qu'elles montrent.
+let libRows = new Map();
+let libShown = null;
+
 function renderLibrary() {
   const listEl = el("list");
   if (!listEl) return;
   const all = visibleTracks();
   state.listOrder = all.map((t) => t.id);
+  // Même liste qu'avant (lecture, pause, changement de vue) : on ne met à jour que l'état.
+  if (all === libShown && listEl.querySelector(":scope > .list-spacer")) {
+    markLibrary();
+    return;
+  }
+  libShown = all;
+  libRows = virtualList(listEl, all.length, ROW_HEIGHT, (i) => {
+    const track = all[i];
+    const row = document.createElement("div");
+    row.dataset.index = String(i);
+    row.dataset.trackId = track.id;
+    row.innerHTML = rowHtml(track, i, false, false);
+    fillCover(row.querySelector(".thumb"), track);
+    row.addEventListener("click", () => playFromList(i));
+    paintRowState(row, i);
+    return row;
+  });
+}
 
-  const spacer = document.createElement("div");
-  spacer.className = "list-spacer";
-  spacer.style.height = `${all.length * ROW_HEIGHT}px`;
-  listEl.replaceChildren(spacer);
+/// État « en cours » / « en lecture » d'une ligne, sans la redessiner.
+function paintRowState(row, i) {
+  const current = row.dataset.trackId === currentId();
+  const playing = current && isPlaying();
+  const wanted = playing ? "playing" : current ? "current" : "";
+  if (row.dataset.state === wanted) return;
+  row.dataset.state = wanted;
+  row.className = "row" + (current ? " is-current" : "") + (playing ? " is-playing" : "");
+  row.querySelector(".row-index").innerHTML = playing ? `<span class="eq">${ICONS.waveform}</span>` : String(i + 1);
+}
 
-  const playing = isPlaying();
-  const draw = () => {
-    const scrollTop = listEl.scrollTop;
-    const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - 6);
-    const end = Math.min(all.length, Math.ceil((scrollTop + listEl.clientHeight) / ROW_HEIGHT) + 6);
-    const frag = document.createDocumentFragment();
-    for (let i = start; i < end; i++) {
-      const track = all[i];
-      const row = document.createElement("div");
-      row.className = "row" + (track.id === currentId() ? " is-current" : "") + (track.id === currentId() && playing ? " is-playing" : "");
-      row.style.top = `${i * ROW_HEIGHT}px`;
-      row.dataset.index = String(i);
-      row.dataset.trackId = track.id;
-      row.innerHTML = rowHtml(track, i, track.id === currentId(), playing);
-      fillCover(row.querySelector(".thumb"), track);
-      row.addEventListener("click", () => playFromList(i));
-      frag.appendChild(row);
-    }
-    spacer.replaceChildren(frag);
-  };
-
-  listEl.onscroll = onFrame(draw);
-  draw();
+function markLibrary() {
+  for (const [i, row] of libRows) paintRowState(row, i);
 }
 
 
 const QUEUE_ROW = 40;
+
+let queueShown = "";
+let queueRows = new Map();
 
 function renderQueue() {
   const queue = el("queue");
@@ -864,56 +915,51 @@ function renderQueue() {
   const count = el("queue-count");
   if (count) count.textContent = ids.length ? `${ids.length} morceaux` : "";
 
-  queue.replaceChildren();
   if (ids.length === 0) {
+    queueShown = "";
+    queueRows = new Map();
     const p = document.createElement("div");
     p.className = "hint";
     p.textContent = "La file est vide. Choisis un morceau dans la bibliothèque.";
-    queue.appendChild(p);
+    queue.replaceChildren(p);
     queue.onscroll = null;
     return;
   }
 
+  // Même file qu'avant : on ne déplace que la marque du morceau en cours.
+  const key = `${libraryVersion}\n${ids.join("\n")}`;
+  if (key === queueShown && queue.querySelector(":scope > .list-spacer")) {
+    for (const [, item] of queueRows) item.classList.toggle("is-current", item.dataset.trackId === currentId());
+    return;
+  }
+  queueShown = key;
+
   // Une seule table id → morceau, au lieu d'une recherche par ligne.
   const byId = new Map(state.tracks.map((t) => [t.id, t]));
-  const spacer = document.createElement("div");
-  spacer.className = "list-spacer";
-  spacer.style.height = `${ids.length * QUEUE_ROW}px`;
-  queue.appendChild(spacer);
-
-  // Seules les lignes visibles sont dessinées, comme dans la bibliothèque.
-  const draw = () => {
-    const top = queue.scrollTop;
-    const start = Math.max(0, Math.floor(top / QUEUE_ROW) - 6);
-    const end = Math.min(ids.length, Math.ceil((top + queue.clientHeight) / QUEUE_ROW) + 6);
-    const frag = document.createDocumentFragment();
-    for (let i = start; i < end; i++) {
-      const id = ids[i];
-      const track = byId.get(id);
-      if (!track) continue;
-      const item = document.createElement("button");
-      item.className = "queue-item" + (id === currentId() ? " is-current" : "");
-      item.style.top = `${i * QUEUE_ROW}px`;
-      item.dataset.trackId = id;
-      item.innerHTML = `<span class="queue-num">${i + 1}</span>
+  queueRows = virtualList(queue, ids.length, QUEUE_ROW, (i) => {
+    const id = ids[i];
+    const track = byId.get(id);
+    if (!track) return null;
+    const item = document.createElement("button");
+    item.className = "queue-item" + (id === currentId() ? " is-current" : "");
+    item.dataset.trackId = id;
+    item.innerHTML = `<span class="queue-num">${i + 1}</span>
         <span class="queue-name">${escapeHtml(track.title)}${track.artist ? " — " + escapeHtml(track.artist) : ""}</span>
         <span class="queue-time">${track.duration_ms ? formatTime(track.duration_ms) : "—"}</span>`;
-      item.addEventListener("click", () => {
-        state.queueIndex = i;
-        playCurrent();
-      });
-      frag.appendChild(item);
-    }
-    spacer.replaceChildren(frag);
-  };
-
-  queue.onscroll = onFrame(draw);
-  draw();
+    item.addEventListener("click", () => {
+      state.queueIndex = i;
+      playCurrent();
+    });
+    return item;
+  });
 }
 
 /* ============================================================
    Mode compacte : carrousel
    ============================================================ */
+
+/// Ce que montre le carrousel : il n'est redessiné que si ça change.
+let carouselShown = "";
 
 function renderCarousel() {
   const box = el("carousel");
@@ -922,6 +968,28 @@ function renderCarousel() {
   const now = currentId();
   const changed = now !== lastCarouselId;
   lastCarouselId = now;
+  // Mêmes pochettes autour du même morceau (lecture / pause) : on ne change que l'état.
+  const n = state.queue.length || 1;
+  const key = `${libraryVersion}|${state.settings.show_covers}|${state.queueIndex}|${state.queue.length}|${[-2, -1, 0, 1, 2]
+    .map((o) => state.queue[(((state.queueIndex + o) % n) + n) % n])
+    .join("|")}`;
+  if (key === carouselShown && box.firstChild) {
+    const nowNode = box.querySelector(".car-cover.now");
+    if (nowNode) {
+      nowNode.classList.toggle("playing", playing);
+      let eq = nowNode.querySelector(".playing-eq");
+      if (playing && !eq) {
+        eq = document.createElement("span");
+        eq.className = "playing-eq";
+        eq.innerHTML = ICONS.waveform;
+        nowNode.appendChild(eq);
+      } else if (!playing && eq) {
+        eq.remove();
+      }
+    }
+    return;
+  }
+  carouselShown = key;
   box.replaceChildren();
   if (!state.queue.length) {
     box.innerHTML = `<div class="car-cover now" style="width:190px;height:190px">${icon("note3", 40)}</div>`;

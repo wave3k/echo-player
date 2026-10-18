@@ -14,3 +14,4 @@ node_modules/
 
 # artefacts du navigateur de vérification
 .playwright-mcp/
+videos/

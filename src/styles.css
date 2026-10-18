@@ -739,7 +739,7 @@ button.switch { padding: 0; }
    Tout se désactive avec le réglage « Animations » (body[data-anim="off"], voir plus haut)
    et avec la préférence système « réduire les animations ». */
 
-@keyframes viewIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes viewIn { from { opacity: .55; } to { opacity: 1; } }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes sheetIn { from { opacity: 0; transform: translateY(14px) scale(.985); } to { opacity: 1; transform: none; } }
 @keyframes rise { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translate(-50%, 0); } }
@@ -748,7 +748,7 @@ button.switch { padding: 0; }
 @keyframes coverSwap { from { opacity: .3; transform: scale(.96); } to { opacity: 1; transform: none; } }
 
 /* Changement de vue, de panneau et de disposition. */
-.view.is-active { animation: viewIn .32s cubic-bezier(.2, .7, .2, 1); }
+.view.is-active { animation: viewIn .16s ease-out; }
 body.ready[data-mode="normal"] .app { animation: fadeIn .3s ease; }
 body[data-mode="compact"] .compact,
 body[data-mode="minimal"] .minimal { animation: modeIn .35s cubic-bezier(.2, .7, .2, 1); }
