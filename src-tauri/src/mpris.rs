@@ -3,7 +3,6 @@ use souvlaki::{
     SeekDirection,
 };
 use std::time::Duration;
-use tauri::{Emitter, Manager};
 
 /// Petite enveloppe autour des controles media du systeme (MPRIS sur Linux).
 /// Si le systeme ne repond pas, l'app continue normalement sans eux.
@@ -58,13 +57,11 @@ impl Mpris {
                 if let Some(label) = describe(&event) {
                     // Un clic sur le widget du bureau ramene la fenetre au premier plan.
                     if label == "raise" {
-                        if let Some(window) = handle.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.unminimize();
-                            let _ = window.set_focus();
-                        }
+                        // Sur le fil principal : la fenêtre a pu être fermée, il faut la recréer.
+                        let app = handle.clone();
+                        let _ = handle.run_on_main_thread(move || crate::show_window(&app));
                     }
-                    let _ = handle.emit("media-control", label);
+                    crate::media_control(&handle, &label);
                 }
             });
             self.controls = Some(controls);

@@ -3,6 +3,9 @@
    Deux lecteurs (pour le fondu enchaîné) qui passent par une même chaîne :
    égaliseur 5 bandes → volume égal → limiteur → volume général.
    La chaîne Web Audio n'est montée que si un réglage de son en a besoin.
+   Sous Linux, c'est le cœur de l'app qui lit la musique (GStreamer) : `useNative`
+   remplace alors les deux lecteurs par une télécommande, et ce module ne fait plus
+   que transmettre le volume.
    ============================================================ */
 
 const Sound = (() => {
@@ -174,18 +177,42 @@ const Sound = (() => {
   }
 
   let fadeTimer = null;
+  /// Lecteur du cœur : { media, setVolume(volume, muted) } ; null, la page lit elle-même.
+  let native = null;
 
   return {
     get element() {
-      return players[active];
+      return native ? native.media : players[active];
     },
     get other() {
-      return players[1 - active];
+      return native ? native.media : players[1 - active];
     },
     players,
 
+    /// La musique passe par le cœur : plus de chaîne Web Audio, plus de lecteurs ici.
+    useNative(bridge) {
+      native = bridge;
+      players.forEach((p) => {
+        p.pause();
+        p.removeAttribute("src");
+      });
+      clearInterval(levelTimer);
+      // La chaîne Web Audio a pu être montée avant de savoir : elle tiendrait un flux
+      // son ouvert (et sa mémoire) pour rien.
+      if (ctx) {
+        ctx.close().catch(() => {});
+        ctx = null;
+      }
+    },
+
     /// Applique les réglages de son (au démarrage et à chaque changement).
     configure(settings) {
+      if (native) {
+        // L'égaliseur, le volume égal et le fondu sont lus par le cœur dans les réglages.
+        volume = Math.min(1, Math.max(0, settings.volume / 100));
+        native.setVolume(volume, muted);
+        return;
+      }
       eq = EQ_PRESETS[settings.eq] ? settings.eq : "flat";
       loudness = !!settings.loudness;
       volume = Math.min(1, Math.max(0, settings.volume / 100));
@@ -199,11 +226,13 @@ const Sound = (() => {
     },
     setVolume(v) {
       volume = Math.min(1, Math.max(0, v));
-      applyVolume();
+      if (native) native.setVolume(volume, muted);
+      else applyVolume();
     },
     setMuted(m) {
       muted = !!m;
-      applyVolume();
+      if (native) native.setVolume(volume, muted);
+      else applyVolume();
     },
     get muted() {
       return muted;
@@ -211,6 +240,7 @@ const Sound = (() => {
 
     /// À appeler juste avant de lancer la lecture : la chaîne doit être réveillée.
     resume() {
+      if (native) return;
       if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {});
       startLevel();
     },
@@ -218,7 +248,7 @@ const Sound = (() => {
 
     /// Arrête un fondu en cours : le lecteur sortant se tait tout de suite.
     cancelFade() {
-      if (!fadeTimer) return;
+      if (native || !fadeTimer) return;
       clearInterval(fadeTimer);
       fadeTimer = null;
       const out = players[1 - active];

@@ -34,6 +34,7 @@ tar = "0.4"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio = { version = "1", default-features = false, features = ["time"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 
 # Déjà utilisé par Tauri sous Linux : seulement pour régler le cache du moteur d'affichage.
 [target.'cfg(target_os = "linux")'.dependencies]

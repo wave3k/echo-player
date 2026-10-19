@@ -109,14 +109,32 @@ function applyIcons(root = document) {
 /// Adresse (protocole d'asset) de chaque pochette déjà connue. Le navigateur gère
 /// lui-même le cache des images : rien n'est recopié en mémoire ici.
 const coverUrls = new Map();
+/// Vignette de 128 px de chaque pochette, pour les petits affichages (listes, mini-lecteur).
+const thumbUrls = new Map();
 const coverPending = new Map();
+
+function rememberCover(id, paths) {
+  coverUrls.set(id, paths ? convertFileSrc(paths.full) : null);
+  if (paths && paths.thumb) thumbUrls.set(id, convertFileSrc(paths.thumb));
+}
+
+/// Petit affichage : la vignette suffit, l'image entière y serait décodée pour rien.
+function isSmallCover(node) {
+  if (node.classList.contains("thumb")) return true;
+  if (!node.dataset.coverSize) {
+    const w = node.offsetWidth;
+    if (!w) return false;
+    node.dataset.coverSize = w * (window.devicePixelRatio || 1) <= 160 ? "s" : "l";
+  }
+  return node.dataset.coverSize === "s";
+}
 
 function coverSrc(id) {
   if (coverUrls.has(id)) return Promise.resolve(coverUrls.get(id));
   if (!coverPending.has(id)) {
     const request = invoke("get_cover_path", { id })
-      .then((path) => {
-        coverUrls.set(id, path ? convertFileSrc(path) : null);
+      .then((paths) => {
+        rememberCover(id, paths);
         return coverUrls.get(id);
       })
       .catch(() => null)
@@ -129,7 +147,8 @@ function coverSrc(id) {
 /// Pose la pochette (ou un dégradé) sur un élément, sans toucher à sa taille.
 /// Sans pochette du tout, le dégradé porte le titre et l'artiste.
 function paintCover(node, track, label = true) {
-  const url = track && track.cover ? coverUrls.get(track.cover) : null;
+  const id = track && track.cover;
+  const url = id ? (isSmallCover(node) && thumbUrls.get(id)) || coverUrls.get(id) : null;
   if (url) {
     node.style.background = `#222 url("${url}") center / cover no-repeat`;
     coverLabel(node, null);
@@ -741,6 +760,7 @@ function bindSettings(panel) {
         toast("Pochettes vidées, relecture des fichiers…");
         const cleared = await invoke("clear_cover_cache");
         coverUrls.clear();
+        thumbUrls.clear();
         frameTried.clear();
         audioPaths.clear();
         state.cacheBytes = cleared.cache_bytes;
@@ -944,6 +964,7 @@ let queueShown = "";
 let queueRows = new Map();
 
 function renderQueue() {
+  syncNativeQueue();
   const queue = el("queue");
   if (!queue) return;
   const ids = state.queue;
@@ -1236,6 +1257,118 @@ function setPeek(node, album, currentKey) {
 /// Le lecteur actif. Pendant un fondu enchaîné, l'autre lecteur finit de s'éteindre.
 let audio = Sound.element;
 
+/// Vrai quand le cœur lit la musique (Linux) : la page n'est qu'un écran et une
+/// télécommande. Elle peut être fermée sans couper le son (barre du système).
+let NATIVE = false;
+
+/// Télécommande du lecteur du cœur, avec les mêmes propriétés qu'un lecteur <audio>
+/// (lecture, position, durée) : le reste de la page s'en sert sans le savoir.
+/// La position avance toute seule entre deux nouvelles du cœur (une par seconde).
+const nativeMedia = {
+  paused: true,
+  duration: NaN,
+  pos: 0,
+  at: 0,
+  get currentTime() {
+    if (this.paused) return this.pos;
+    const t = this.pos + (performance.now() - this.at) / 1000;
+    return isFinite(this.duration) ? Math.min(t, this.duration) : t;
+  },
+  set currentTime(v) {
+    this.pos = Math.max(0, v);
+    this.at = performance.now();
+    invoke("player_seek", { ms: Math.round(this.pos * 1000) }).catch(() => {});
+  },
+  play() {
+    this.at = performance.now();
+    this.paused = false;
+    invoke("player_set_playing", { playing: true }).catch(() => {});
+    return Promise.resolve();
+  },
+  pause() {
+    if (!this.paused) this.pos = this.currentTime;
+    this.paused = true;
+    invoke("player_set_playing", { playing: false }).catch(() => {});
+  },
+  update(s) {
+    this.paused = !s.playing;
+    this.pos = s.position_ms / 1000;
+    this.at = performance.now();
+    this.duration = s.duration_ms > 0 ? s.duration_ms / 1000 : NaN;
+  },
+};
+
+/// Passe la lecture au cœur. Renvoie vrai si une lecture y était déjà en cours
+/// (page rouverte depuis la barre du système) : la page reprend alors son état.
+async function enableNative() {
+  if (!NATIVE) {
+    NATIVE = true;
+    Sound.useNative({
+      media: nativeMedia,
+      setVolume: (volume, muted) => invoke("player_volume", { volume, muted }).catch(() => {}),
+    });
+    audio = nativeMedia;
+    Sound.configure(state.settings);
+    await listen("player", (event) => onNativeStatus(event.payload));
+    await listen("player-error", (event) => toast(String(event.payload)));
+  }
+  const snap = await invoke("player_snapshot").catch(() => null);
+  if (!snap || !snap.status.id) return false;
+  state.queue = snap.ids;
+  state.queueIndex = snap.status.index;
+  state.shuffle = snap.shuffle;
+  state.repeat = snap.repeat;
+  nativeMedia.update(snap.status);
+  pushedQueue = queueKey();
+  refreshToggles();
+  renderAll();
+  return true;
+}
+
+/// Nouvelles du lecteur du cœur : position, lecture/pause, changement de morceau.
+function onNativeStatus(s) {
+  const wasPaused = nativeMedia.paused;
+  const hadDuration = nativeMedia.duration;
+  nativeMedia.update(s);
+  if (s.changed && s.id) {
+    const i = state.queue[s.index] === s.id ? s.index : state.queue.indexOf(s.id);
+    if (i >= 0) state.queueIndex = i;
+    renderAll();
+  }
+  if (s.id && !(hadDuration > 0) && nativeMedia.duration > 0) learnDuration(nativeMedia);
+  updateProgress();
+  if (wasPaused !== nativeMedia.paused && !s.changed) {
+    renderCarousel();
+    renderMinimal();
+    renderLibrary();
+  }
+}
+
+/// La file envoyée au cœur en dernier : il ne la reçoit que si elle a changé.
+let pushedQueue = "";
+let queueTimer = null;
+
+function queueKey() {
+  return `${state.queue.length}|${state.queue.join("\n")}|${state.shuffle}|${state.repeat}`;
+}
+
+/// File modifiée (ajout, retrait, ordre, aléatoire, répétition) : le cœur suit.
+function syncNativeQueue() {
+  if (!NATIVE) return;
+  clearTimeout(queueTimer);
+  queueTimer = setTimeout(() => {
+    const key = queueKey();
+    if (key === pushedQueue) return;
+    pushedQueue = key;
+    invoke("player_queue", {
+      ids: state.queue,
+      index: Math.max(0, state.queueIndex),
+      shuffle: state.shuffle,
+      repeat: state.repeat,
+    }).catch(() => {});
+  }, 80);
+}
+
 /// Sous Linux, le lecteur audio de WebKitGTK n'accepte pas asset:// : on lui donne
 /// l'adresse file:// du morceau. Ailleurs (WebView2), le protocole d'asset fonctionne.
 const LINUX_WEBKIT = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent) && !window.chrome;
@@ -1262,7 +1395,7 @@ function startPlayback() {
 
 /// Notification du système pour un nouveau morceau, quand Écho n'est pas au premier plan.
 function notifyTrack(track) {
-  if (!state.settings.notify || document.hasFocus()) return;
+  if (NATIVE || !state.settings.notify || document.hasFocus()) return;
   invoke("notify_track", { title: track.title, body: track.artist || "Écho" }).catch(() => {});
 }
 
@@ -1315,6 +1448,23 @@ function playCurrent({ autoplay = true } = {}) {
     return;
   }
   silentSkips = 0;
+  if (NATIVE) {
+    // Le cœur lit, enchaîne, prévient le système et retient la position.
+    const resume = state.resuming && state.resuming.id === track.id && state.settings.remember_position ? state.resuming.position : null;
+    state.resuming = null;
+    nativeMedia.update({ playing: autoplay, position_ms: resume || 0, duration_ms: track.duration_ms || 0 });
+    pushedQueue = queueKey();
+    invoke("player_play", {
+      ids: state.queue,
+      index: state.queueIndex,
+      autoplay,
+      startMs: resume,
+      shuffle: state.shuffle,
+      repeat: state.repeat,
+    }).catch(() => {});
+    renderAll();
+    return;
+  }
   Sound.cancelFade();
   const token = ++playToken;
   const begin = () => {
@@ -1355,7 +1505,7 @@ const audioPaths = new Map();
 let playToken = 0;
 
 function needsAudioCopy(track) {
-  return LINUX_WEBKIT && !!track && track.video && track.has_audio !== false && !audioPaths.has(track.id);
+  return !NATIVE && LINUX_WEBKIT && !!track && track.video && track.has_audio !== false && !audioPaths.has(track.id);
 }
 
 function playableSrc(track) {
@@ -1394,7 +1544,7 @@ function togglePlay() {
 /// sur l'autre lecteur pendant que celui-ci s'éteint.
 function maybeCrossfade() {
   const seconds = state.settings.crossfade || 0;
-  if (!seconds || Sound.fading || audio.paused || state.repeat === "one") return;
+  if (NATIVE || !seconds || Sound.fading || audio.paused || state.repeat === "one") return;
   const duration = audio.duration;
   if (!isFinite(duration) || duration < seconds * 3 || duration - audio.currentTime > seconds) return;
   const i = EchoLogic.nextIndex(playContext(), true);
@@ -1423,6 +1573,10 @@ function playContext() {
 }
 
 function step(delta, auto = false) {
+  if (NATIVE && state.queue.length) {
+    invoke("player_step", { delta }).catch(() => {});
+    return;
+  }
   if (state.queue.length === 0) {
     if (state.listOrder.length) playFromList(0);
     return;
@@ -1578,6 +1732,7 @@ function pushNowPlaying(track) {
 }
 
 function pushPlayback(force = false) {
+  if (NATIVE) return;
   const track = currentTrack();
   const media = audio;
   const now = Date.now();
@@ -1590,6 +1745,7 @@ function pushPlayback(force = false) {
 }
 
 function saveProgress(force = false) {
+  if (NATIVE) return;
   const track = currentTrack();
   const media = audio;
   if (!state.settings.resume_last && !force) return;
@@ -2414,11 +2570,10 @@ function prefetchCovers() {
   coverPrefetch = invoke("get_cover_paths")
     .then((paths) => {
       const fresh = [];
-      for (const [id, path] of Object.entries(paths || {})) {
+      for (const [id, entry] of Object.entries(paths || {})) {
         if (coverUrls.get(id)) continue;
-        const url = convertFileSrc(path);
-        coverUrls.set(id, url);
-        fresh.push(url);
+        rememberCover(id, entry);
+        fresh.push(thumbUrls.get(id) || coverUrls.get(id));
       }
       // Les toutes premières décodées d'avance (celles visibles au démarrage) : au-delà,
       // des centaines d'images décodées pèseraient lourd en mémoire pour rien.
@@ -2485,7 +2640,13 @@ function applyBootstrap(boot) {
   state.repeat = boot.settings.repeat_default || "off";
   applySettings();
   applySnapshot(boot.snapshot);
-  prepareResume();
+  if (boot.native_audio) {
+    enableNative().then((adopted) => {
+      if (!adopted) prepareResume();
+    });
+  } else {
+    prepareResume();
+  }
   refreshSettingsPanel();
 }
 
@@ -2551,6 +2712,7 @@ function bindOnce() {
   const toggleShuffle = () => {
     state.shuffle = !state.shuffle;
     refreshToggles();
+    syncNativeQueue();
   };
   el("btn-shuffle").addEventListener("click", toggleShuffle);
   el("btn-shuffle-listen").addEventListener("click", toggleShuffle);
@@ -2560,6 +2722,7 @@ function bindOnce() {
     const order = ["off", "all", "one"];
     state.repeat = order[(order.indexOf(state.repeat) + 1) % 3];
     refreshToggles();
+    syncNativeQueue();
   };
   el("btn-repeat").addEventListener("click", cycleRepeat);
 

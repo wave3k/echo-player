@@ -11,7 +11,10 @@ mod lyrics;
 mod matroska;
 mod mp4;
 mod mpris;
+#[cfg_attr(not(target_os = "linux"), path = "player_stub.rs")]
+mod player;
 mod store;
+mod thumbs;
 mod titles;
 mod updates;
 mod watch;
@@ -85,12 +88,33 @@ fn apply_services(app: &tauri::AppHandle) {
     let _ = app.run_on_main_thread(move || set_tray(&handle, want));
 }
 
-/// Affiche la fenêtre et la met au premier plan.
+/// Affiche la fenêtre et la met au premier plan (la recrée si elle a été fermée
+/// pendant qu'Écho jouait depuis la barre du système).
 fn show_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+    let window = match app.get_webview_window("main") {
+        Some(window) => window,
+        None => {
+            let Some(config) = app.config().app.windows.first().cloned() else { return };
+            match tauri::WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build()) {
+                Ok(window) => {
+                    attach_window(&window);
+                    IN_TRAY.store(false, std::sync::atomic::Ordering::SeqCst);
+                    window
+                }
+                Err(_) => return,
+            }
+        }
+    };
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_focus();
+}
+
+/// Touche média, menu de l'icône ou widget du bureau : le lecteur du cœur s'en charge,
+/// sinon la page (qui lit alors la musique elle-même).
+fn media_control(app: &tauri::AppHandle, action: &str) {
+    if !player::media_control(app, action) {
+        let _ = app.emit("media-control", action);
     }
 }
 
@@ -128,9 +152,7 @@ fn set_tray(app: &tauri::AppHandle, want: bool) {
             .on_menu_event(|app, event| match event.id.as_ref() {
                 "show" => show_window(app),
                 "quit" => app.exit(0),
-                action => {
-                    let _ = app.emit("media-control", action);
-                }
+                action => media_control(app, action),
             })
             .on_tray_icon_event(|tray, event| {
                 if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
@@ -392,6 +414,8 @@ struct Bootstrap {
     discord_ready: bool,
     /// Version d'Écho (À propos, mises à jour).
     version: String,
+    /// Vrai : la musique est lue par le cœur (Linux), la page n'est qu'un écran.
+    native_audio: bool,
 }
 
 fn bootstrap_with(app: &tauri::AppHandle, settings: store::Settings, snapshot: Snapshot) -> Bootstrap {
@@ -402,6 +426,7 @@ fn bootstrap_with(app: &tauri::AppHandle, settings: store::Settings, snapshot: S
         formats: store::FORMAT_CATALOG.iter().map(|f| f.to_string()).collect(),
         discord_ready: discord::app_id().is_some(),
         version: app.package_info().version.to_string(),
+        native_audio: player::available(app),
     }
 }
 
@@ -451,6 +476,7 @@ async fn set_settings(app: tauri::AppHandle, mut new_settings: store::Settings) 
         .set_enabled(new_settings.media_keys);
     let _ = set_autostart_impl(&app, new_settings.autostart);
     apply_services(&app);
+    player::configure(&app, &new_settings);
 
     if formats_changed {
         Some(offload(move || scan_with_events(&app)).await)
@@ -503,7 +529,9 @@ struct Cleared {
 /// Place prise par le cache : pochettes et copies audio des clips.
 fn cache_size(app: &tauri::AppHandle) -> u64 {
     let cache = cache_dir(app);
-    folder_size(&store::covers_dir(&cache)) + folder_size(&cache.join("audio"))
+    folder_size(&store::covers_dir(&cache))
+        + folder_size(&thumbs::dir(&store::covers_dir(&cache)))
+        + folder_size(&cache.join("audio"))
 }
 
 /// Efface les pochettes mises en cache puis relit les fichiers pour les reconstruire.
@@ -513,6 +541,7 @@ async fn clear_cover_cache(app: tauri::AppHandle) -> Cleared {
         let dir = store::covers_dir(&cache_dir(&app));
         // Les copies audio des clips se refont à la demande.
         let _ = std::fs::remove_dir_all(cache_dir(&app).join("audio"));
+        let _ = std::fs::remove_dir_all(thumbs::dir(&dir));
         // Les pochettes choisies à la main restent : elles ne sont pas une copie à reconstruire.
         let keep: std::collections::HashSet<String> =
             overrides_of(&app).values().filter_map(|o| o.cover.clone()).collect();
@@ -787,20 +816,19 @@ fn open_url(url: &str) {
 
 /// On garde de quoi reprendre la lecture au prochain demarrage.
 #[tauri::command]
-fn save_progress(
-    app: tauri::AppHandle,
-    settings: State<AppSettings>,
-    track_id: Option<String>,
-    position_ms: u64,
-    playing: bool,
-) {
+fn save_progress(app: tauri::AppHandle, track_id: Option<String>, position_ms: u64, playing: bool) {
+    save_progress_impl(&app, track_id, position_ms, playing);
+}
+
+fn save_progress_impl(app: &tauri::AppHandle, track_id: Option<String>, position_ms: u64, playing: bool) {
+    let settings = app.state::<AppSettings>();
     let mut cfg = settings.0.lock().unwrap();
     cfg.last_track = track_id;
     cfg.last_position_ms = position_ms;
     cfg.last_playing = playing;
     let snapshot = cfg.clone();
     drop(cfg);
-    store::save_settings(&config_dir(&app), &snapshot);
+    store::save_settings(&config_dir(app), &snapshot);
 }
 
 /// Envoie à Discord ce qui joue, après une mise à jour du titre ou de la position.
@@ -811,17 +839,34 @@ fn push_discord(services: &Services, change: impl FnOnce(&mut Option<discord::No
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 fn set_now_playing(
-    state: State<AppData>,
-    media: State<Media>,
-    services: State<Services>,
+    app: tauri::AppHandle,
     title: String,
     artist: String,
     album: String,
     cover: Option<String>,
     duration_ms: u64,
 ) {
+    now_playing(&app, title, artist, album, cover, duration_ms);
+}
+
+/// Le morceau du lecteur du cœur vient de démarrer : touches média, Discord, notification.
+fn announce_track(app: &tauri::AppHandle, track: &Track) {
+    let track = with_override(track, &overrides_of(app));
+    now_playing(app, track.title.clone(), track.artist.clone(), track.album.clone(), track.cover.clone(), track.duration_ms);
+    let focused = app
+        .get_webview_window("main")
+        .and_then(|w| w.is_focused().ok())
+        .unwrap_or(false);
+    if !focused {
+        notify_track(app.clone(), track.title.clone(), if track.artist.is_empty() { "Écho".into() } else { track.artist.clone() });
+    }
+}
+
+fn now_playing(app: &tauri::AppHandle, title: String, artist: String, album: String, cover: Option<String>, duration_ms: u64) {
+    let state = app.state::<AppData>();
+    let media = app.state::<Media>();
+    let services = app.state::<Services>();
     let data = state.0.lock().unwrap();
     let cover_url = cover.as_deref().and_then(|id| cover_url_for(&data, id));
     drop(data);
@@ -847,7 +892,13 @@ fn set_now_playing(
 }
 
 #[tauri::command]
-fn set_playback(media: State<Media>, services: State<Services>, playing: bool, position_ms: u64) {
+fn set_playback(app: tauri::AppHandle, playing: bool, position_ms: u64) {
+    playback_changed(&app, playing, position_ms);
+}
+
+fn playback_changed(app: &tauri::AppHandle, playing: bool, position_ms: u64) {
+    let media = app.state::<Media>();
+    let services = app.state::<Services>();
     let mut controls = media.0.lock().unwrap();
     controls.set_playback(
         playing,
@@ -1119,22 +1170,38 @@ async fn edit_track(
 /// Chemin de la pochette sur le disque. L'interface la charge via le protocole
 /// d'asset : rien n'est copié en mémoire ni encodé en base64.
 #[tauri::command]
-fn get_cover_path(state: State<AppData>, id: String) -> Option<String> {
-    let data = state.0.lock().unwrap();
-    data.covers
-        .get(&id)
-        .map(|p| p.to_string_lossy().to_string())
+async fn get_cover_path(app: tauri::AppHandle, id: String) -> Option<CoverPaths> {
+    let path = app.state::<AppData>().0.lock().unwrap().covers.get(&id).cloned()?;
+    Some(offload(move || CoverPaths::of(&path)).await)
+}
+
+/// Une pochette : l'image d'origine (grands affichages) et sa vignette (listes).
+#[derive(Serialize)]
+struct CoverPaths {
+    full: String,
+    thumb: Option<String>,
+}
+
+impl CoverPaths {
+    fn of(path: &Path) -> Self {
+        Self {
+            full: path.to_string_lossy().to_string(),
+            thumb: thumbs::ensure(path).map(|t| t.to_string_lossy().to_string()),
+        }
+    }
 }
 
 /// Toutes les pochettes connues d'un coup (identifiant → chemin) : l'interface les
 /// pose tout de suite au défilement, sans une demande par ligne.
+/// Les vignettes manquantes sont faites ici, hors du verrou de la bibliothèque.
 #[tauri::command]
-fn get_cover_paths(state: State<AppData>) -> std::collections::HashMap<String, String> {
-    let data = state.0.lock().unwrap();
-    data.covers
-        .iter()
-        .map(|(id, p)| (id.clone(), p.to_string_lossy().to_string()))
-        .collect()
+async fn get_cover_paths(app: tauri::AppHandle) -> std::collections::HashMap<String, CoverPaths> {
+    let covers: Vec<(String, PathBuf)> = {
+        let state = app.state::<AppData>();
+        let data = state.0.lock().unwrap();
+        data.covers.iter().map(|(id, p)| (id.clone(), p.clone())).collect()
+    };
+    offload(move || covers.into_iter().map(|(id, p)| (id, CoverPaths::of(&p))).collect()).await
 }
 
 /// Réglages du moteur d'affichage à poser avant d'ouvrir la fenêtre.
@@ -1167,6 +1234,56 @@ fn lighten_webview(window: &tauri::WebviewWindow) {
     });
     #[cfg(not(target_os = "linux"))]
     let _ = window;
+}
+
+/// Réglages et comportement de la fenêtre (au démarrage, et quand elle est recréée).
+fn attach_window(window: &tauri::WebviewWindow) {
+    lighten_webview(window);
+    let win = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            let (ask, to_tray) = win
+                .state::<AppSettings>()
+                .0
+                .lock()
+                .map(|s| (s.ask_before_quit, s.close_to_tray))
+                .unwrap_or((false, false));
+            if to_tray && tray_shown(win.app_handle()) {
+                if player::available(win.app_handle()) {
+                    // La musique est lue par le cœur : la page est fermée pour de bon
+                    // (≈ 200 Mo rendus), et recréée quand on rouvre Écho.
+                    IN_TRAY.store(true, std::sync::atomic::Ordering::SeqCst);
+                    // WebKit garderait son processus d'affichage en réserve : on l'arrête.
+                    #[cfg(target_os = "linux")]
+                    let _ = win.with_webview(|webview| {
+                        use webkit2gtk::WebViewExt;
+                        webview.inner().terminate_web_process();
+                    });
+                    let _ = win.destroy();
+                    // La page est démontée un peu après : la mémoire est rendue ensuite.
+                    std::thread::spawn(|| {
+                        for _ in 0..3 {
+                            std::thread::sleep(std::time::Duration::from_secs(2));
+                            release_memory();
+                        }
+                    });
+                } else {
+                    api.prevent_close();
+                    let _ = win.hide();
+                }
+            } else if ask {
+                api.prevent_close();
+                let _ = win.emit("close-requested", ());
+            }
+        }
+    });
+}
+
+/// Vrai pendant qu'Écho joue sans fenêtre, depuis la barre du système.
+static IN_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn tray_shown(app: &tauri::AppHandle) -> bool {
+    app.state::<Services>().tray.lock().map(|t| t.is_some()).unwrap_or(false)
 }
 
 fn main() {
@@ -1279,33 +1396,25 @@ fn main() {
 
             apply_services(&handle);
 
+            // Lecteur audio du cœur (Linux) : la musique ne dépend plus de la page.
+            handle.manage(player::Player::new(&handle));
+            player::start(&handle);
+
             // Fermeture de la fenetre : on range dans la barre, on demande, ou on quitte.
             if let Some(window) = app.get_webview_window("main") {
-                lighten_webview(&window);
-                let win = window.clone();
-                window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        let (ask, to_tray) = win
-                            .state::<AppSettings>()
-                            .0
-                            .lock()
-                            .map(|s| (s.ask_before_quit, s.close_to_tray))
-                            .unwrap_or((false, false));
-                        let tray_shown = win.state::<Services>().tray.lock().map(|t| t.is_some()).unwrap_or(false);
-                        if to_tray && tray_shown {
-                            api.prevent_close();
-                            let _ = win.hide();
-                        } else if ask {
-                            api.prevent_close();
-                            let _ = win.emit("close-requested", ());
-                        }
-                    }
-                });
+                attach_window(&window);
             }
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            player::player_play,
+            player::player_queue,
+            player::player_set_playing,
+            player::player_step,
+            player::player_seek,
+            player::player_volume,
+            player::player_snapshot,
             bootstrap,
             get_state,
             set_settings,
@@ -1345,8 +1454,18 @@ fn main() {
         .run(|app, event| {
             // Windows : une mise à jour téléchargée s'installe quand Écho se ferme,
             // quelle que soit la façon de le quitter (croix, barre système, menu).
-            if let tauri::RunEvent::Exit = event {
-                updates::install_on_quit(app);
+            match event {
+                // Plus de fenêtre, mais Écho joue depuis la barre du système : il reste ouvert.
+                tauri::RunEvent::ExitRequested { code: None, api, .. }
+                    if IN_TRAY.load(std::sync::atomic::Ordering::SeqCst) && tray_shown(app) =>
+                {
+                    api.prevent_exit();
+                }
+                tauri::RunEvent::Exit => {
+                    player::save_now(app);
+                    updates::install_on_quit(app);
+                }
+                _ => {}
             }
         });
 }
