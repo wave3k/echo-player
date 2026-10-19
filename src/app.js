@@ -432,6 +432,7 @@ function sectionLecture() {
     <h4 style="margin-top:18px">Paroles</h4>
     <div class="card">
       ${rowSwitch("Chercher les paroles en ligne", "Sur LRCLIB, une base libre, quand le fichier n'en a pas. Seuls l'artiste, le titre et la durée sont envoyés.", "lyrics_online", s.lyrics_online)}
+      ${rowSwitch("Chercher les pochettes en ligne", "Pour les morceaux sans pochette ou avec une image de clip, sur MusicBrainz (base libre). Seuls l'artiste, le titre et l'album sont envoyés.", "covers_online", false, null, true)}
     </div>
   </section>`;
 }

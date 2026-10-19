@@ -22,6 +22,7 @@ Tu lui montres un dossier, il joue tout ce qu'il contient.
 ## Sommaire
 
 - [Fonctionnalités](#fonctionnalités)
+- [À venir](#à-venir)
 - [Installation](#installation)
 - [Utilisation](#utilisation)
 - [Raccourcis clavier](#raccourcis-clavier)
@@ -47,6 +48,15 @@ Tu lui montres un dossier, il joue tout ce qu'il contient.
 | 🌗 **Apparence** | Thème clair, sombre ou celui du système. Quatre palettes, trois polices, taille du texte et arrondis réglables, animations désactivables. |
 | ⌨️ **Intégration au bureau** | Touches média et widget du bureau (MPRIS), icône dans la barre du système, notification à chaque morceau, statut Discord « Écoute… » (activable), démarrage avec la session. |
 | 🔄 **Mises à jour** | Vérifiées toutes les 6 heures et installées toutes seules (ou juste signalées, au choix). Chaque version est signée : Écho refuse un fichier qui ne vient pas de lui. Windows, AppImage et installation par `install.sh` se mettent à jour d'un clic ; le paquet `.deb` passe par la page des versions. |
+
+## À venir
+
+| | |
+|---|---|
+| 🖼️ **Pochettes en ligne** | Pour les morceaux sans pochette, ou dont la pochette est une image de clip : recherche sur [MusicBrainz](https://musicbrainz.org) et le [Cover Art Archive](https://coverartarchive.org) (bases libres, sans compte), Deezer en secours. À activer, comme les paroles en ligne. |
+| 🎞️ **Clips** | Une section pour regarder les clips dans un lecteur vidéo fluide, avec une petite fenêtre qui reste à l'écran quand on change de section. |
+| 📥 **Import de playlists** | Coller le lien d'une playlist Spotify ou YouTube : Écho retrouve les morceaux déjà dans ta bibliothèque, et peut télécharger les autres avec yt-dlp s'il est installé. |
+| 🎚️ **Studio de transitions** | Des transitions façon DJ entre les morceaux : tempo et temps analysés, plusieurs styles, réglage à la main sur la forme d'onde, et une transition par enchaînement dans les playlists. |
 
 ## Installation
 
