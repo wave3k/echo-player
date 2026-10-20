@@ -3,6 +3,7 @@
 
 #[cfg(target_os = "linux")]
 mod audio_only;
+mod covers_online;
 mod discord;
 #[cfg(target_os = "linux")]
 mod frames;
@@ -480,6 +481,7 @@ fn scan_with_events(app: &tauri::AppHandle) -> Snapshot {
     let result = do_scan(app, &settings);
     release_memory();
     let _ = app.emit("scanning", false);
+    kick_online_covers(app);
     result
 }
 
@@ -531,7 +533,9 @@ async fn bootstrap(app: tauri::AppHandle) -> Bootstrap {
             let data = data.0.lock().unwrap();
             snapshot(&cfg, &data, &overrides)
         };
-        bootstrap_with(&app, cfg, snap)
+        let boot = bootstrap_with(&app, cfg, snap);
+        kick_online_covers(&app);
+        boot
     })
     .await
 }
@@ -561,6 +565,7 @@ async fn set_settings(app: tauri::AppHandle, mut new_settings: store::Settings) 
     let _ = set_autostart_impl(&app, new_settings.autostart);
     apply_services(&app);
     player::configure(&app, &new_settings);
+    kick_online_covers(&app);
 
     if formats_changed {
         Some(offload(move || scan_with_events(&app)).await)
@@ -799,6 +804,213 @@ async fn get_lyrics(app: tauri::AppHandle, id: String, online: bool) -> lyrics::
     let mut found = lyrics::online(&cache_dir(&app), &query).await;
     found.anchors = store::load_lyrics_sync(&config_dir(&app)).remove(&id).unwrap_or_default();
     found
+}
+
+/* ---------------- pochettes en ligne ---------------- */
+
+/// Une recherche de pochettes en cours, et une autre demandée pendant ce temps.
+static ONLINE_RUNNING: AtomicBool = AtomicBool::new(false);
+static ONLINE_AGAIN: AtomicBool = AtomicBool::new(false);
+
+/// Ce qu'on cherche pour un morceau, avec la préférence (album ou single) qui s'y applique.
+fn online_want(track: &Track, setting: &str) -> covers_online::Want {
+    let prefer = covers_online::resolve(setting, &track.album, &track.title);
+    covers_online::Want {
+        artist: track.artist.clone(),
+        title: track.title.clone(),
+        album: covers_online::clean_album(&track.album, &track.title),
+        duration_ms: track.duration_ms,
+        video: track.video,
+        prefer,
+        scope: covers_online::Scope::Full,
+    }
+}
+
+/// Lance la recherche des pochettes manquantes en tâche de fond, si le réglage est
+/// actif. Une demande pendant une recherche la relance à la fin (bibliothèque relue).
+fn kick_online_covers(app: &tauri::AppHandle) {
+    if !app.state::<AppSettings>().0.lock().unwrap().covers_online {
+        return;
+    }
+    if ONLINE_RUNNING.swap(true, Ordering::SeqCst) {
+        ONLINE_AGAIN.store(true, Ordering::SeqCst);
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            ONLINE_AGAIN.store(false, Ordering::SeqCst);
+            run_online_covers(&app).await;
+            if !ONLINE_AGAIN.load(Ordering::SeqCst) {
+                break;
+            }
+        }
+        ONLINE_RUNNING.store(false, Ordering::SeqCst);
+        let _ = app.emit("covers-online", None::<(usize, usize)>);
+    });
+}
+
+/// Morceaux à qui chercher une pochette, regroupés : les morceaux d'un même album
+/// partagent la recherche de l'album (et donc sa pochette). Chaque morceau garde ce
+/// qu'il faudrait chercher pour lui seul, si l'album est introuvable.
+type OnlineGroup = (covers_online::Want, Vec<(String, covers_online::Want)>);
+
+fn online_groups(app: &tauri::AppHandle, setting: &str) -> Vec<OnlineGroup> {
+    let overrides = overrides_of(app);
+    let tracks = app.state::<AppData>().0.lock().unwrap().tracks.clone();
+    let mut groups: Vec<OnlineGroup> = Vec::new();
+    let mut by_album: HashMap<String, usize> = HashMap::new();
+    for raw in &tracks {
+        let o = overrides.get(&raw.id);
+        if o.is_some_and(|o| o.no_online) {
+            continue;
+        }
+        let track = with_override(raw, &overrides);
+        let want = online_want(&track, setting);
+        let needed = match o.and_then(|o| o.cover.as_ref().map(|_| o.cover_online.as_deref())) {
+            // Pochette choisie à la main : on n'y touche jamais.
+            Some(None) => false,
+            // Trouvée en ligne : refaite seulement si la préférence a changé.
+            Some(Some(done)) => done != want.prefer.as_str(),
+            None => raw.cover.as_deref().is_none_or(|c| c.starts_with("still-")),
+        };
+        if !needed || !raw.has_audio || track.artist.trim().is_empty() || track.title.trim().is_empty() {
+            continue;
+        }
+        if !want.album.is_empty() && want.prefer == covers_online::Prefer::Album {
+            let key = format!("{}\n{}", lyrics::fold(&want.album), lyrics::fold(&lyrics::artist_variants(&want.artist).pop().unwrap_or_default()));
+            let alone = covers_online::Want { scope: covers_online::Scope::TrackOnly, ..online_want(&track, setting) };
+            if let Some(&i) = by_album.get(&key) {
+                groups[i].1.push((raw.id.clone(), alone));
+                continue;
+            }
+            by_album.insert(key, groups.len());
+            groups.push((covers_online::Want { scope: covers_online::Scope::AlbumOnly, ..want }, vec![(raw.id.clone(), alone)]));
+            continue;
+        }
+        groups.push((want, vec![(raw.id.clone(), online_want(&track, setting))]));
+    }
+    groups
+}
+
+async fn run_online_covers(app: &tauri::AppHandle) {
+    let setting = app.state::<AppSettings>().0.lock().unwrap().covers_prefer.clone();
+    let groups = {
+        let app = app.clone();
+        let setting = setting.clone();
+        offload(move || online_groups(&app, &setting)).await
+    };
+    if groups.is_empty() {
+        return;
+    }
+    let cache = cache_dir(app);
+    let covers = store::covers_dir(&cache);
+    covers_online::prune_candidates(&covers);
+    let total = groups.len();
+    for (done, (want, members)) in groups.into_iter().enumerate() {
+        // Réglage coupé, ou préférence changée : on s'arrête (une nouvelle recherche suivra).
+        let (enabled, prefer) = {
+            let s = app.state::<AppSettings>();
+            let s = s.0.lock().unwrap();
+            (s.covers_online, s.covers_prefer.clone())
+        };
+        if !enabled || prefer != setting {
+            return;
+        }
+        let _ = app.emit("covers-online", Some((done, total)));
+        let ids: Vec<String> = members.iter().map(|(id, _)| id.clone()).collect();
+        // Album introuvable : chaque morceau est cherché pour lui-même.
+        let mut tries = vec![(want, ids)];
+        let mut alone = members.into_iter().map(|(id, w)| (w, vec![id]));
+        while let Some((want, ids)) = tries.pop() {
+            let album_wide = want.scope == covers_online::Scope::AlbumOnly;
+            match covers_online::lookup(&cache, &covers, &want).await {
+                Ok(Some(name)) => {
+                    let updated = set_online_cover(app, &ids, &name, Some(want.prefer.as_str()));
+                    if !updated.is_empty() {
+                        let _ = app.emit("tracks-updated", &updated);
+                    }
+                }
+                Ok(None) if album_wide => tries.extend(alone.by_ref()),
+                Ok(None) => {}
+                // Hors ligne ou service en panne : on réessaiera au prochain lancement.
+                Err(_) => return,
+            }
+        }
+    }
+}
+
+/// Pose une pochette trouvée en ligne sur des morceaux. `online` : la préférence suivie
+/// (recherche automatique), ou `None` pour une pochette choisie dans la fenêtre.
+/// Renvoie les morceaux à jour.
+fn set_online_cover(app: &tauri::AppHandle, ids: &[String], name: &str, online: Option<&str>) -> Vec<Track> {
+    let covers = store::covers_dir(&cache_dir(app));
+    let overrides = {
+        let state = app.state::<AppOverrides>();
+        let mut map = state.0.lock().unwrap();
+        for id in ids {
+            let entry = map.entry(id.clone()).or_default();
+            // Choisie à la main entre-temps : la recherche automatique n'y touche pas.
+            if online.is_some() && entry.cover.is_some() && entry.cover_online.is_none() {
+                continue;
+            }
+            entry.cover = Some(name.to_string());
+            entry.cover_online = online.map(str::to_string);
+            if online.is_none() {
+                entry.no_online = false;
+            }
+        }
+        store::save_overrides(&config_dir(app), &map);
+        map.clone()
+    };
+    let state = app.state::<AppData>();
+    let mut data = state.0.lock().unwrap();
+    data.covers.insert(name.to_string(), covers.join(name));
+    data.tracks
+        .iter()
+        .filter(|t| ids.contains(&t.id))
+        .map(|t| with_override(t, &overrides))
+        .collect()
+}
+
+#[derive(Serialize)]
+struct CoverChoices {
+    /// Ce qui a été cherché (« Artiste — Titre »), pour la fenêtre.
+    query: String,
+    candidates: Vec<covers_online::Candidate>,
+}
+
+/// Pochettes proposées pour un morceau (fenêtre « Chercher une pochette en ligne »).
+/// Demandé par l'utilisateur : permis même quand la recherche automatique est coupée.
+#[tauri::command]
+async fn cover_candidates(app: tauri::AppHandle, id: String, prefer: Option<String>) -> Result<CoverChoices, String> {
+    let track = {
+        let state = app.state::<AppData>();
+        let data = state.0.lock().unwrap();
+        data.tracks.iter().find(|t| t.id == id).cloned()
+    }
+    .ok_or("Ce morceau n'est plus dans la bibliothèque.")?;
+    let track = with_override(&track, &overrides_of(&app));
+    if track.title.trim().is_empty() {
+        return Err("Ce morceau n'a pas de titre à chercher.".into());
+    }
+    let setting = prefer.unwrap_or_else(|| app.state::<AppSettings>().0.lock().unwrap().covers_prefer.clone());
+    let want = online_want(&track, &setting);
+    let covers = store::covers_dir(&cache_dir(&app));
+    let candidates = covers_online::candidates(&covers, &want)
+        .await
+        .map_err(|_| "Recherche impossible : vérifie ta connexion.".to_string())?;
+    Ok(CoverChoices { query: format!("{} — {}", track.artist, track.title), candidates })
+}
+
+/// Pose la pochette choisie dans la fenêtre (adresse d'une des propositions).
+#[tauri::command]
+async fn use_online_cover(app: tauri::AppHandle, id: String, url: String) -> Result<Track, String> {
+    let covers = store::covers_dir(&cache_dir(&app));
+    let name = covers_online::download(&covers, &url).await?;
+    offload(move || set_online_cover(&app, &[id], &name, None).pop())
+        .await
+        .ok_or_else(|| "Ce morceau n'est plus dans la bibliothèque.".into())
 }
 
 /// Garde les calages faits à la main pour ce morceau (liste vide : on les oublie).
@@ -1240,13 +1452,18 @@ fn apply_edit(
         entry.artist = differs(artist, &original.artist);
         entry.album = differs(album, &original.album);
         if clear_cover {
+            // Une pochette trouvée en ligne qu'on retire ne doit pas revenir à la recherche suivante.
+            if entry.cover_online.take().is_some() {
+                entry.no_online = true;
+            }
             entry.cover = None;
         }
         if let Some(name) = new_cover {
             entry.cover = Some(name);
+            entry.cover_online = None;
         }
         let cover_now = entry.cover.clone();
-        if entry.title.is_none() && entry.artist.is_none() && entry.album.is_none() && entry.cover.is_none() {
+        if entry.is_empty() {
             map.remove(&id);
         } else {
             map.insert(id, entry);
@@ -1604,6 +1821,8 @@ fn main() {
             player::player_snapshot,
             bootstrap,
             get_state,
+            cover_candidates,
+            use_online_cover,
             set_settings,
             add_folder,
             remove_folder,

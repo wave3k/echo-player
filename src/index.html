@@ -322,12 +322,34 @@
           </div>
         </div>
         <div class="edit-actions">
+          <button type="button" class="ghost-btn" id="edit-online">Pochette en ligne…</button>
           <button type="button" class="ghost-btn" id="edit-reset">Rétablir l'original</button>
           <span class="grow"></span>
           <button type="button" class="ghost-btn" id="edit-cancel">Annuler</button>
           <button type="submit" class="primary-btn" id="edit-save">Enregistrer</button>
         </div>
       </form>
+    </div>
+
+    <!-- Pochettes trouvées en ligne pour un morceau : on choisit celle qui convient -->
+    <div class="edit-dialog cover-dialog" id="cover-dialog" role="dialog" aria-modal="true" aria-labelledby="cover-dialog-title" hidden>
+      <div class="edit-box cover-box">
+        <div class="edit-head">
+          <div>
+            <div class="modal-title" id="cover-dialog-title">Pochette en ligne</div>
+            <div class="cover-query" id="cover-query"></div>
+          </div>
+          <button type="button" class="icon-btn" id="cover-close" title="Fermer" aria-label="Fermer"></button>
+        </div>
+        <div class="cover-prefer">
+          <span class="seg" id="cover-prefer">
+            <button type="button" data-prefer="album">Album</button>
+            <button type="button" data-prefer="single">Single</button>
+          </span>
+        </div>
+        <div class="cover-grid" id="cover-grid" aria-live="polite"></div>
+        <p class="hint">Sources : MusicBrainz et Cover Art Archive (bases libres), Deezer. Seuls l'artiste, le titre et l'album sont envoyés.</p>
+      </div>
     </div>
 
     <div class="empty" id="empty">
@@ -362,7 +384,7 @@
       </div>
     </div>
 
-    <div class="scan-pill" id="scan-pill" role="status" hidden><span class="spinner" aria-hidden="true"></span>Analyse de ta musique…</div>
+    <div class="scan-pill" id="scan-pill" role="status" hidden><span class="spinner" aria-hidden="true"></span><span id="scan-pill-text">Analyse de ta musique…</span></div>
 
     <audio id="audio" preload="auto"></audio>
     <audio id="audio2" preload="auto"></audio>

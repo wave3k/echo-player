@@ -61,6 +61,10 @@ pub struct Settings {
     pub updates: String,
     /// Paroles cherchées en ligne (LRCLIB) quand le fichier n'en a pas.
     pub lyrics_online: bool,
+    /// Pochettes cherchées en ligne (MusicBrainz, Deezer) pour les morceaux sans pochette.
+    pub covers_online: bool,
+    /// Pochette voulue : "auto" (album s'il est dans les tags, sinon single), "album" ou "single".
+    pub covers_prefer: String,
 
     pub volume: u32,
     pub last_track: Option<String>,
@@ -105,6 +109,8 @@ impl Default for Settings {
             eq: "flat".into(),
             updates: "auto".into(),
             lyrics_online: false,
+            covers_online: false,
+            covers_prefer: "auto".into(),
             volume: 90,
             last_track: None,
             last_position_ms: 0,
@@ -141,6 +147,7 @@ impl Settings {
         pick(&mut self.repeat_default, &["off", "all", "one"], "off");
         pick(&mut self.eq, &["flat", "bass", "vocal", "treble", "rap", "acoustic"], "flat");
         pick(&mut self.updates, &["auto", "notify", "off"], "auto");
+        pick(&mut self.covers_prefer, &["auto", "album", "single"], "auto");
         if !matches!(self.crossfade, 0 | 3 | 6 | 10) {
             self.crossfade = 0;
         }
@@ -324,6 +331,20 @@ pub struct TrackOverride {
     pub album: Option<String>,
     /// Nom du fichier de pochette (dans le cache) qui remplace celle du fichier.
     pub cover: Option<String>,
+    /// Pochette trouvée en ligne toute seule : la préférence suivie ("album" ou "single").
+    /// Absent pour une pochette choisie à la main, qu'une recherche ne remplace jamais.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cover_online: Option<String>,
+    /// La pochette trouvée en ligne a été retirée : on n'en cherche plus pour ce morceau.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub no_online: bool,
+}
+
+impl TrackOverride {
+    /// Rien à garder : l'entrée peut disparaître.
+    pub fn is_empty(&self) -> bool {
+        self.title.is_none() && self.artist.is_none() && self.album.is_none() && self.cover.is_none() && !self.no_online
+    }
 }
 
 /// Corrections par identifiant de morceau (son chemin).

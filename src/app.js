@@ -465,10 +465,15 @@ function sectionLecture() {
         ).join("")}</div>
       </div>
     </div>
-    <h4 style="margin-top:18px">Paroles</h4>
+    <h4 style="margin-top:18px">Paroles et pochettes</h4>
     <div class="card">
       ${rowSwitch("Chercher les paroles en ligne", "Sur LRCLIB, une base libre, quand le fichier n'en a pas. Seuls l'artiste, le titre et la durée sont envoyés.", "lyrics_online", s.lyrics_online)}
-      ${rowSwitch("Chercher les pochettes en ligne", "Pour les morceaux sans pochette ou avec une image de clip, sur MusicBrainz (base libre). Seuls l'artiste, le titre et l'album sont envoyés.", "covers_online", false, null, true)}
+      ${rowSwitch("Chercher les pochettes en ligne", "Pour les morceaux sans pochette ou avec une image de clip : MusicBrainz et Cover Art Archive (bases libres), Deezer en secours. Seuls l'artiste, le titre et l'album sont envoyés. Une pochette choisie à la main n'est jamais remplacée.", "covers_online", s.covers_online)}
+      ${rowSeg("Pochette préférée", "Auto : celle de l'album s'il est dans les tags du fichier, sinon celle du single", "covers_prefer", [
+        { value: "auto", label: "Auto" },
+        { value: "album", label: "Album" },
+        { value: "single", label: "Single" },
+      ], s.covers_prefer)}
     </div>
   </section>`;
 }
@@ -2278,6 +2283,12 @@ function bindEditor() {
     paintEditCover(null, editing.pickedCover);
   });
 
+  el("edit-online").addEventListener("click", () => {
+    if (!editing) return;
+    const track = trackById(editing.id);
+    if (track) openCoverPicker(track, { fromEditor: true });
+  });
+
   // Rétablir l'original : on remet les champs et on retire toutes les corrections.
   el("edit-reset").addEventListener("click", () => {
     if (!editing) return;
@@ -2331,6 +2342,109 @@ function bindEditor() {
   });
 }
 
+/* ---------------- pochettes en ligne ---------------- */
+
+/// Fenêtre de choix ouverte : le morceau, la sortie voulue, et la recherche en cours.
+let coverPick = null;
+
+const RELEASE_KIND = { album: "Album", ep: "EP", single: "Single", other: "Sortie" };
+
+/// Comme le réglage « Auto » du cœur : l'album s'il est dans les tags (et n'est pas le titre).
+function preferFor(track) {
+  const pref = state.settings.covers_prefer;
+  if (pref === "album" || pref === "single") return pref;
+  const album = normalize(track.album).trim();
+  const generic = ["", "youtube", "unknown", "unknown album", "album inconnu", "inconnu", "single", "singles"];
+  return !generic.includes(album) && album !== normalize(track.title).trim() && !/ (single|ep)$/.test(album) ? "album" : "single";
+}
+
+function openCoverPicker(track, { fromEditor = false } = {}) {
+  if (!track) return;
+  coverPick = { track, prefer: preferFor(track), fromEditor, seq: 0, candidates: null };
+  setText(el("cover-query"), `${track.artist || "Artiste inconnu"} — ${track.title}`);
+  el("cover-dialog").hidden = false;
+  el("cover-close").focus();
+  loadCoverChoices();
+}
+
+function closeCoverPicker() {
+  el("cover-dialog").hidden = true;
+  coverPick = null;
+}
+
+async function loadCoverChoices() {
+  const pick = coverPick;
+  if (!pick) return;
+  const seq = ++pick.seq;
+  pick.candidates = null;
+  for (const b of el("cover-prefer").querySelectorAll("button")) b.classList.toggle("on", b.dataset.prefer === pick.prefer);
+  const grid = el("cover-grid");
+  grid.innerHTML = `<div class="cover-wait"><span class="spinner" aria-hidden="true"></span>Recherche des pochettes…</div>`;
+  const stale = () => coverPick !== pick || pick.seq !== seq;
+  let result;
+  try {
+    result = await invoke("cover_candidates", { id: pick.track.id, prefer: pick.prefer });
+  } catch (err) {
+    if (!stale()) grid.innerHTML = `<div class="cover-wait">${escapeHtml(String(err))}</div>`;
+    return;
+  }
+  if (stale()) return;
+  if (!result.candidates.length) {
+    grid.innerHTML = `<div class="cover-wait">Aucune pochette trouvée pour ce morceau. Vérifie l'artiste et le titre (clic droit → Modifier le morceau).</div>`;
+    return;
+  }
+  pick.candidates = result.candidates;
+  grid.innerHTML = result.candidates
+    .map((c, i) => {
+      const kind = RELEASE_KIND[c.kind] || "Sortie";
+      const label = `${kind}${c.year ? ` · ${c.year}` : ""}`;
+      return `<button type="button" class="cover-choice" data-choice="${i}" title="${escapeHtml(`${c.artist} — ${c.title}`)}" aria-label="${escapeHtml(`${label} : ${c.title}`)}">
+        <span class="cover-img" style="background-image:url('${escapeHtml(convertFileSrc(c.thumb))}')"></span>
+        <span class="cover-meta"><b>${escapeHtml(label)}</b><span>${escapeHtml(c.title)}</span></span>
+      </button>`;
+    })
+    .join("");
+}
+
+function bindCoverPicker() {
+  el("cover-close").addEventListener("click", closeCoverPicker);
+  el("cover-dialog").addEventListener("click", (e) => {
+    if (e.target === el("cover-dialog")) closeCoverPicker();
+  });
+  el("cover-prefer").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-prefer]");
+    if (!btn || !coverPick || coverPick.prefer === btn.dataset.prefer) return;
+    coverPick.prefer = btn.dataset.prefer;
+    loadCoverChoices();
+  });
+  el("cover-grid").addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-choice]");
+    const pick = coverPick;
+    if (!btn || !pick || !pick.candidates) return;
+    const choice = pick.candidates[Number(btn.dataset.choice)];
+    const buttons = [...el("cover-grid").querySelectorAll("button")];
+    buttons.forEach((b) => (b.disabled = true));
+    btn.classList.add("busy");
+    try {
+      const updated = await invoke("use_online_cover", { id: pick.track.id, url: choice.full });
+      replaceTrack(updated);
+      // Ouverte depuis « Modifier » : l'aperçu suit, et l'enregistrement garde cette pochette.
+      if (pick.fromEditor && editing && editing.id === updated.id) {
+        editing.pickedCover = null;
+        editing.clearCover = false;
+        paintEditCover(updated.cover);
+      }
+      if (currentId() === updated.id) pushNowPlaying(currentTrack());
+      closeCoverPicker();
+      toast("Pochette mise à jour.");
+    } catch (err) {
+      toast(String(err));
+      buttons.forEach((b) => (b.disabled = false));
+      btn.classList.remove("busy");
+    }
+  });
+}
+
 /* ---------------- menu d'un morceau ---------------- */
 
 function closeTrackMenu() {
@@ -2370,7 +2484,8 @@ function openTrackMenu(track, x, y, { playlist = null } = {}) {
       ${item("Ajouter à une playlist", "playlist", "playlists", " has-sub")}
       ${playlist ? item("Retirer de cette playlist", "close", "remove") : ""}
       <div class="ctx-sep"></div>
-      ${item("Modifier le morceau…", "sliders", "edit")}`;
+      ${item("Modifier le morceau…", "sliders", "edit")}
+      ${item("Chercher une pochette en ligne…", "search", "cover")}`;
   };
   const lists = () => {
     menu.innerHTML = `
@@ -2437,6 +2552,10 @@ function openTrackMenu(track, x, y, { playlist = null } = {}) {
       case "edit":
         closeTrackMenu();
         openEditor(track);
+        break;
+      case "cover":
+        closeTrackMenu();
+        openCoverPicker(track);
         break;
     }
   };
@@ -2913,6 +3032,7 @@ function bindOnce() {
   document.addEventListener("keydown", (e) => e.key === "Tab" && (keyboardFocus = true), true);
   document.addEventListener("pointerdown", () => (keyboardFocus = false), true);
   bindEditor();
+  bindCoverPicker();
   bindPlaylists();
   // Un clic ailleurs, un défilement ou une autre fenêtre ferment le menu d'un morceau.
   document.addEventListener("click", (e) => {
@@ -3119,6 +3239,14 @@ function bindOnce() {
       }
       return;
     }
+    // Fenêtre des pochettes (au-dessus de « Modifier ») : Échap la ferme, le reste lui revient.
+    if (!el("cover-dialog").hidden) {
+      if (e.code === "Escape") {
+        e.preventDefault();
+        closeCoverPicker();
+      }
+      return;
+    }
     // Fenêtre « Modifier » ouverte : le clavier sert à ses champs et boutons, pas au lecteur.
     if (!el("edit-dialog").hidden && e.code !== "Escape") return;
     if (e.code === "Escape" && !el("edit-dialog").hidden) {
@@ -3219,16 +3347,39 @@ async function bindBackendEvents() {
   });
   // Analyse des dossiers : une pastille visible dans toutes les dispositions, seulement
   // si l'analyse dure (une analyse éclair ne doit rien faire clignoter).
+  // Les pochettes cherchées en ligne y montrent leur avancée, après l'analyse.
   let scanTimer = null;
-  await listen("scanning", (event) => {
+  let scanning = false;
+  let coversProgress = null;
+  const showPill = () => {
     const pill = el("scan-pill");
-    clearTimeout(scanTimer);
-    if (event.payload) {
-      scanTimer = setTimeout(() => pill && (pill.hidden = false), 600);
-    } else {
-      if (pill) pill.hidden = true;
-      setText(el("track-count"), countLabel(audioTracks().length));
+    if (!pill) return;
+    if (scanning) setText(el("scan-pill-text"), "Analyse de ta musique…");
+    else if (coversProgress) setText(el("scan-pill-text"), `Recherche des pochettes… ${coversProgress[0] + 1} / ${coversProgress[1]}`);
+    const visible = scanning || !!coversProgress;
+    if (!visible) {
+      clearTimeout(scanTimer);
+      scanTimer = null;
+      pill.hidden = true;
+    } else if (pill.hidden && !scanTimer) {
+      scanTimer = setTimeout(() => {
+        scanTimer = null;
+        if (scanning || coversProgress) pill.hidden = false;
+      }, 600);
     }
+  };
+  await listen("scanning", (event) => {
+    scanning = !!event.payload;
+    showPill();
+    if (!scanning) setText(el("track-count"), countLabel(audioTracks().length));
+  });
+  await listen("covers-online", (event) => {
+    coversProgress = event.payload || null;
+    showPill();
+  });
+  // Pochettes trouvées en ligne : posées sur place.
+  await listen("tracks-updated", (event) => {
+    for (const track of event.payload || []) replaceTrack(track);
   });
   // Vignettes fabriquées en tâche de fond : posées sur place, par lots.
   await listen("thumbs-ready", async (event) => {
@@ -3663,6 +3814,8 @@ async function start() {
   el("min-queue").innerHTML = icon("queue", 18);
   el("min-volume").innerHTML = icon("volume_high", 18);
   el("sheet-close").innerHTML = icon("close", 18);
+  el("edit-close").innerHTML = icon("close", 18);
+  el("cover-close").innerHTML = icon("close", 18);
 
   // Les écouteurs d'abord : un scan qui finit pendant le démarrage ne doit pas être perdu.
   await Promise.all([bindMediaKeys(), bindBackendEvents()]).catch(() => {});

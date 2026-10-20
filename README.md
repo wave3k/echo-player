@@ -40,6 +40,7 @@ Tu lui montres un dossier, il joue tout ce qu'il contient.
 | 🎬 **Vidéos musicales** | Les clips (webm, mp4, mkv) sont lus pour leur son. Leur pochette est une image tirée de la vidéo (sous Linux, une seule image décodée par GStreamer, en tâche de fond), et l'artiste est deviné dans le titre (« Artiste - Titre (Official Video) ft. Invité » → *Artiste* / *Titre (feat. Invité)*). Une vidéo téléchargée sans son est signalée « muet ». |
 | 🔊 **Son** | Volume égal (niveau des plateformes de streaming, sans saturer), égaliseur à 6 préréglages (Neutre, Basses, Rap, Voix, Aigus, Acoustique), fondu enchaîné de 3, 6 ou 10 s. |
 | 🎤 **Paroles** | Paroles synchronisées en plein écran (touche **L**) : la ligne chantée s'illumine, un clic sur une ligne y saute. Lues dans un fichier `.lrc` à côté du morceau, dans les tags du fichier, ou en ligne (à activer : seuls l'artiste, le titre et la durée sont envoyés) sur [LRCLIB](https://lrclib.net), base libre de paroles synchronisées, puis lyrics.ovh en secours (texte seul). Les noms de clips YouTube sont décomposés (« Tiakola x Dave - Meridian (Clip officiel) ») pour retrouver le bon morceau. Un clip plus long que le son (intro, scènes) se cale en un clic : on touche la ligne au moment où elle est chantée, et le calage est retenu. |
+| 🖼️ **Pochettes en ligne** | Pour les morceaux sans pochette, ou dont la pochette est une image de clip (à activer) : recherche sur [MusicBrainz](https://musicbrainz.org) et le [Cover Art Archive](https://coverartarchive.org), bases libres et sans compte, puis Deezer en secours. Une pochette n'est posée que si l'artiste, le titre et la durée correspondent, et jamais à la place d'une pochette choisie à la main. Au choix, celle de l'album ou celle du single (« Auto » : l'album s'il est dans les tags). Clic droit → « Chercher une pochette en ligne… » pour choisir parmi plusieurs propositions. |
 | 📃 **Playlists** | Crée tes playlists, ajoute un morceau par clic droit → « Ajouter à une playlist », lis-les dans l'ordre ou en aléatoire. |
 | 🔎 **Recherche et tri** | Recherche instantanée, sans tenir compte des accents. Tri par titre, artiste, album ou durée. Reste fluide avec des dizaines de milliers de morceaux. |
 | ▶️ **Lecture** | Aléatoire (chaque morceau passe une fois), répétition de la file ou d'un titre, reprise au morceau et à la position de la dernière fois. |
@@ -53,9 +54,7 @@ Tu lui montres un dossier, il joue tout ce qu'il contient.
 
 | | |
 |---|---|
-| 🖼️ **Pochettes en ligne** | Pour les morceaux sans pochette, ou dont la pochette est une image de clip : recherche sur [MusicBrainz](https://musicbrainz.org) et le [Cover Art Archive](https://coverartarchive.org) (bases libres, sans compte), Deezer en secours. À activer, comme les paroles en ligne. |
 | 🎞️ **Clips** | Une section pour regarder les clips dans un lecteur vidéo fluide, avec une petite fenêtre qui reste à l'écran quand on change de section. |
-| 📥 **Import de playlists** | Coller le lien d'une playlist Spotify ou YouTube : Écho retrouve les morceaux déjà dans ta bibliothèque, et peut télécharger les autres avec yt-dlp s'il est installé. |
 | 🎚️ **Studio de transitions** | Des transitions façon DJ entre les morceaux : tempo et temps analysés, plusieurs styles, réglage à la main sur la forme d'onde, et une transition par enchaînement dans les playlists. |
 
 ## Installation
@@ -146,12 +145,16 @@ node --test tests/     # tests des règles de lecture
 
 ## Données et vie privée
 
-Écho ne fait **aucune connexion réseau** : ta musique et tes réglages restent sur ta machine.
+Ta musique et tes réglages restent sur ta machine : aucun compte, aucune statistique envoyée. Écho ne se connecte qu'à ces services :
+
+- les mises à jour, sur GitHub (désactivables) ;
+- les paroles en ligne, sur LRCLIB et lyrics.ovh, si tu les actives : seuls l'artiste, le titre et la durée sont envoyés ;
+- les pochettes en ligne, sur MusicBrainz, le Cover Art Archive et Deezer, si tu les actives (ou si tu en cherches une par clic droit) : seuls l'artiste, le titre et l'album sont envoyés.
 
 | Emplacement | Contenu |
 |---|---|
 | `~/.config/com.echo.player/` | Réglages, cache de la bibliothèque, corrections des morceaux |
-| `~/.cache/com.echo.player/covers/` | Pochettes extraites des fichiers (peut être vidé depuis les réglages) |
+| `~/.cache/com.echo.player/covers/` | Pochettes extraites des fichiers ou trouvées en ligne (peut être vidé depuis les réglages) |
 
 Si un fichier de réglages est abîmé, il est mis de côté (sous le nom `settings.json.bad`) plutôt qu'effacé.
 

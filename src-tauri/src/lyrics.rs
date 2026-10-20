@@ -254,7 +254,7 @@ pub async fn online(cache_dir: &Path, q: &Query) -> Lyrics {
 }
 
 /// Minuscules sans accents ni ponctuation : « Yamê - Bécane » ≈ « yame becane ».
-fn fold(text: &str) -> String {
+pub(crate) fn fold(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars().flat_map(char::to_lowercase) {
         let c = match c {
@@ -282,12 +282,12 @@ const NOISE: &[&str] = &[
     "4k", "hq", "explicit", "dirty", "clean", "version", "live", "performance", "visual", "mixtape", "feat", "ft", "featuring",
 ];
 
-fn tokens(text: &str) -> Vec<String> {
+pub(crate) fn tokens(text: &str) -> Vec<String> {
     fold(text).split(' ').filter(|w| !w.is_empty() && !NOISE.contains(w)).map(str::to_string).collect()
 }
 
 /// Artistes d'un nom comme « Tiakola x Dave » ou « Kendrick Lamar, SZA » : le premier d'abord.
-fn artist_variants(artist: &str) -> Vec<String> {
+pub(crate) fn artist_variants(artist: &str) -> Vec<String> {
     let mut out = vec![artist.trim().to_string()];
     let mut cut = artist.len();
     for sep in [" x ", ",", " & ", " feat", " ft.", " ft ", " and ", " et ", " vs "] {
@@ -303,7 +303,7 @@ fn artist_variants(artist: &str) -> Vec<String> {
 }
 
 /// Titre sans invités, puis sans aucune parenthèse (« (Live) », « (Dirty) »…).
-fn title_variants(title: &str) -> Vec<String> {
+pub(crate) fn title_variants(title: &str) -> Vec<String> {
     let base = search_title(title);
     let mut bare = String::new();
     let mut depth = 0;
@@ -385,7 +385,7 @@ fn pick(q: &Query, found: Vec<Remote>) -> Option<Remote> {
 
 /// Une requête, avec deux nouvelles chances si le serveur est surchargé (429, 5xx,
 /// réponse coupée). `None` : rien trouvé (404).
-async fn get_json<T: serde::de::DeserializeOwned>(client: &reqwest::Client, url: reqwest::Url) -> Result<Option<T>, String> {
+pub(crate) async fn get_json<T: serde::de::DeserializeOwned>(client: &reqwest::Client, url: reqwest::Url) -> Result<Option<T>, String> {
     let mut last = String::new();
     for attempt in 0..3u64 {
         if attempt > 0 {
@@ -421,7 +421,7 @@ async fn get_json<T: serde::de::DeserializeOwned>(client: &reqwest::Client, url:
     Err(last)
 }
 
-fn client() -> Result<reqwest::Client, String> {
+pub(crate) fn client() -> Result<reqwest::Client, String> {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         let _ = rustls::crypto::ring::default_provider().install_default();
     }

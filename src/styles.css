@@ -980,7 +980,9 @@ body[data-mode="minimal"] .minimal { animation: modeIn .35s cubic-bezier(.2, .7,
   display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: var(--radius-soft);
   font-size: .86rem; color: var(--text); text-align: left;
 }
-.ctx-item span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* L'icône garde sa taille : seul le libellé s'étire (et se coupe s'il le faut). */
+.ctx-item > .ic { flex: none; }
+.ctx-item > span:not(.ic) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ctx-item:hover, .ctx-item:focus-visible { background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); outline: none; }
 .ctx-item.has-sub::after { content: "›"; color: var(--muted2); }
 .ctx-back { color: var(--muted); }
@@ -1171,3 +1173,35 @@ body[data-anim="off"] .lyr-line { transition: none; }
 /* Réglages : les groupes de boutons reviennent à la ligne dans une carte étroite. */
 .set-row .set-ctl { flex: 0 1 auto; max-width: 100%; }
 .seg { flex-wrap: wrap; max-width: 100%; }
+
+/* ---------- 18. Pochettes en ligne ---------- */
+
+.edit-actions { flex-wrap: wrap; }
+.cover-dialog { z-index: 80; }
+.cover-box { width: min(640px, 100%); max-height: calc(100vh - 48px); display: flex; flex-direction: column; }
+.cover-query { margin-top: 3px; font-size: .84rem; color: var(--muted); overflow-wrap: anywhere; }
+.cover-prefer { margin-bottom: 14px; }
+.cover-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 12px;
+  min-height: 150px; overflow-y: auto; padding: 2px; margin-bottom: 12px;
+}
+.cover-wait {
+  grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; gap: 10px;
+  min-height: 150px; color: var(--muted); font-size: .88rem; text-align: center; padding: 0 12px;
+}
+.cover-choice {
+  display: flex; flex-direction: column; gap: 7px; text-align: left; padding: 6px;
+  border-radius: var(--radius-md); background: transparent; color: var(--text);
+  transition: background .15s ease;
+}
+.cover-choice:hover:not(:disabled), .cover-choice:focus-visible { background: var(--hover); }
+.cover-choice:disabled { cursor: default; opacity: .55; }
+.cover-choice.busy { opacity: 1; }
+.cover-choice.busy .cover-img { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cover-img {
+  display: block; width: 100%; aspect-ratio: 1; border-radius: var(--radius-soft);
+  background: var(--cover-bg) center / cover no-repeat; box-shadow: var(--glow);
+}
+.cover-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: .8rem; }
+.cover-meta b { font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
+.cover-meta span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
