@@ -5,14 +5,19 @@
 //! d'elle : rangé dans la barre du système, Écho ferme sa page (≈ 200 Mo de moins)
 //! et continue de jouer, de passer au morceau suivant et de répondre aux touches média.
 //!
+//! Les ordres passent par un canal jusqu'au fil « lecteur », qui les traite dans
+//! l'ordre : ouvrir un fichier ou écrire sur le disque ne bloque jamais la fenêtre.
+//!
 //! Deux lecteurs servent au fondu enchaîné. Chacun passe par la même chaîne :
 //! égaliseur 5 bandes → mesure du niveau → volume égal → fondu → limiteur.
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
@@ -38,20 +43,49 @@ fn eq_preset(name: &str) -> [f64; 5] {
 const TARGET_RMS: f64 = 0.18;
 const MIN_GAIN: f64 = 0.2;
 const MAX_GAIN: f64 = 5.6;
+/// Corrections de volume gardées dans gains.json (les plus anciennes sont oubliées).
+const MAX_GAINS: usize = 3000;
+
+/// Battement : rapide quand il se passe quelque chose, lent au repos.
+const FAST: Duration = Duration::from_millis(50);
+const SLOW: Duration = Duration::from_millis(250);
+/// Après un saut, GStreamer donne encore un moment l'ancienne position.
+const SEEK_HOLD: Duration = Duration::from_millis(300);
+/// Un saut demandé avant l'ouverture qui n'a toujours pas pu se faire est abandonné.
+const SEEK_GIVE_UP: Duration = Duration::from_secs(8);
+
+/// Numéro des statuts : la page ignore ceux qui arrivent après un plus récent.
+static SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn next_seq() -> u64 {
+    SEQ.fetch_add(1, Ordering::Relaxed) + 1
+}
 
 /* ---------------- un lecteur ---------------- */
 
 struct Deck {
     pipe: gst::Pipeline,
     eq: gst::Element,
+    meter: gst::Element,
     master: gst::Element,
     norm: gst::Element,
     fade: gst::Element,
     limiter: gst::Element,
     id: String,
+    track: Track,
+    /// Durée donnée par GStreamer (0 : pas encore connue).
     duration_ms: u64,
     /// Position à rejoindre dès que le fichier est prêt (reprise, saut demandé tôt).
     pending_seek: Option<u64>,
+    /// Position demandée par le dernier saut, renvoyée le temps qu'il se fasse.
+    seek_hold: Option<(u64, Instant)>,
+    /// Lecture demandée pendant que le saut initial attend : elle part après lui.
+    resume: bool,
+    /// Le morceau a été annoncé (notification, touches média).
+    announced: bool,
+    /// Fichier en erreur : il ne joue plus, « lecture » le rouvre.
+    broken: bool,
+    opened: Instant,
 }
 
 impl Drop for Deck {
@@ -61,8 +95,8 @@ impl Drop for Deck {
 }
 
 impl Deck {
-    fn open(path: &Path, id: &str) -> Result<Deck, String> {
-        let uri = gst::glib::filename_to_uri(path, None).map_err(|e| e.to_string())?;
+    fn open(track: &Track) -> Result<Deck, String> {
+        let uri = gst::glib::filename_to_uri(Path::new(&track.path), None).map_err(|e| e.to_string())?;
         // Le son seul : les autres pistes d'un clip (image, sous-titres) ne sont pas
         // décodées du tout. (playbin, lui, décode l'image même sans l'afficher.)
         let source = gst::ElementFactory::make("uridecodebin")
@@ -71,9 +105,12 @@ impl Deck {
             .property("expose-all-streams", false)
             .build()
             .map_err(|e| e.to_string())?;
+        // Calcul en flottant jusqu'au limiteur : l'égaliseur et le volume égal peuvent
+        // dépasser 0 dB sans écrêter, le limiteur ramène ensuite le tout.
         let chain = gst::parse::bin_from_description(
-            "audioconvert ! audioresample ! equalizer-nbands name=eq num-bands=5 \
-             ! level name=meter interval=250000000 post-messages=true \
+            "audioconvert ! audioresample ! audio/x-raw,format=F32LE \
+             ! equalizer-nbands name=eq num-bands=5 \
+             ! level name=meter interval=250000000 post-messages=false \
              ! volume name=norm ! volume name=fade ! volume name=master \
              ! audiodynamic name=limiter characteristics=hard-knee mode=compressor threshold=0.84 \
              ! audioconvert ! autoaudiosink",
@@ -91,14 +128,21 @@ impl Deck {
         let get = |name: &str| chain.by_name(name).ok_or_else(|| format!("élément {name} absent"));
         let deck = Deck {
             eq: get("eq")?,
+            meter: get("meter")?,
             master: get("master")?,
             norm: get("norm")?,
             fade: get("fade")?,
             limiter: get("limiter")?,
             pipe,
-            id: id.to_string(),
+            id: track.id.clone(),
+            track: track.clone(),
             duration_ms: 0,
             pending_seek: None,
+            seek_hold: None,
+            resume: false,
+            announced: false,
+            broken: false,
+            opened: Instant::now(),
         };
         if let Some(proxy) = deck.eq.dynamic_cast_ref::<gst::ChildProxy>() {
             for (i, freq) in BANDS.iter().enumerate() {
@@ -125,9 +169,23 @@ impl Deck {
         self.limiter.set_property("ratio", if limit { 0.05f32 } else { 1.0f32 });
     }
 
+    /// Durée apprise par GStreamer, sinon celle des tags.
+    fn duration(&self) -> u64 {
+        if self.duration_ms > 0 {
+            self.duration_ms
+        } else {
+            self.track.duration_ms
+        }
+    }
+
     fn position_ms(&self) -> u64 {
         if let Some(ms) = self.pending_seek {
             return ms;
+        }
+        if let Some((ms, at)) = self.seek_hold {
+            if at.elapsed() < SEEK_HOLD {
+                return ms;
+            }
         }
         self.pipe.query_position::<gst::ClockTime>().map(|t| t.mseconds()).unwrap_or(0)
     }
@@ -139,6 +197,15 @@ impl Deck {
             .is_ok();
         // Pas encore prêt : le saut sera fait dès que le fichier sera ouvert.
         self.pending_seek = if ok { None } else { Some(ms) };
+        self.seek_hold = ok.then(|| (ms, Instant::now()));
+    }
+
+    /// Lecture ou pause. Tant qu'un saut initial attend, le lecteur reste en pause :
+    /// le début du morceau ne s'entend pas avant d'arriver à la bonne position.
+    fn play(&mut self, on: bool) {
+        self.resume = on && self.pending_seek.is_some();
+        let state = if on && !self.resume { gst::State::Playing } else { gst::State::Paused };
+        let _ = self.pipe.set_state(state);
     }
 
     fn learn_duration(&mut self) -> bool {
@@ -151,6 +218,13 @@ impl Deck {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Jette les messages en attente (lecteur qui s'éteint, fichier en erreur).
+    fn drain(&self) {
+        if let Some(bus) = self.pipe.bus() {
+            while bus.pop().is_some() {}
         }
     }
 }
@@ -199,6 +273,16 @@ impl Plan {
         }
     }
 
+    /// Le morceau qui remplace un morceau illisible : les règles de fin de morceau,
+    /// mais « répéter un titre » vaut « tout » (rejouer le même ne servirait à rien).
+    fn next_after_failure(&mut self, rand: &mut impl FnMut(usize) -> usize) -> Option<usize> {
+        let repeat = std::mem::take(&mut self.repeat);
+        self.repeat = if repeat == "one" { "all".into() } else { repeat.clone() };
+        let next = self.next(true, rand);
+        self.repeat = repeat;
+        next
+    }
+
     /// Le morceau précédent : en aléatoire, celui qui a vraiment joué avant.
     fn prev(&mut self) -> Option<usize> {
         let n = self.ids.len();
@@ -216,12 +300,40 @@ impl Plan {
         Some(if self.index == 0 { n - 1 } else { self.index - 1 })
     }
 
+    /// Nouvelle file demandée par la page. La même file avec le même aléatoire garde
+    /// sa mémoire (morceaux déjà joués, historique) : seul le morceau change.
+    fn adopt(&mut self, ids: Vec<String>, index: usize, shuffle: bool, repeat: String) {
+        if !ids.is_empty() && self.ids == ids && self.shuffle == shuffle {
+            let old = self.index;
+            if shuffle && old != index {
+                self.history.push(old);
+                self.played.insert(old);
+            }
+            self.index = index;
+            self.repeat = repeat;
+        } else {
+            *self = Plan { ids, index, shuffle, repeat, ..Default::default() };
+        }
+    }
+}
+
+/// Place du morceau qui joue dans une file modifiée : l'index donné s'il désigne
+/// bien ce morceau (il peut y être deux fois), sinon sa première position.
+fn place_in(ids: &[String], index: usize, playing: Option<&str>) -> usize {
+    let fallback = index.min(ids.len().saturating_sub(1));
+    match playing {
+        Some(id) if ids.get(index).map(String::as_str) == Some(id) => index,
+        Some(id) => ids.iter().position(|x| x == id).unwrap_or(fallback),
+        None => fallback,
+    }
 }
 
 /* ---------------- ce que la page reçoit ---------------- */
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Status {
+    /// Croît à chaque statut : la page ignore un statut plus vieux que le dernier vu.
+    pub seq: u64,
     pub id: Option<String>,
     pub index: usize,
     pub playing: bool,
@@ -237,22 +349,64 @@ pub struct Snapshot {
     ids: Vec<String>,
     shuffle: bool,
     repeat: String,
+    volume: f64,
+    muted: bool,
 }
 
 /// Ce qu'un changement d'état entraîne hors du lecteur (fait sans tenir son verrou).
 enum Effect {
     Started(Track),
     Playback(bool, u64),
-    Save(Option<String>, u64, bool),
+    /// Progression à garder ; `force` : écrite tout de suite (pause, sortie).
+    Save { id: String, position_ms: u64, playing: bool, force: bool },
+    Gains(HashMap<String, f64>),
     Emit(Status),
     Error(String),
+}
+
+/// Ordres de la page, des touches média et de la barre du système.
+enum Order {
+    Play(Request),
+    Queue { ids: Vec<String>, index: usize, shuffle: bool, repeat: String },
+    SetPlaying(bool),
+    Toggle,
+    /// Arrêt : pause et retour au début.
+    Stop,
+    Step(i32),
+    Seek(u64),
+    SeekBy(i64),
+    /// Saut d'un pas réglé (« avancer de 10 s »), vers l'avant ou l'arrière.
+    Skip(i64),
+    Volume(f64, bool),
+    Configure(Box<crate::store::Settings>),
+}
+
+struct Request {
+    ids: Vec<String>,
+    index: usize,
+    autoplay: bool,
+    start_ms: Option<u64>,
+    shuffle: bool,
+    repeat: String,
+}
+
+/// D'où vient le changement de morceau.
+#[derive(Clone, Copy, PartialEq)]
+enum Way {
+    /// Demandé (lecture, suivant) : un fondu en cours est coupé.
+    User,
+    /// Fin de morceau ou erreur : un fondu en cours se termine normalement.
+    Auto,
+    /// Précédent : un morceau illisible fait reculer encore.
+    Back,
 }
 
 /* ---------------- le moteur ---------------- */
 
 pub struct Engine {
-    decks: [Option<Deck>; 2],
-    active: usize,
+    /// Le lecteur qui joue, et celui qui s'éteint pendant un fondu enchaîné.
+    deck: Option<Deck>,
+    outgoing: Option<Deck>,
     plan: Plan,
     seed: u64,
     playing: bool,
@@ -266,12 +420,17 @@ pub struct Engine {
     skip_s: u32,
 
     fade: Option<(Instant, u64)>,
+    /// Le lecteur actif monte pendant le fondu (faux s'il a été remplacé entre-temps).
+    fade_in: bool,
+    /// Fondu déjà tenté pour ce morceau (le suivant ne s'ouvrait pas).
+    crossfade_tried: bool,
     norm_target: f64,
     norm_now: f64,
     norm_tau: f64,
     measured: f64,
     samples: u32,
     gains: HashMap<String, f64>,
+    gains_order: VecDeque<String>,
     gains_dirty: bool,
 
     last_tick: Instant,
@@ -281,7 +440,13 @@ pub struct Engine {
     errors: u32,
 }
 
-pub struct Player(pub Mutex<Option<Engine>>);
+pub struct Player {
+    engine: Mutex<Option<Engine>>,
+    /// Vers le fil « lecteur » (absent : la page lit elle-même la musique).
+    orders: Option<Sender<Order>>,
+    /// Pris par le fil « lecteur » à son démarrage.
+    inbox: Mutex<Option<Receiver<Order>>>,
+}
 
 impl Player {
     /// Le lecteur, si GStreamer et ses greffons de base sont là ; sinon la page lit
@@ -292,45 +457,62 @@ impl Player {
                 .iter()
                 .all(|f| gst::ElementFactory::find(f).is_some());
         if !ready || std::env::var_os("ECHO_WEB_AUDIO").is_some() {
-            return Self(Mutex::new(None));
+            return Self { engine: Mutex::new(None), orders: None, inbox: Mutex::new(None) };
         }
-        let gains = std::fs::read(gains_file(app))
+        let mut gains: HashMap<String, f64> = std::fs::read(gains_file(app))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
+        let mut gains_order: VecDeque<String> = gains.keys().cloned().collect();
+        while gains.len() > MAX_GAINS {
+            match gains_order.pop_front() {
+                Some(old) => {
+                    gains.remove(&old);
+                }
+                None => break,
+            }
+        }
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(7)
             | 1;
         let now = Instant::now();
-        Self(Mutex::new(Some(Engine {
-            decks: [None, None],
-            active: 0,
-            plan: Plan { repeat: "off".into(), ..Default::default() },
-            seed,
-            playing: false,
-            volume: 0.9,
-            muted: false,
-            eq: [0.0; 5],
-            loudness: false,
-            crossfade_s: 0,
-            next_on_error: true,
-            skip_s: 10,
-            fade: None,
-            norm_target: 1.0,
-            norm_now: 1.0,
-            norm_tau: 0.4,
-            measured: 0.0,
-            samples: 0,
-            gains,
-            gains_dirty: false,
-            last_tick: now,
-            last_second: u64::MAX,
-            last_push: now,
-            last_save: now,
-            errors: 0,
-        })))
+        let (tx, rx) = mpsc::channel();
+        Self {
+            engine: Mutex::new(Some(Engine {
+                deck: None,
+                outgoing: None,
+                plan: Plan { repeat: "off".into(), ..Default::default() },
+                seed,
+                playing: false,
+                volume: 0.9,
+                muted: false,
+                eq: [0.0; 5],
+                loudness: false,
+                crossfade_s: 0,
+                next_on_error: true,
+                skip_s: 10,
+                fade: None,
+                fade_in: false,
+                crossfade_tried: false,
+                norm_target: 1.0,
+                norm_now: 1.0,
+                norm_tau: 0.4,
+                measured: 0.0,
+                samples: 0,
+                gains,
+                gains_order,
+                gains_dirty: false,
+                last_tick: now,
+                last_second: u64::MAX,
+                last_push: now,
+                last_save: now,
+                errors: 0,
+            })),
+            orders: Some(tx),
+            inbox: Mutex::new(Some(rx)),
+        }
     }
 }
 
@@ -351,15 +533,55 @@ impl Engine {
         self.plan.next(auto, &mut |n| lcg(seed, n))
     }
 
-    fn deck(&self) -> Option<&Deck> {
-        self.decks[self.active].as_ref()
+    fn pick_after_failure(&mut self) -> Option<usize> {
+        let seed = &mut self.seed;
+        self.plan.next_after_failure(&mut |n| lcg(seed, n))
     }
 
-    fn deck_mut(&mut self) -> Option<&mut Deck> {
-        self.decks[self.active].as_mut()
+    fn handle(&mut self, app: &AppHandle, order: Order, fx: &mut Vec<Effect>) {
+        match order {
+            Order::Play(r) => {
+                self.plan.adopt(r.ids, r.index, r.shuffle, r.repeat);
+                let index = self.plan.index;
+                self.load(app, index, r.autoplay, r.start_ms, Way::User, fx);
+            }
+            Order::Queue { ids, index, shuffle, repeat } => {
+                let index = place_in(&ids, index, self.deck.as_ref().map(|d| d.id.as_str()));
+                if self.plan.ids != ids || self.plan.shuffle != shuffle {
+                    self.plan.played.clear();
+                    self.plan.history.clear();
+                }
+                self.plan.ids = ids;
+                self.plan.index = index;
+                self.plan.shuffle = shuffle;
+                self.plan.repeat = repeat;
+            }
+            Order::SetPlaying(on) => self.set_playing(app, on, fx),
+            Order::Toggle => {
+                let on = !self.playing;
+                self.set_playing(app, on, fx);
+            }
+            Order::Stop => self.rewind(fx),
+            Order::Step(delta) => self.step(app, delta, fx),
+            Order::Seek(ms) => self.seek(ms, fx),
+            Order::SeekBy(by) => {
+                let to = (self.position() as i64 + by).max(0) as u64;
+                self.seek(to, fx);
+            }
+            Order::Skip(steps) => {
+                let to = (self.position() as i64 + steps * self.skip_s as i64 * 1000).max(0) as u64;
+                self.seek(to, fx);
+            }
+            Order::Volume(volume, muted) => {
+                self.volume = volume.clamp(0.0, 1.0);
+                self.muted = muted;
+                self.apply_sound();
+            }
+            Order::Configure(settings) => self.configure(&settings),
+        }
     }
 
-    pub fn configure(&mut self, s: &crate::store::Settings) {
+    fn configure(&mut self, s: &crate::store::Settings) {
         self.volume = (s.volume as f64 / 100.0).clamp(0.0, 1.0);
         self.eq = eq_preset(&s.eq);
         let was = self.loudness;
@@ -368,8 +590,12 @@ impl Engine {
         self.next_on_error = s.next_on_error;
         self.skip_s = s.skip_seconds.max(1);
         if was != self.loudness {
-            let id = self.deck().map(|d| d.id.clone());
+            let id = self.deck.as_ref().map(|d| d.id.clone());
             self.begin_level(id.as_deref());
+            // Appliqué tout de suite : le battement ne rattrape que les petits écarts.
+            if let Some(d) = &self.deck {
+                d.norm.set_property("volume", self.norm_now);
+            }
         }
         if !self.loudness {
             self.norm_target = self.eq_compensation();
@@ -385,10 +611,12 @@ impl Engine {
 
     fn apply_sound(&self) {
         let limit = self.loudness || self.eq.iter().any(|g| *g != 0.0);
-        for deck in self.decks.iter().flatten() {
+        for deck in [&self.deck, &self.outgoing].into_iter().flatten() {
             deck.set_eq(&self.eq, limit);
             deck.master.set_property("volume", self.volume);
             deck.master.set_property("mute", self.muted);
+            // La mesure du niveau ne sert qu'au volume égal.
+            deck.meter.set_property("post-messages", self.loudness);
         }
     }
 
@@ -406,156 +634,237 @@ impl Engine {
         }
     }
 
-    fn status(&self, changed: bool) -> Status {
-        let deck = self.deck();
+    /// `pos` : position déjà demandée à GStreamer pendant ce battement.
+    fn status_at(&self, changed: bool, pos: Option<u64>) -> Status {
+        let deck = self.deck.as_ref();
         Status {
+            seq: next_seq(),
             id: deck.map(|d| d.id.clone()),
             index: self.plan.index,
             playing: self.playing && deck.is_some(),
-            position_ms: deck.map(|d| d.position_ms()).unwrap_or(0),
-            duration_ms: deck.map(|d| d.duration_ms).unwrap_or(0),
+            position_ms: pos.or_else(|| deck.map(|d| d.position_ms())).unwrap_or(0),
+            duration_ms: deck.map(|d| d.duration()).unwrap_or(0),
             changed,
         }
     }
 
+    fn status(&self, changed: bool) -> Status {
+        self.status_at(changed, None)
+    }
+
     fn report(&mut self, fx: &mut Vec<Effect>, changed: bool) {
-        let s = self.status(changed);
+        self.report_with(fx, changed, false, None);
+    }
+
+    /// Statut pour la page, le système et la reprise. `force` : la progression est
+    /// écrite tout de suite (pause), sans attendre le regroupement des écritures.
+    fn report_with(&mut self, fx: &mut Vec<Effect>, changed: bool, force: bool, pos: Option<u64>) {
+        let s = self.status_at(changed, pos);
         fx.push(Effect::Playback(s.playing, s.position_ms));
-        fx.push(Effect::Save(s.id.clone(), s.position_ms, s.playing));
+        // Sans morceau, rien à garder : le dernier morceau connu reste celui de la reprise.
+        if let Some(id) = &s.id {
+            fx.push(Effect::Save { id: id.clone(), position_ms: s.position_ms, playing: s.playing, force });
+        }
         fx.push(Effect::Emit(s));
         self.last_push = Instant::now();
         self.last_save = Instant::now();
     }
 
     fn cancel_fade(&mut self) {
-        if self.fade.take().is_some() {
-            self.decks[1 - self.active] = None;
-        }
-        if let Some(d) = self.deck() {
+        self.fade = None;
+        self.fade_in = false;
+        self.outgoing = None;
+        if let Some(d) = &self.deck {
             d.fade.set_property("volume", 1.0f64);
         }
     }
 
-    fn save_gains(&mut self, app: &AppHandle) {
-        if !self.gains_dirty {
-            return;
+    fn remember_gain(&mut self, id: String, gain: f64) {
+        if self.gains.insert(id.clone(), gain).is_none() {
+            self.gains_order.push_back(id);
+            while self.gains.len() > MAX_GAINS {
+                match self.gains_order.pop_front() {
+                    Some(old) => {
+                        self.gains.remove(&old);
+                    }
+                    None => break,
+                }
+            }
         }
-        self.gains_dirty = false;
-        if let Ok(bytes) = serde_json::to_vec(&self.gains) {
-            let _ = std::fs::write(gains_file(app), bytes);
+        self.gains_dirty = true;
+    }
+
+    /// Les corrections apprises partent sur le disque, une fois le verrou rendu.
+    fn flush_gains(&mut self, fx: &mut Vec<Effect>) {
+        if std::mem::take(&mut self.gains_dirty) {
+            fx.push(Effect::Gains(self.gains.clone()));
         }
     }
 
-    /// Lance le morceau `index` de la file. Les vidéos muettes sont sautées.
-    fn load(&mut self, app: &AppHandle, mut index: usize, autoplay: bool, start_ms: Option<u64>, fx: &mut Vec<Effect>) {
-        self.cancel_fade();
-        self.save_gains(app);
-        let mut skipped = 0;
-        loop {
-            let Some(id) = self.plan.ids.get(index).cloned() else {
-                return self.stop(fx);
-            };
+    /// Lance le morceau `index` de la file. Un morceau muet ou illisible est passé
+    /// (vers l'arrière pour « précédent ») ; `start_ms` ne vaut que pour le premier.
+    fn load(&mut self, app: &AppHandle, index: usize, autoplay: bool, start_ms: Option<u64>, way: Way, fx: &mut Vec<Effect>) {
+        // Fin de morceau pendant un fondu : celui qui s'éteint finit son fondu.
+        if way == Way::Auto && self.fade.is_some() {
+            self.fade_in = false;
+        } else {
+            self.cancel_fade();
+        }
+        self.flush_gains(fx);
+        self.crossfade_tried = false;
+        self.last_second = u64::MAX;
+        let (mut index, mut start_ms) = (index, start_ms);
+        for _ in 0..self.plan.ids.len() {
+            let Some(id) = self.plan.ids.get(index).cloned() else { break };
             self.plan.index = index;
-            let track = track_of(app, &id);
-            let opened = match &track {
-                Some(t) if t.has_audio => Deck::open(Path::new(&t.path), &id),
+            let opened = match track_of(app, &id) {
+                Some(t) if t.has_audio => Deck::open(&t),
                 Some(t) => Err(format!("« {} » n'a pas de piste son (vidéo seule).", t.title)),
                 None => Err("Ce morceau n'est plus dans la bibliothèque.".into()),
             };
             match opened {
-                Ok(mut deck) => {
-                    self.decks = [None, None];
-                    self.active = 0;
-                    if let Some(ms) = start_ms.filter(|ms| *ms > 0) {
-                        deck.pending_seek = Some(ms);
-                    }
-                    self.decks[0] = Some(deck);
-                    self.begin_level(Some(&id));
-                    if let Some(d) = self.deck() {
-                        d.norm.set_property("volume", self.norm_now);
-                    }
-                    self.apply_sound();
-                    self.playing = autoplay;
-                    let state = if autoplay { gst::State::Playing } else { gst::State::Paused };
-                    if let Some(d) = self.deck() {
-                        let _ = d.pipe.set_state(state);
-                    }
-                    if let Some(t) = track {
-                        fx.push(Effect::Started(t));
-                    }
-                    self.report(fx, true);
-                    return;
-                }
+                Ok(deck) => return self.start_deck(deck, autoplay, start_ms, fx),
                 Err(msg) => {
                     fx.push(Effect::Error(msg));
-                    skipped += 1;
-                    let n = self.plan.ids.len();
-                    let next = if skipped < n { self.pick_next(false) } else { None };
+                    start_ms = None;
+                    let next = if way == Way::Back { self.plan.prev() } else { self.pick_after_failure() };
                     match next {
                         Some(i) if i != index => index = i,
-                        _ => return self.stop(fx),
+                        _ => break,
                     }
                 }
             }
         }
+        // Rien de lisible : plus aucun lecteur, la page ne doit pas croire qu'un morceau est prêt.
+        self.deck = None;
+        self.cancel_fade();
+        self.playing = false;
+        self.report_with(fx, false, true, None);
     }
 
-    fn stop(&mut self, fx: &mut Vec<Effect>) {
+    fn start_deck(&mut self, mut deck: Deck, autoplay: bool, start_ms: Option<u64>, fx: &mut Vec<Effect>) {
+        if let Some(ms) = start_ms.filter(|ms| *ms > 0) {
+            deck.pending_seek = Some(ms);
+        }
+        let id = deck.id.clone();
+        self.deck = Some(deck);
+        if self.fade.is_none() {
+            self.outgoing = None;
+        }
+        self.begin_level(Some(&id));
+        if let Some(d) = &self.deck {
+            d.norm.set_property("volume", self.norm_now);
+        }
+        self.apply_sound();
+        self.playing = autoplay;
+        let mut started = None;
+        if let Some(d) = self.deck.as_mut() {
+            d.play(autoplay);
+            // Chargé en pause (reprise au lancement) : annoncé quand il partira.
+            if autoplay {
+                d.announced = true;
+                started = Some(d.track.clone());
+            }
+        }
+        if let Some(t) = started {
+            fx.push(Effect::Started(t));
+        }
+        self.report(fx, true);
+    }
+
+    /// Fichier en erreur : il reste affiché mais ne joue plus.
+    fn halt(&mut self, fx: &mut Vec<Effect>) {
+        self.cancel_fade();
         self.playing = false;
-        if let Some(d) = self.deck() {
+        if let Some(d) = self.deck.as_mut() {
+            d.broken = true;
+            d.drain();
             let _ = d.pipe.set_state(gst::State::Paused);
         }
-        self.report(fx, false);
+        self.report_with(fx, false, true, None);
     }
 
     fn set_playing(&mut self, app: &AppHandle, playing: bool, fx: &mut Vec<Effect>) {
-        if self.deck().is_none() {
+        let usable = self.deck.as_ref().is_some_and(|d| !d.broken);
+        if !usable {
             if playing && !self.plan.ids.is_empty() {
-                let i = self.plan.index;
-                self.load(app, i, true, None, fx);
+                let i = self.plan.index.min(self.plan.ids.len() - 1);
+                return self.load(app, i, true, None, Way::User, fx);
             }
-            return;
+            // Rien à lire : la page a peut-être déjà affiché « lecture », on la dément.
+            self.playing = false;
+            return self.report(fx, false);
         }
         if !playing {
             self.cancel_fade();
         }
         self.playing = playing;
-        let state = if playing { gst::State::Playing } else { gst::State::Paused };
-        if let Some(d) = self.deck() {
-            let _ = d.pipe.set_state(state);
+        let mut started = None;
+        if let Some(d) = self.deck.as_mut() {
+            d.play(playing);
+            if playing && !d.announced {
+                d.announced = true;
+                started = Some(d.track.clone());
+            }
         }
-        self.report(fx, false);
+        if let Some(t) = started {
+            fx.push(Effect::Started(t));
+        }
+        self.report_with(fx, false, !playing, None);
     }
 
     fn seek(&mut self, ms: u64, fx: &mut Vec<Effect>) {
         self.cancel_fade();
-        if let Some(d) = self.deck_mut() {
-            let ms = if d.duration_ms > 0 { ms.min(d.duration_ms.saturating_sub(500)) } else { ms };
+        self.crossfade_tried = false;
+        if let Some(d) = self.deck.as_mut() {
+            let dur = d.duration();
+            let ms = if dur > 0 { ms.min(dur.saturating_sub(500)) } else { ms };
             d.seek(ms);
         }
         self.last_second = u64::MAX;
         self.report(fx, false);
     }
 
+    /// Arrêt : pause et retour au début, un seul statut.
+    fn rewind(&mut self, fx: &mut Vec<Effect>) {
+        self.cancel_fade();
+        self.crossfade_tried = false;
+        self.playing = false;
+        if let Some(d) = self.deck.as_mut() {
+            d.play(false);
+            d.seek(0);
+        }
+        self.last_second = u64::MAX;
+        self.report_with(fx, false, true, None);
+    }
+
+    /// Le même morceau reprend du début (répéter un titre, file d'un seul morceau).
+    fn restart(&mut self, app: &AppHandle, fx: &mut Vec<Effect>) {
+        self.cancel_fade();
+        self.crossfade_tried = false;
+        self.last_second = u64::MAX;
+        if let Some(d) = self.deck.as_mut() {
+            d.seek(0);
+        }
+        self.set_playing(app, true, fx);
+    }
+
     fn position(&self) -> u64 {
-        self.deck().map(|d| d.position_ms()).unwrap_or(0)
+        self.deck.as_ref().map(|d| d.position_ms()).unwrap_or(0)
     }
 
     /// Suivant (`delta` > 0) ou précédent, à la demande.
     fn step(&mut self, app: &AppHandle, delta: i32, fx: &mut Vec<Effect>) {
         if delta > 0 {
-            let next = self.pick_next(false);
-            match next {
+            let current = self.plan.index;
+            match self.pick_next(false) {
                 None => self.set_playing(app, false, fx),
-                Some(i) if i == self.plan.index => {
-                    self.seek(0, fx);
-                    self.set_playing(app, true, fx);
-                }
+                Some(i) if i == current && self.deck.is_some() => self.restart(app, fx),
                 Some(i) => {
-                    if self.plan.shuffle {
-                        self.plan.history.push(self.plan.index);
+                    if self.plan.shuffle && i != current {
+                        self.plan.history.push(current);
                     }
-                    self.load(app, i, true, None, fx);
+                    self.load(app, i, true, None, Way::User, fx);
                 }
             }
         } else {
@@ -564,67 +873,89 @@ impl Engine {
                 return self.seek(0, fx);
             }
             if let Some(i) = self.plan.prev() {
-                self.load(app, i, true, None, fx);
+                self.load(app, i, true, None, Way::Back, fx);
             }
         }
     }
 
     /// Fin du morceau : le suivant selon l'aléatoire et la répétition.
     fn ended(&mut self, app: &AppHandle, fx: &mut Vec<Effect>) {
-        let next = self.pick_next(true);
-        match next {
-            None => {
-                self.stop(fx);
-                self.seek(0, fx);
-            }
-            Some(i) if i == self.plan.index => {
-                self.seek(0, fx);
-                self.set_playing(app, true, fx);
-            }
+        let current = self.plan.index;
+        match self.pick_next(true) {
+            // Fin de la file : en pause, au début du dernier morceau.
+            None => self.rewind(fx),
+            Some(i) if i == current => self.restart(app, fx),
             Some(i) => {
                 if self.plan.shuffle {
-                    self.plan.history.push(self.plan.index);
+                    self.plan.history.push(current);
                 }
-                self.load(app, i, true, None, fx);
+                self.load(app, i, true, None, Way::Auto, fx);
             }
         }
     }
 
+    /// Le fichier ne se lit pas : un autre morceau prend sa place, dans le même état
+    /// (lecture ou pause). Rejouer le même ne servirait à rien.
+    fn failed(&mut self, app: &AppHandle, err: String, fx: &mut Vec<Effect>) {
+        if std::env::var_os("ECHO_DEBUG").is_some() {
+            eprintln!("lecture : {err}");
+        }
+        self.errors += 1;
+        if self.errors >= 3 {
+            self.errors = 0;
+            fx.push(Effect::Error("Plusieurs fichiers de suite ne se lisent pas : lecture arrêtée.".into()));
+            return self.halt(fx);
+        }
+        fx.push(Effect::Error("Ce fichier n'a pas pu être lu.".into()));
+        if self.next_on_error {
+            let current = self.plan.index;
+            if let Some(i) = self.pick_after_failure().filter(|i| *i != current) {
+                let autoplay = self.playing;
+                return self.load(app, i, autoplay, None, Way::Auto, fx);
+            }
+        }
+        self.halt(fx);
+    }
+
     /// Fondu enchaîné : quelques secondes avant la fin, le suivant démarre sur
     /// l'autre lecteur pendant que celui-ci s'éteint.
-    fn maybe_crossfade(&mut self, app: &AppHandle, fx: &mut Vec<Effect>) {
+    fn maybe_crossfade(&mut self, app: &AppHandle, pos: u64, fx: &mut Vec<Effect>) {
         let seconds = self.crossfade_s as u64;
-        if seconds == 0 || self.fade.is_some() || !self.playing || self.plan.repeat == "one" {
+        if seconds == 0 || self.fade.is_some() || self.crossfade_tried || !self.playing || self.plan.repeat == "one" {
             return;
         }
-        let Some(d) = self.deck() else { return };
-        let (pos, dur) = (d.position_ms(), d.duration_ms);
+        let Some(d) = &self.deck else { return };
+        let dur = d.duration();
         if dur < seconds * 3000 || dur.saturating_sub(pos) > seconds * 1000 {
             return;
         }
-        let next = self.pick_next(true);
-        let Some(i) = next.filter(|i| *i != self.plan.index) else { return };
+        // Une seule tentative : si le suivant ne s'ouvre pas, la fin du morceau s'en charge.
+        self.crossfade_tried = true;
+        let current = self.plan.index;
+        let Some(i) = self.pick_next(true).filter(|i| *i != current) else { return };
         let Some(id) = self.plan.ids.get(i).cloned() else { return };
         let Some(track) = track_of(app, &id).filter(|t| t.has_audio) else { return };
-        let Ok(deck) = Deck::open(Path::new(&track.path), &id) else { return };
+        let Ok(mut deck) = Deck::open(&track) else { return };
         if self.plan.shuffle {
-            self.plan.history.push(self.plan.index);
+            self.plan.history.push(current);
         }
-        self.save_gains(app);
+        self.flush_gains(fx);
         self.plan.index = i;
-        let incoming = 1 - self.active;
         deck.fade.set_property("volume", 0.0f64);
-        self.decks[incoming] = Some(deck);
-        self.active = incoming;
+        deck.announced = true;
+        self.outgoing = self.deck.take();
+        self.deck = Some(deck);
         self.begin_level(Some(&id));
-        if let Some(d) = self.deck() {
+        if let Some(d) = &self.deck {
             d.norm.set_property("volume", self.norm_now);
         }
         self.apply_sound();
-        if let Some(d) = self.deck() {
-            let _ = d.pipe.set_state(gst::State::Playing);
+        if let Some(d) = self.deck.as_mut() {
+            d.play(true);
         }
         self.fade = Some((Instant::now(), (seconds * 1000).max(500)));
+        self.fade_in = true;
+        self.last_second = u64::MAX;
         fx.push(Effect::Started(track));
         self.report(fx, true);
     }
@@ -650,14 +981,26 @@ impl Engine {
         let wanted = (TARGET_RMS / self.measured).clamp(MIN_GAIN, MAX_GAIN);
         self.norm_target = wanted;
         self.norm_tau = if self.samples < 12 { 0.4 } else { 1.2 };
-        if let Some(id) = self.deck().map(|d| d.id.clone()) {
-            self.gains.insert(id, wanted);
-            self.gains_dirty = true;
+        if let Some(id) = self.deck.as_ref().map(|d| d.id.clone()) {
+            self.remember_gain(id, wanted);
         }
     }
 
-    /// Un battement (toutes les 50 ms) : messages des lecteurs, fondu, volume égal,
-    /// fondu enchaîné, et nouvelles de la position pour l'écran et le système.
+    /// Rythme du battement : rapide en lecture, pendant un fondu, un saut ou tant que
+    /// la durée n'est pas connue ; lent sinon.
+    fn beat(&self) -> Duration {
+        let unsettled = self.deck.as_ref().is_some_and(|d| {
+            !d.broken && (d.duration_ms == 0 || d.pending_seek.is_some() || d.seek_hold.is_some() || d.resume)
+        });
+        if (self.playing && self.deck.is_some()) || self.fade.is_some() || unsettled {
+            FAST
+        } else {
+            SLOW
+        }
+    }
+
+    /// Un battement : messages des lecteurs, fondu, volume égal, fondu enchaîné, et
+    /// nouvelles de la position pour l'écran et le système.
     fn tick(&mut self, app: &AppHandle, fx: &mut Vec<Effect>) {
         let now = Instant::now();
         let dt = now.duration_since(self.last_tick).as_secs_f64();
@@ -666,15 +1009,19 @@ impl Engine {
         // Messages du lecteur actif.
         let mut ended = false;
         let mut failed: Option<String> = None;
-        let mut ready = false;
+        let mut async_done = false;
+        let mut duration_changed = false;
         let mut levels = Vec::new();
-        if let Some(d) = self.deck() {
-            if let Some(bus) = d.pipe.bus() {
+        if let Some(d) = &self.deck {
+            if d.broken {
+                d.drain();
+            } else if let Some(bus) = d.pipe.bus() {
                 while let Some(msg) = bus.pop() {
                     match msg.view() {
                         gst::MessageView::Eos(_) => ended = true,
                         gst::MessageView::Error(e) => failed = Some(e.error().to_string()),
-                        gst::MessageView::AsyncDone(_) | gst::MessageView::DurationChanged(_) => ready = true,
+                        gst::MessageView::AsyncDone(_) => async_done = true,
+                        gst::MessageView::DurationChanged(_) => duration_changed = true,
                         gst::MessageView::Element(e) => {
                             if let Some(s) = e.structure().filter(|s| s.name() == "level") {
                                 levels.push(s.to_owned());
@@ -686,41 +1033,41 @@ impl Engine {
             }
         }
         // Celui qui s'éteint dans un fondu : ses messages sont jetés.
-        if let Some(d) = self.decks[1 - self.active].as_ref() {
-            if let Some(bus) = d.pipe.bus() {
-                while bus.pop().is_some() {}
-            }
+        if let Some(d) = &self.outgoing {
+            d.drain();
         }
         for s in &levels {
             self.on_level(s);
         }
-        if ready {
-            let mut learned = false;
-            if let Some(d) = self.deck_mut() {
-                if let Some(ms) = d.pending_seek {
+        // Un fichier qui s'ouvre bien remet le compte des erreurs à zéro.
+        if async_done {
+            self.errors = 0;
+        }
+        let mut learned = false;
+        if let Some(d) = self.deck.as_mut() {
+            if async_done || d.seek_hold.is_some_and(|(_, at)| at.elapsed() >= SEEK_HOLD) {
+                d.seek_hold = None;
+            }
+            if let Some(ms) = d.pending_seek {
+                if async_done || duration_changed {
                     d.seek(ms);
                 }
-                learned = d.learn_duration();
+                // Fichier prêt mais qui ne se laisse pas déplacer (ou trop long à
+                // s'ouvrir) : il part du début plutôt que d'attendre pour toujours.
+                if d.pending_seek.is_some() && (async_done || d.opened.elapsed() > SEEK_GIVE_UP) {
+                    d.pending_seek = None;
+                }
             }
-            if learned {
-                self.report(fx, false);
+            if d.resume && d.pending_seek.is_none() {
+                d.resume = false;
+                let _ = d.pipe.set_state(gst::State::Playing);
+            }
+            if async_done || duration_changed {
+                learned = d.learn_duration();
             }
         }
         if let Some(err) = failed {
-            if std::env::var_os("ECHO_DEBUG").is_some() {
-                eprintln!("lecture : {err}");
-            }
-            self.errors += 1;
-            if self.errors >= 3 {
-                self.errors = 0;
-                fx.push(Effect::Error("Plusieurs fichiers de suite ne se lisent pas : lecture arrêtée.".into()));
-                return self.stop(fx);
-            }
-            fx.push(Effect::Error("Ce fichier n'a pas pu être lu.".into()));
-            if self.next_on_error {
-                return self.ended(app, fx);
-            }
-            return self.stop(fx);
+            return self.failed(app, err, fx);
         }
         if ended {
             self.errors = 0;
@@ -730,37 +1077,50 @@ impl Engine {
         // Fondu en cours.
         if let Some((start, ms)) = self.fade {
             let k = (now.duration_since(start).as_millis() as f64 / ms as f64).min(1.0);
-            if let Some(d) = self.deck() {
+            if let (true, Some(d)) = (self.fade_in, &self.deck) {
                 d.fade.set_property("volume", k);
             }
-            if let Some(d) = self.decks[1 - self.active].as_ref() {
+            if let Some(d) = &self.outgoing {
                 d.fade.set_property("volume", 1.0 - k);
             }
             if k >= 1.0 {
                 self.fade = None;
-                self.decks[1 - self.active] = None;
+                self.fade_in = false;
+                self.outgoing = None;
             }
         }
 
         // Volume égal : la correction rejoint doucement sa cible.
         if (self.norm_now - self.norm_target).abs() > 1e-3 {
             self.norm_now += (self.norm_target - self.norm_now) * (1.0 - (-dt / self.norm_tau).exp());
-            if let Some(d) = self.deck() {
+            if let Some(d) = &self.deck {
                 d.norm.set_property("volume", self.norm_now);
             }
         }
 
-        if !self.playing || self.deck().is_none() {
+        let playing = self.playing && self.deck.is_some();
+        if !playing && !learned {
             return;
         }
-        self.maybe_crossfade(app, fx);
+        // Une seule demande de position par battement.
+        let pos = self.position();
+        if learned {
+            self.report_with(fx, false, false, Some(pos));
+        }
+        if !playing {
+            return;
+        }
+        let before = self.plan.index;
+        self.maybe_crossfade(app, pos, fx);
+        if self.plan.index != before {
+            return;
+        }
 
         // L'écran ne change qu'à chaque seconde ; le système et la reprise, plus rarement.
-        let pos = self.position();
         let second = pos / 1000;
         if second != self.last_second {
             self.last_second = second;
-            fx.push(Effect::Emit(self.status(false)));
+            fx.push(Effect::Emit(self.status_at(false, Some(pos))));
         }
         if self.last_push.elapsed() > Duration::from_secs(5) {
             self.last_push = Instant::now();
@@ -768,8 +1128,10 @@ impl Engine {
         }
         if self.last_save.elapsed() > Duration::from_secs(15) {
             self.last_save = Instant::now();
-            fx.push(Effect::Save(self.deck().map(|d| d.id.clone()), pos, true));
-            self.save_gains(app);
+            if let Some(id) = self.deck.as_ref().map(|d| d.id.clone()) {
+                fx.push(Effect::Save { id, position_ms: pos, playing: true, force: false });
+            }
+            self.flush_gains(fx);
         }
     }
 }
@@ -784,7 +1146,14 @@ fn lcg(seed: &mut u64, n: usize) -> usize {
 
 /// Vrai si le lecteur du cœur est en service (sinon, la page lit elle-même).
 pub fn available(app: &AppHandle) -> bool {
-    app.try_state::<Player>().map(|p| p.0.lock().unwrap().is_some()).unwrap_or(false)
+    app.try_state::<Player>().is_some_and(|p| p.orders.is_some())
+}
+
+/// Confie un ordre au fil « lecteur ». Faux : pas de lecteur du cœur.
+fn send(app: &AppHandle, order: Order) -> bool {
+    app.try_state::<Player>()
+        .and_then(|p| p.orders.as_ref().map(|tx| tx.send(order).is_ok()))
+        .unwrap_or(false)
 }
 
 /// Exécute une action sur le moteur, puis ses effets une fois le verrou rendu.
@@ -792,7 +1161,7 @@ fn with_engine(app: &AppHandle, f: impl FnOnce(&mut Engine, &mut Vec<Effect>)) -
     let Some(player) = app.try_state::<Player>() else { return false };
     let mut fx = Vec::new();
     {
-        let mut guard = player.0.lock().unwrap();
+        let mut guard = player.engine.lock().unwrap();
         let Some(engine) = guard.as_mut() else { return false };
         f(engine, &mut fx);
     }
@@ -805,7 +1174,14 @@ fn run_effects(app: &AppHandle, fx: Vec<Effect>) {
         match effect {
             Effect::Started(track) => crate::announce_track(app, &track),
             Effect::Playback(playing, pos) => crate::playback_changed(app, playing, pos),
-            Effect::Save(id, pos, playing) => crate::save_progress_impl(app, id, pos, playing),
+            Effect::Save { id, position_ms, playing, force } => {
+                crate::save_progress_impl(app, Some(id), position_ms, playing, force)
+            }
+            Effect::Gains(gains) => {
+                if let Ok(bytes) = serde_json::to_vec(&gains) {
+                    let _ = crate::store::write_atomic(&gains_file(app), &bytes);
+                }
+            }
             Effect::Emit(status) => {
                 let _ = app.emit("player", status);
             }
@@ -816,29 +1192,50 @@ fn run_effects(app: &AppHandle, fx: Vec<Effect>) {
     }
 }
 
-/// Démarre le battement du lecteur (s'il est en service).
+/// Démarre le fil « lecteur » (si le lecteur est en service).
 pub fn start(app: &AppHandle) {
-    if !available(app) {
-        return;
-    }
+    let Some(player) = app.try_state::<Player>() else { return };
+    let Some(inbox) = player.inbox.lock().unwrap().take() else { return };
     let settings = app.state::<crate::AppSettings>().0.lock().unwrap().clone();
     with_engine(app, |e, _| e.configure(&settings));
     let app = app.clone();
-    let _ = std::thread::Builder::new().name("lecteur".into()).spawn(move || loop {
-        let mut busy = false;
+    let _ = std::thread::Builder::new().name("lecteur".into()).spawn(move || run(app, inbox));
+}
+
+/// Le fil « lecteur » : les ordres dans l'ordre d'arrivée, et le battement entre eux.
+fn run(app: AppHandle, inbox: Receiver<Order>) {
+    let mut next_tick = Instant::now();
+    loop {
+        match inbox.recv_timeout(next_tick.saturating_duration_since(Instant::now())) {
+            Ok(order) => {
+                let mut beat = SLOW;
+                with_engine(&app, |e, fx| {
+                    e.handle(&app, order, fx);
+                    beat = e.beat();
+                });
+                // Un morceau qui démarre veut le battement rapide sans attendre.
+                next_tick = next_tick.min(Instant::now() + beat);
+                if Instant::now() < next_tick {
+                    continue;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+        let mut beat = SLOW;
         with_engine(&app, |e, fx| {
-            busy = e.decks.iter().any(|d| d.is_some());
-            if busy {
+            if e.deck.is_some() || e.outgoing.is_some() {
                 e.tick(&app, fx);
             }
+            beat = e.beat();
         });
-        std::thread::sleep(Duration::from_millis(if busy { 50 } else { 250 }));
-    });
+        next_tick = Instant::now() + beat;
+    }
 }
 
 /// Réglages du son modifiés.
 pub fn configure(app: &AppHandle, settings: &crate::store::Settings) {
-    with_engine(app, |e, _| e.configure(settings));
+    send(app, Order::Configure(Box::new(settings.clone())));
 }
 
 /// Touches média, icône de la barre et widget du bureau. Faux : action inconnue ici.
@@ -848,46 +1245,34 @@ pub fn media_control(app: &AppHandle, action: &str) -> bool {
     }
     let (name, value) = action.split_once(':').unwrap_or((action, ""));
     let ms: i64 = value.parse().unwrap_or(0);
-    let app2 = app.clone();
-    match name {
-        "play" => with_engine(app, |e, fx| e.set_playing(&app2, true, fx)),
-        "pause" => with_engine(app, |e, fx| e.set_playing(&app2, false, fx)),
-        "toggle" => with_engine(app, |e, fx| {
-            let on = !e.playing;
-            e.set_playing(&app2, on, fx)
-        }),
-        "stop" => with_engine(app, |e, fx| {
-            e.set_playing(&app2, false, fx);
-            e.seek(0, fx);
-        }),
-        "next" => with_engine(app, |e, fx| e.step(&app2, 1, fx)),
-        "previous" => with_engine(app, |e, fx| e.step(&app2, -1, fx)),
-        "seek-forward" | "seek-backward" | "seek-by" => with_engine(app, |e, fx| {
-            let by = match name {
-                "seek-forward" => e.skip_s as i64 * 1000,
-                "seek-backward" => -(e.skip_s as i64) * 1000,
-                _ => ms,
-            };
-            let to = (e.position() as i64 + by).max(0) as u64;
-            e.seek(to, fx);
-        }),
-        "set-position" => with_engine(app, |e, fx| e.seek(ms.max(0) as u64, fx)),
+    let order = match name {
+        "play" => Order::SetPlaying(true),
+        "pause" => Order::SetPlaying(false),
+        "toggle" => Order::Toggle,
+        "stop" => Order::Stop,
+        "next" => Order::Step(1),
+        "previous" => Order::Step(-1),
+        "seek-forward" => Order::Skip(1),
+        "seek-backward" => Order::Skip(-1),
+        "seek-by" => Order::SeekBy(ms),
+        "set-position" => Order::Seek(ms.max(0) as u64),
         "quit" => {
             save_now(app);
             app.exit(0);
-            true
+            return true;
         }
-        _ => false,
-    }
+        _ => return false,
+    };
+    send(app, order)
 }
 
 /// Position du moment enregistrée (à la fermeture d'Écho).
 pub fn save_now(app: &AppHandle) {
     with_engine(app, |e, fx| {
-        e.save_gains(app);
+        e.flush_gains(fx);
         let s = e.status(false);
-        if s.id.is_some() {
-            fx.push(Effect::Save(s.id, s.position_ms, s.playing));
+        if let Some(id) = s.id {
+            fx.push(Effect::Save { id, position_ms: s.position_ms, playing: s.playing, force: true });
         }
     });
 }
@@ -897,71 +1282,49 @@ pub fn save_now(app: &AppHandle) {
 /// Nouvelle file, et lecture du morceau `index` (à `start_ms` si donné).
 #[tauri::command]
 pub fn player_play(app: AppHandle, ids: Vec<String>, index: usize, autoplay: bool, start_ms: Option<u64>, shuffle: bool, repeat: String) {
-    let app2 = app.clone();
-    with_engine(&app, |e, fx| {
-        e.plan = Plan { ids, index, shuffle, repeat, ..Default::default() };
-        e.load(&app2, index, autoplay, start_ms, fx);
-    });
+    send(&app, Order::Play(Request { ids, index, autoplay, start_ms, shuffle, repeat }));
 }
 
 /// La file a changé (ajout, retrait, ordre, aléatoire, répétition) sans changer de
 /// morceau : le morceau qui joue garde sa place, quelle que soit sa nouvelle position.
 #[tauri::command]
 pub fn player_queue(app: AppHandle, ids: Vec<String>, index: usize, shuffle: bool, repeat: String) {
-    with_engine(&app, |e, _| {
-        let playing_id = e.deck().map(|d| d.id.clone());
-        let same = e.plan.ids == ids;
-        let index = playing_id
-            .and_then(|id| ids.iter().position(|x| *x == id))
-            .unwrap_or_else(|| index.min(ids.len().saturating_sub(1)));
-        if !same || e.plan.shuffle != shuffle {
-            e.plan.played.clear();
-            e.plan.history.clear();
-        }
-        e.plan.ids = ids;
-        e.plan.index = index;
-        e.plan.shuffle = shuffle;
-        e.plan.repeat = repeat;
-    });
+    send(&app, Order::Queue { ids, index, shuffle, repeat });
 }
 
 #[tauri::command]
 pub fn player_set_playing(app: AppHandle, playing: bool) {
-    let app2 = app.clone();
-    with_engine(&app, |e, fx| e.set_playing(&app2, playing, fx));
+    send(&app, Order::SetPlaying(playing));
 }
 
 #[tauri::command]
 pub fn player_step(app: AppHandle, delta: i32) {
-    let app2 = app.clone();
-    with_engine(&app, |e, fx| e.step(&app2, delta, fx));
+    send(&app, Order::Step(delta));
 }
 
 #[tauri::command]
 pub fn player_seek(app: AppHandle, ms: u64) {
-    with_engine(&app, |e, fx| e.seek(ms, fx));
+    send(&app, Order::Seek(ms));
 }
 
 #[tauri::command]
 pub fn player_volume(app: AppHandle, volume: f64, muted: bool) {
-    with_engine(&app, |e, _| {
-        e.volume = volume.clamp(0.0, 1.0);
-        e.muted = muted;
-        e.apply_sound();
-    });
+    send(&app, Order::Volume(volume, muted));
 }
 
 /// État complet, pour une page qui (re)vient : la file, le morceau, la position.
 #[tauri::command]
 pub fn player_snapshot(app: AppHandle) -> Option<Snapshot> {
     let player = app.try_state::<Player>()?;
-    let guard = player.0.lock().unwrap();
+    let guard = player.engine.lock().unwrap();
     let e = guard.as_ref()?;
     Some(Snapshot {
         status: e.status(false),
         ids: e.plan.ids.clone(),
         shuffle: e.plan.shuffle,
         repeat: e.plan.repeat.clone(),
+        volume: e.volume,
+        muted: e.muted,
     })
 }
 
@@ -1009,5 +1372,52 @@ mod tests {
         // Précédent : retour au morceau joué juste avant.
         let before = *p.history.last().unwrap();
         assert_eq!(p.prev(), Some(before));
+    }
+
+    /// Bug de l'audit : « répéter un titre » rejouait sans fin un fichier illisible.
+    #[test]
+    fn un_morceau_illisible_laisse_la_place_a_un_autre() {
+        let mut first = |_: usize| 0;
+        let mut p = plan(3, 1, false, "one");
+        assert_eq!(p.next_after_failure(&mut first), Some(2));
+        assert_eq!(p.repeat, "one", "le réglage de répétition est gardé");
+        assert_eq!(plan(3, 2, false, "one").next_after_failure(&mut first), Some(0));
+        // Fin de file sans répétition : on s'arrête.
+        assert_eq!(plan(3, 2, false, "off").next_after_failure(&mut first), None);
+    }
+
+    /// Bug de l'audit : un morceau présent deux fois dans la file sautait à sa première place.
+    #[test]
+    fn un_doublon_garde_sa_place_dans_la_file() {
+        let ids: Vec<String> = ["a", "b", "a", "c"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(place_in(&ids, 2, Some("a")), 2);
+        assert_eq!(place_in(&ids, 3, Some("b")), 1);
+        assert_eq!(place_in(&ids, 9, Some("z")), 3);
+        assert_eq!(place_in(&ids, 1, None), 1);
+        assert_eq!(place_in(&[], 4, Some("a")), 0);
+    }
+
+    /// Bug de l'audit : relancer la même file en aléatoire oubliait les morceaux déjà joués.
+    #[test]
+    fn la_meme_file_garde_la_memoire_de_l_aleatoire() {
+        let mut p = plan(5, 0, true, "off");
+        p.played.insert(3);
+        p.history.push(3);
+        let ids = p.ids.clone();
+        p.adopt(ids.clone(), 2, true, "all".into());
+        assert_eq!(p.index, 2);
+        assert_eq!(p.history, vec![3, 0]);
+        assert!(p.played.contains(&3) && p.played.contains(&0));
+        assert_eq!(p.repeat, "all");
+        // Autre file : tout repart de zéro.
+        p.adopt(ids[..3].to_vec(), 1, true, "off".into());
+        assert!(p.history.is_empty() && p.played.is_empty());
+    }
+
+    #[test]
+    fn les_statuts_sont_numerotes_dans_l_ordre() {
+        let a = next_seq();
+        let b = next_seq();
+        assert!(b > a);
     }
 }

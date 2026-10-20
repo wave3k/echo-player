@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 /// Tout ce qui se regle dans l'application et se garde entre deux lancements.
 #[derive(Serialize, Deserialize, Clone)]
@@ -200,15 +202,34 @@ pub fn covers_dir(cache_dir: &Path) -> PathBuf {
 
 /// Écrit d'abord dans un fichier temporaire puis le renomme : une coupure pendant
 /// l'écriture laisse l'ancien fichier intact au lieu d'un fichier à moitié écrit.
+/// Le nom temporaire est propre à chaque écriture : deux fils qui écrivent le même
+/// fichier ne se marchent pas dessus.
 pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
+    let tmp = unique_tmp(path, "tmp");
+    let written = std::fs::write(&tmp, contents).and_then(|_| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
+/// « fichier.<pid>.<n>.<ext> », à côté du fichier visé.
+pub fn unique_tmp(path: &Path, ext: &str) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, contents)?;
-    std::fs::rename(&tmp, path)
+    tmp.push(format!(".{}.{n}.{ext}", std::process::id()));
+    PathBuf::from(tmp)
+}
+
+/// Une écriture de settings.json à la fois : la copie des réglages et son écriture
+/// vont ensemble, sinon une copie plus ancienne pourrait être écrite en dernier.
+pub fn settings_write_lock() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Lit un fichier JSON. S'il est illisible, il est mis de côté (« .bad ») plutôt que
@@ -327,10 +348,7 @@ pub fn load_lyrics_sync(dir: &Path) -> HashMap<String, Vec<crate::lyrics::Anchor
 }
 
 pub fn save_lyrics_sync(dir: &Path, map: &HashMap<String, Vec<crate::lyrics::Anchor>>) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let tmp = dir.join("lyrics_sync.json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec(map).map_err(std::io::Error::other)?)?;
-    std::fs::rename(tmp, dir.join("lyrics_sync.json"))
+    write_atomic(&dir.join("lyrics_sync.json"), &serde_json::to_vec(map).map_err(std::io::Error::other)?)
 }
 
 #[cfg(test)]
@@ -414,7 +432,36 @@ mod tests {
         save_settings(&tmp.0, &s);
         save_settings(&tmp.0, &s);
         assert_eq!(load_settings(&tmp.0).volume, 33);
-        assert!(!tmp.0.join("settings.json.tmp").exists());
+        let left: Vec<_> = std::fs::read_dir(&tmp.0)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(left.is_empty());
+    }
+
+    /// Bug de l'audit : deux écritures simultanées partageaient le même fichier temporaire.
+    #[test]
+    fn des_ecritures_simultanees_ne_se_melangent_pas() {
+        let tmp = TempDir::new("concurrent");
+        let file = tmp.0.join("x.json");
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let file = file.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..20 {
+                        write_atomic(&file, format!("{i}").repeat(5000).as_bytes()).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(text.len(), 5000);
+        assert!(text.chars().all(|c| c == text.chars().next().unwrap()), "jamais deux écritures mêlées");
+        assert_ne!(unique_tmp(&file, "tmp"), unique_tmp(&file, "tmp"));
     }
 
     #[test]

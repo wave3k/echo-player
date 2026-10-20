@@ -11,6 +11,7 @@ mod lyrics;
 mod matroska;
 mod mp4;
 mod mpris;
+mod ogg;
 #[cfg_attr(not(target_os = "linux"), path = "player_stub.rs")]
 mod player;
 mod store;
@@ -23,6 +24,7 @@ use library::Track;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 
@@ -89,25 +91,103 @@ fn apply_services(app: &tauri::AppHandle) {
 }
 
 /// Affiche la fenêtre et la met au premier plan (la recrée si elle a été fermée
-/// pendant qu'Écho jouait depuis la barre du système).
+/// pendant qu'Écho jouait depuis la barre du système). Sur le fil principal.
 fn show_window(app: &tauri::AppHandle) {
-    let window = match app.get_webview_window("main") {
-        Some(window) => window,
-        None => {
-            let Some(config) = app.config().app.windows.first().cloned() else { return };
-            match tauri::WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build()) {
-                Ok(window) => {
-                    attach_window(&window);
-                    IN_TRAY.store(false, std::sync::atomic::Ordering::SeqCst);
-                    window
-                }
-                Err(_) => return,
-            }
+    show_window_try(app, 0);
+}
+
+fn show_window_try(app: &tauri::AppHandle, attempt: u32) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        return;
+    }
+    let Some(config) = app.config().app.windows.first().cloned() else { return };
+    // Recréée invisible (comme au lancement) : elle se montre quand la page est prête.
+    match tauri::WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build()) {
+        Ok(window) => {
+            attach_window(&window);
+            IN_TRAY.store(false, Ordering::SeqCst);
+            reveal_soon(&window);
         }
-    };
-    let _ = window.show();
-    let _ = window.unminimize();
-    let _ = window.set_focus();
+        // L'ancienne fenêtre « main » est peut-être encore en train d'être détruite :
+        // on réessaie un peu plus tard, sur le fil principal.
+        Err(_) if attempt < 10 => {
+            let app = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || show_window_try(&handle, attempt + 1));
+            });
+        }
+        Err(_) => {}
+    }
+}
+
+/// Numéro de la fenêtre créée en dernier, et de la dernière dont la page s'est dite prête.
+static WINDOW_GEN: AtomicU64 = AtomicU64::new(0);
+static READY_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// La fenêtre naît invisible (pas de flash blanc) : la page la montre avec `ui_ready`.
+/// Si elle ne l'a pas fait au bout de 3 s, elle est montrée quand même.
+fn reveal_soon(window: &tauri::WebviewWindow) {
+    let gen = WINDOW_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let app = window.app_handle().clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        if READY_GEN.load(Ordering::SeqCst) >= gen {
+            return;
+        }
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if WINDOW_GEN.load(Ordering::SeqCst) != gen {
+                return;
+            }
+            if let Some(window) = handle.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        });
+    });
+}
+
+/// La page est affichée : la fenêtre peut apparaître.
+#[tauri::command]
+fn ui_ready(app: tauri::AppHandle) {
+    READY_GEN.store(WINDOW_GEN.load(Ordering::SeqCst), Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// Autorise l'aperçu d'une image choisie hors des dossiers de musique (éditeur de
+/// pochette). Seules les images sont acceptées, un fichier à la fois.
+#[tauri::command]
+fn allow_preview(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let file = Path::new(&path);
+    let ext = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif") {
+        return Err("Ce fichier n'est pas une image.".into());
+    }
+    if !file.is_file() {
+        return Err("Cette image est introuvable.".into());
+    }
+    app.asset_protocol_scope()
+        .allow_file(file)
+        .map_err(|e| format!("Aperçu impossible : {e}"))
+}
+
+/// Allume ou éteint les touches média. Les commandes éteintes sont détruites une fois
+/// le verrou rendu (leur fil D-Bus peut attendre ce verrou).
+fn set_media_keys(app: &tauri::AppHandle, enabled: bool) {
+    let retired = app.state::<Media>().0.lock().unwrap().set_enabled(enabled);
+    drop(retired);
 }
 
 /// Touche média, menu de l'icône ou widget du bureau : le lecteur du cœur s'en charge,
@@ -294,20 +374,31 @@ fn allow_media_paths(app: &tauri::AppHandle, folders: &[String]) {
     let _ = scope.allow_directory(store::covers_dir(&cache_dir(app)), true);
 }
 
-/// Lance un travail lourd hors du thread principal, pour que la fenêtre reste réactive.
+/// Lance un travail hors du thread principal, pour que la fenêtre reste réactive.
 async fn offload<T, F>(f: F) -> T
 where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
 {
-    let out = tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .expect("tâche de fond interrompue")
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// Comme `offload`, pour un travail lourd (copie audio, image d'un clip) : la mémoire
+/// libérée est rendue au système ensuite.
+async fn offload_heavy<T, F>(f: F) -> T
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    offload(move || {
         let out = f();
         release_memory();
         out
     })
     .await
-    .expect("tâche de fond interrompue");
-    out
 }
 
 /// Rend au système la mémoire libérée par un travail lourd (scan, copie audio, image
@@ -459,21 +550,14 @@ fn get_state(state: State<AppData>, settings: State<AppSettings>, overrides: Sta
 #[tauri::command]
 async fn set_settings(app: tauri::AppHandle, mut new_settings: store::Settings) -> Option<Snapshot> {
     new_settings.sanitize();
-    let formats_changed = {
-        let settings = app.state::<AppSettings>();
-        let mut current = settings.0.lock().unwrap();
-        new_settings.keep_core_from(&current);
+    let (formats_changed, new_settings) = update_settings(&app, |current| {
+        new_settings.keep_core_from(current);
         let formats_changed = current.formats != new_settings.formats;
-        *current = new_settings.clone();
-        formats_changed
-    };
+        *current = new_settings;
+        (formats_changed, current.clone())
+    });
 
-    store::save_settings(&config_dir(&app), &new_settings);
-    app.state::<Media>()
-        .0
-        .lock()
-        .unwrap()
-        .set_enabled(new_settings.media_keys);
+    set_media_keys(&app, new_settings.media_keys);
     let _ = set_autostart_impl(&app, new_settings.autostart);
     apply_services(&app);
     player::configure(&app, &new_settings);
@@ -490,14 +574,11 @@ async fn add_folder(app: tauri::AppHandle, path: String) -> Result<Snapshot, Str
     if !Path::new(&path).is_dir() {
         return Err("Ce dossier n'existe pas.".into());
     }
-    {
-        let settings = app.state::<AppSettings>();
-        let mut cfg = settings.0.lock().unwrap();
+    update_settings(&app, |cfg| {
         if !cfg.folders.iter().any(|f| f == &path) {
             cfg.folders.push(path.clone());
         }
-        store::save_settings(&config_dir(&app), &cfg);
-    }
+    });
     allow_media_paths(&app, std::slice::from_ref(&path));
     apply_services(&app);
     Ok(offload(move || scan_with_events(&app)).await)
@@ -505,12 +586,7 @@ async fn add_folder(app: tauri::AppHandle, path: String) -> Result<Snapshot, Str
 
 #[tauri::command]
 async fn remove_folder(app: tauri::AppHandle, path: String) -> Snapshot {
-    {
-        let settings = app.state::<AppSettings>();
-        let mut cfg = settings.0.lock().unwrap();
-        cfg.folders.retain(|f| f != &path);
-        store::save_settings(&config_dir(&app), &cfg);
-    }
+    update_settings(&app, |cfg| cfg.folders.retain(|f| f != &path));
     apply_services(&app);
     offload(move || scan_with_events(&app)).await
 }
@@ -588,19 +664,11 @@ async fn import_settings(app: tauri::AppHandle, path: String) -> Result<Bootstra
         serde_json::from_str(&text).map_err(|_| "Ce fichier n'est pas un réglage d'Écho.".to_string())?;
     imported.sanitize();
 
-    {
-        let settings = app.state::<AppSettings>();
-        let mut cfg = settings.0.lock().unwrap();
-        *cfg = imported.clone();
-        store::save_settings(&config_dir(&app), &cfg);
-    }
-    app.state::<Media>()
-        .0
-        .lock()
-        .unwrap()
-        .set_enabled(imported.media_keys);
+    update_settings(&app, |cfg| *cfg = imported.clone());
+    set_media_keys(&app, imported.media_keys);
     let _ = set_autostart_impl(&app, imported.autostart);
     apply_services(&app);
+    player::configure(&app, &imported);
 
     let handle = app.clone();
     let snap = offload(move || scan_with_events(&handle)).await;
@@ -610,19 +678,11 @@ async fn import_settings(app: tauri::AppHandle, path: String) -> Result<Bootstra
 #[tauri::command]
 async fn reset_settings(app: tauri::AppHandle) -> Bootstrap {
     let fresh = store::Settings::default();
-    {
-        let settings = app.state::<AppSettings>();
-        let mut cfg = settings.0.lock().unwrap();
-        *cfg = fresh.clone();
-        store::save_settings(&config_dir(&app), &cfg);
-    }
-    app.state::<Media>()
-        .0
-        .lock()
-        .unwrap()
-        .set_enabled(fresh.media_keys);
+    update_settings(&app, |cfg| *cfg = fresh.clone());
+    set_media_keys(&app, fresh.media_keys);
     let _ = set_autostart_impl(&app, fresh.autostart);
     apply_services(&app);
+    player::configure(&app, &fresh);
 
     let handle = app.clone();
     let snap = offload(move || scan_with_events(&handle)).await;
@@ -774,7 +834,7 @@ async fn audio_source(app: tauri::AppHandle, id: String) -> Option<String> {
         let cache = cache_dir(&app);
         let path = PathBuf::from(&track.path);
         let mtime = track.mtime;
-        if let Some(audio) = offload(move || audio_only::ensure(&path, mtime, &cache)).await {
+        if let Some(audio) = offload_heavy(move || audio_only::ensure(&path, mtime, &cache)).await {
             return Some(audio.to_string_lossy().into_owned());
         }
     }
@@ -817,18 +877,68 @@ fn open_url(url: &str) {
 /// On garde de quoi reprendre la lecture au prochain demarrage.
 #[tauri::command]
 fn save_progress(app: tauri::AppHandle, track_id: Option<String>, position_ms: u64, playing: bool) {
-    save_progress_impl(&app, track_id, position_ms, playing);
+    save_progress_impl(&app, track_id, position_ms, playing, !playing);
 }
 
-fn save_progress_impl(app: &tauri::AppHandle, track_id: Option<String>, position_ms: u64, playing: bool) {
-    let settings = app.state::<AppSettings>();
-    let mut cfg = settings.0.lock().unwrap();
-    cfg.last_track = track_id;
-    cfg.last_position_ms = position_ms;
-    cfg.last_playing = playing;
-    let snapshot = cfg.clone();
-    drop(cfg);
+/// Écart minimal entre deux écritures de la progression dans settings.json.
+const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Dernière écriture de la progression, et écriture différée déjà prévue.
+static PROGRESS_WRITTEN: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+static PROGRESS_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// La progression est gardée en mémoire tout de suite, mais écrite au plus une fois
+/// toutes les 2 s ; `force` (pause, sortie) l'écrit sans attendre.
+fn save_progress_impl(app: &tauri::AppHandle, track_id: Option<String>, position_ms: u64, playing: bool, force: bool) {
+    {
+        let settings = app.state::<AppSettings>();
+        let mut cfg = settings.0.lock().unwrap();
+        cfg.last_track = track_id;
+        cfg.last_position_ms = position_ms;
+        cfg.last_playing = playing;
+    }
+    let recent = PROGRESS_WRITTEN
+        .lock()
+        .map(|t| t.is_some_and(|t| t.elapsed() < PROGRESS_EVERY))
+        .unwrap_or(false);
+    if force || !recent {
+        flush_settings(app);
+    } else if !PROGRESS_PENDING.swap(true, Ordering::SeqCst) {
+        // Écrite un peu plus tard, avec la dernière position connue d'ici là.
+        let app = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(PROGRESS_EVERY);
+            if PROGRESS_PENDING.load(Ordering::SeqCst) {
+                flush_settings(&app);
+            }
+        });
+    }
+}
+
+/// Écrit les réglages tels qu'ils sont en mémoire.
+fn flush_settings(app: &tauri::AppHandle) {
+    let _write = store::settings_write_lock();
+    PROGRESS_PENDING.store(false, Ordering::SeqCst);
+    let snapshot = app.state::<AppSettings>().0.lock().unwrap().clone();
     store::save_settings(&config_dir(app), &snapshot);
+    if let Ok(mut t) = PROGRESS_WRITTEN.lock() {
+        *t = Some(std::time::Instant::now());
+    }
+}
+
+/// Modifie les réglages et les écrit, sans qu'une autre écriture s'intercale.
+fn update_settings<T>(app: &tauri::AppHandle, change: impl FnOnce(&mut store::Settings) -> T) -> T {
+    let _write = store::settings_write_lock();
+    let (out, snapshot) = {
+        let settings = app.state::<AppSettings>();
+        let mut cfg = settings.0.lock().unwrap();
+        let out = change(&mut cfg);
+        (out, cfg.clone())
+    };
+    // Toute progression en attente part avec cette écriture.
+    PROGRESS_PENDING.store(false, Ordering::SeqCst);
+    store::save_settings(&config_dir(app), &snapshot);
+    out
 }
 
 /// Envoie à Discord ce qui joue, après une mise à jour du titre ou de la position.
@@ -996,7 +1106,7 @@ struct Grabbed {
 async fn grab_frame(app: tauri::AppHandle, id: String) -> Result<Grabbed, String> {
     #[cfg(target_os = "linux")]
     {
-        offload(move || {
+        offload_heavy(move || {
             let path = {
                 let state = app.state::<AppData>();
                 let data = state.0.lock().unwrap();
@@ -1172,36 +1282,107 @@ async fn edit_track(
 #[tauri::command]
 async fn get_cover_path(app: tauri::AppHandle, id: String) -> Option<CoverPaths> {
     let path = app.state::<AppData>().0.lock().unwrap().covers.get(&id).cloned()?;
-    Some(offload(move || CoverPaths::of(&path)).await)
+    Some(offload(move || CoverPaths::made(&path)).await)
 }
 
 /// Une pochette : l'image d'origine (grands affichages) et sa vignette (listes).
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct CoverPaths {
     full: String,
     thumb: Option<String>,
 }
 
 impl CoverPaths {
-    fn of(path: &Path) -> Self {
+    fn with(path: &Path, thumb: Option<PathBuf>) -> Self {
         Self {
             full: path.to_string_lossy().to_string(),
-            thumb: thumbs::ensure(path).map(|t| t.to_string_lossy().to_string()),
+            thumb: thumb.map(|t| t.to_string_lossy().to_string()),
         }
+    }
+
+    /// Vignette faite si besoin (une seule pochette).
+    fn made(path: &Path) -> Self {
+        Self::with(path, thumbs::ensure(path))
     }
 }
 
 /// Toutes les pochettes connues d'un coup (identifiant → chemin) : l'interface les
 /// pose tout de suite au défilement, sans une demande par ligne.
-/// Les vignettes manquantes sont faites ici, hors du verrou de la bibliothèque.
+/// Seules les vignettes déjà faites sont données : les autres sont faites ensuite,
+/// en fond, et arrivent par l'événement « thumbs-ready ».
 #[tauri::command]
-async fn get_cover_paths(app: tauri::AppHandle) -> std::collections::HashMap<String, CoverPaths> {
+async fn get_cover_paths(app: tauri::AppHandle) -> HashMap<String, CoverPaths> {
     let covers: Vec<(String, PathBuf)> = {
         let state = app.state::<AppData>();
         let data = state.0.lock().unwrap();
         data.covers.iter().map(|(id, p)| (id.clone(), p.clone())).collect()
     };
-    offload(move || covers.into_iter().map(|(id, p)| (id, CoverPaths::of(&p))).collect()).await
+    offload(move || {
+        let mut missing = Vec::new();
+        let out = covers
+            .into_iter()
+            .map(|(id, p)| {
+                let thumb = thumbs::existing(&p);
+                if thumb.is_none() && !thumbs::settled(&p) {
+                    missing.push((id.clone(), p.clone()));
+                }
+                (id, CoverPaths::with(&p, thumb))
+            })
+            .collect();
+        queue_thumbs(&app, missing);
+        out
+    })
+    .await
+}
+
+/// Vignettes à faire, et vrai si le fil qui les fait tourne déjà.
+static THUMB_QUEUE: Mutex<(Vec<(String, PathBuf)>, bool)> = Mutex::new((Vec::new(), false));
+
+/// Confie des vignettes à faire au fil des vignettes (lancé s'il ne tourne pas).
+/// Elles partent vers la page par lots : tous les 40, ou toutes les 500 ms.
+fn queue_thumbs(app: &tauri::AppHandle, items: Vec<(String, PathBuf)>) {
+    if items.is_empty() {
+        return;
+    }
+    {
+        let mut queue = THUMB_QUEUE.lock().unwrap();
+        queue.0.extend(items);
+        if queue.1 {
+            return;
+        }
+        queue.1 = true;
+    }
+    let app = app.clone();
+    let _ = std::thread::Builder::new().name("vignettes".into()).spawn(move || {
+        let mut batch: HashMap<String, CoverPaths> = HashMap::new();
+        let mut since = std::time::Instant::now();
+        let mut done: std::collections::HashSet<String> = std::collections::HashSet::new();
+        loop {
+            let next = {
+                let mut queue = THUMB_QUEUE.lock().unwrap();
+                let next = queue.0.pop();
+                if next.is_none() {
+                    queue.1 = false;
+                }
+                next
+            };
+            let Some((id, path)) = next else { break };
+            if !done.insert(id.clone()) {
+                continue;
+            }
+            if let Some(thumb) = thumbs::ensure(&path) {
+                batch.insert(id, CoverPaths::with(&path, Some(thumb)));
+            }
+            if batch.len() >= 40 || (!batch.is_empty() && since.elapsed() >= std::time::Duration::from_millis(500)) {
+                let _ = app.emit("thumbs-ready", std::mem::take(&mut batch));
+                since = std::time::Instant::now();
+            }
+        }
+        if !batch.is_empty() {
+            let _ = app.emit("thumbs-ready", batch);
+        }
+        release_memory();
+    });
 }
 
 /// Réglages du moteur d'affichage à poser avant d'ouvrir la fenêtre.
@@ -1252,7 +1433,7 @@ fn attach_window(window: &tauri::WebviewWindow) {
                 if player::available(win.app_handle()) {
                     // La musique est lue par le cœur : la page est fermée pour de bon
                     // (≈ 200 Mo rendus), et recréée quand on rouvre Écho.
-                    IN_TRAY.store(true, std::sync::atomic::Ordering::SeqCst);
+                    IN_TRAY.store(true, Ordering::SeqCst);
                     // WebKit garderait son processus d'affichage en réserve : on l'arrête.
                     #[cfg(target_os = "linux")]
                     let _ = win.with_webview(|webview| {
@@ -1280,7 +1461,7 @@ fn attach_window(window: &tauri::WebviewWindow) {
 }
 
 /// Vrai pendant qu'Écho joue sans fenêtre, depuis la barre du système.
-static IN_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static IN_TRAY: AtomicBool = AtomicBool::new(false);
 
 fn tray_shown(app: &tauri::AppHandle) -> bool {
     app.state::<Services>().tray.lock().map(|t| t.is_some()).unwrap_or(false)
@@ -1290,6 +1471,11 @@ fn main() {
     limit_allocator();
     prepare_webview_env();
     tauri::Builder::default()
+        // En premier : une seconde ouverture d'Écho montre la fenêtre déjà là et s'arrête.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let handle = app.clone();
+            let _ = app.run_on_main_thread(move || show_window(&handle));
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1318,7 +1504,7 @@ fn main() {
 
             // Touches media du clavier et widget du bureau.
             let mut controls = mpris::Mpris::new(&handle);
-            controls.set_enabled(settings.media_keys);
+            drop(controls.set_enabled(settings.media_keys));
             app.manage(Media(Mutex::new(controls)));
 
             {
@@ -1403,6 +1589,7 @@ fn main() {
             // Fermeture de la fenetre : on range dans la barre, on demande, ou on quitte.
             if let Some(window) = app.get_webview_window("main") {
                 attach_window(&window);
+                reveal_soon(&window);
             }
 
             Ok(())
@@ -1447,7 +1634,9 @@ fn main() {
             grab_frame,
             set_duration,
             get_playlists,
-            save_playlists
+            save_playlists,
+            ui_ready,
+            allow_preview
         ])
         .build(tauri::generate_context!())
         .expect("erreur au lancement d'Écho")
@@ -1457,7 +1646,7 @@ fn main() {
             match event {
                 // Plus de fenêtre, mais Écho joue depuis la barre du système : il reste ouvert.
                 tauri::RunEvent::ExitRequested { code: None, api, .. }
-                    if IN_TRAY.load(std::sync::atomic::Ordering::SeqCst) && tray_shown(app) =>
+                    if IN_TRAY.load(Ordering::SeqCst) && tray_shown(app) =>
                 {
                     api.prevent_exit();
                 }

@@ -38,18 +38,22 @@ impl Mpris {
             controls: None,
             handle: handle.clone(),
         };
-        mpris.set_enabled(true);
+        let _ = mpris.set_enabled(true);
         mpris
     }
 
     /// Allume ou eteint les touches media du clavier.
-    pub fn set_enabled(&mut self, enabled: bool) {
+    ///
+    /// Éteintes, les commandes sont rendues à l'appelant, qui doit les détruire une fois
+    /// le verrou `Media` rendu : leur destruction attend la fin du fil D-Bus, qui peut
+    /// justement attendre ce verrou (touche pressée au même moment).
+    #[must_use = "à détruire hors du verrou Media"]
+    pub fn set_enabled(&mut self, enabled: bool) -> Option<MediaControls> {
         if !enabled {
-            self.controls = None;
-            return;
+            return self.controls.take();
         }
         if self.controls.is_some() {
-            return;
+            return None;
         }
         if let Ok(mut controls) = MediaControls::new(platform_config(&self.handle)) {
             let handle = self.handle.clone();
@@ -66,6 +70,7 @@ impl Mpris {
             });
             self.controls = Some(controls);
         }
+        None
     }
 
     pub fn set_metadata(

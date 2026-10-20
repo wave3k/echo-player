@@ -4,7 +4,7 @@
 
 /// Version des règles de lecture des fichiers (titres, pistes) : quand elle change,
 /// les morceaux déjà connus sont relus une fois.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// Mots qui signalent un ajout de la plateforme vidéo, pas une partie du titre.
 const NOISE: &[&str] = &[
@@ -16,7 +16,7 @@ const NOISE: &[&str] = &[
 /// Résultat : l'artiste deviné (vide si rien de sûr) et le titre nettoyé.
 pub fn guess(raw: &str) -> (String, String) {
     let text = normalize(raw);
-    let text = strip_noise(&text);
+    let text = strip_noise(strip_track_number(&text));
     let (artist, title) = split_artist(&text);
     let (title, mut feats) = take_feat(&title);
     let (artist, artist_feat) = take_feat(&artist);
@@ -56,6 +56,29 @@ fn normalize(raw: &str) -> String {
         }
     }
     s
+}
+
+/// « 13 - Funkorama », « 03. Titre » : le numéro de piste en tête d'un nom de fichier
+/// (1 à 3 chiffres, puis « . », « - », « _ » ou « ) » suivi d'une espace) est retiré.
+/// « 50 Cent », « 1-800-273-8255 » ou une année (« 2019 - … ») restent tels quels.
+pub fn strip_track_number(text: &str) -> &str {
+    let trimmed = text.trim_start();
+    let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 || digits > 3 {
+        return text;
+    }
+    let rest = trimmed[digits..].trim_start();
+    let Some(after) = rest.strip_prefix(['.', '-', '_', ')']) else { return text };
+    if !after.starts_with(char::is_whitespace) || after.trim().is_empty() {
+        return text;
+    }
+    after.trim_start()
+}
+
+/// « (Prod. X) », « [prod by X] » : le nom du producteur, ajouté au titre du clip.
+fn is_credit(inner: &str) -> bool {
+    let lower = inner.trim_start().to_lowercase();
+    ["prod.", "prod ", "prod:", "produced by"].iter().any(|p| lower.starts_with(p))
 }
 
 fn is_noise(inner: &str) -> bool {
@@ -104,7 +127,7 @@ fn strip_noise(text: &str) -> String {
                 let inner: String = chars[i + 1..i + 1 + len].iter().collect();
                 // « (Explicit Version/Closed Captioned) » : chaque partie est du bruit.
                 let all_noise = inner.split('/').all(|part| is_noise(part) || part.trim().is_empty());
-                if is_noise(&inner) || all_noise {
+                if is_noise(&inner) || all_noise || is_credit(&inner) {
                     i += len + 2;
                     continue;
                 }
@@ -271,6 +294,31 @@ mod tests {
         for (raw, artist, title) in cases {
             assert_eq!(guess(raw), (artist.to_string(), title.to_string()), "pour « {raw} »");
         }
+    }
+
+    /// Bug de l'audit : « 13 - Funkorama » donnait l'artiste « 13 ».
+    #[test]
+    fn le_numero_de_piste_est_retire() {
+        let none = String::new();
+        assert_eq!(guess("13 - Funkorama"), (none.clone(), "Funkorama".to_string()));
+        assert_eq!(guess("03. Funkorama"), (none.clone(), "Funkorama".to_string()));
+        assert_eq!(guess("7 - Daft Punk - One More Time"), ("Daft Punk".to_string(), "One More Time".to_string()));
+        assert_eq!(guess("02 – Nekfeu - Égérie"), ("Nekfeu".to_string(), "Égérie".to_string()));
+        // Pas des numéros de piste.
+        assert_eq!(guess("50 Cent - Many Men").0, "50 Cent");
+        assert_eq!(guess("1-800-273-8255"), (none.clone(), "1-800-273-8255".to_string()));
+        assert_eq!(guess("3 singes"), (none, "3 singes".to_string()));
+        assert_eq!(super::strip_track_number("13 - "), "13 - ");
+        assert_eq!(super::strip_track_number("2019 - Titre"), "2019 - Titre");
+    }
+
+    #[test]
+    fn le_producteur_est_retire_du_titre() {
+        assert_eq!(guess("Ninho - Jefe (Prod. Dawson)"), ("Ninho".to_string(), "Jefe".to_string()));
+        assert_eq!(guess("Gims - Bella [prod by Renaud Rebillaud] (Clip Officiel)"), ("Gims".to_string(), "Bella".to_string()));
+        assert_eq!(guess("Freeze Corleone - Projet Blue Beam [PROD. KOSEI]").1, "Projet Blue Beam");
+        // Un mot qui commence seulement pareil reste.
+        assert_eq!(guess("Artiste - Titre (Prodigy Remix)").1, "Titre (Prodigy Remix)");
     }
 
     #[test]

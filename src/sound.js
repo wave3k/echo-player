@@ -224,6 +224,11 @@ const Sound = (() => {
       }
       applyVolume();
     },
+    /// Volume et son coupé tels que le cœur les a (page rouverte) : rien n'est renvoyé.
+    adopt(v, m) {
+      volume = Math.min(1, Math.max(0, v));
+      muted = !!m;
+    },
     setVolume(v) {
       volume = Math.min(1, Math.max(0, v));
       if (native) native.setVolume(volume, muted);

@@ -201,14 +201,16 @@ pub fn scan(
                 parsed: crate::titles::VERSION,
             };
 
-            let meta = if matches!(ext.as_str(), "webm" | "mkv") {
-                read_matroska(path, covers_dir, &mut covers)
-            } else {
-                read_metadata(path, covers_dir, &mut covers).or_else(|| read_mp4(path))
+            let meta = match ext.as_str() {
+                "webm" | "mkv" => read_matroska(path, covers_dir, &mut covers),
+                "ogg" | "oga" | "ogv" | "opus" => read_metadata(path, covers_dir, &mut covers).or_else(|| read_ogg(path)),
+                _ => read_metadata(path, covers_dir, &mut covers).or_else(|| read_mp4(path)),
             };
+            let mut named_by_file = true;
             if let Some(meta) = meta {
                 if !meta.title.is_empty() {
                     track.title = meta.title;
+                    named_by_file = false;
                 }
                 track.artist = meta.artist;
                 track.album = meta.album;
@@ -225,6 +227,9 @@ pub fn scan(
                 let (artist, title) = crate::titles::guess(&track.title);
                 track.artist = artist;
                 track.title = title;
+            } else if named_by_file {
+                // Artiste connu mais titre tiré du nom de fichier : « 03 - Titre » → « Titre ».
+                track.title = crate::titles::strip_track_number(&track.title).to_string();
             }
 
             // Vidéo sans pochette : une image de la vidéo, extraite une fois par l'interface.
@@ -289,6 +294,20 @@ fn read_mp4(path: &Path) -> Option<Meta> {
         title: String::new(),
         artist: String::new(),
         album: String::new(),
+        duration_ms: info.duration_ms,
+        cover: None,
+        has_audio: info.has_audio,
+        has_video: Some(info.has_video),
+    })
+}
+
+/// Ogg que `lofty` refuse (première piste vidéo) : ses commentaires et sa durée.
+fn read_ogg(path: &Path) -> Option<Meta> {
+    let info = crate::ogg::read(path)?;
+    Some(Meta {
+        title: info.title,
+        artist: info.artist,
+        album: info.album,
         duration_ms: info.duration_ms,
         cover: None,
         has_audio: info.has_audio,
@@ -498,6 +517,32 @@ pub(crate) mod tests {
         let mut names: Vec<String> = tracks.iter().map(|t| t.title.clone()).collect();
         names.sort();
         assert_eq!(names, ["a", "b", "c", "d", "e"]);
+    }
+
+    /// Bug de l'audit : « 13 - Funkorama », aux tags illisibles, avait l'artiste « 13 ».
+    #[test]
+    fn le_numero_de_piste_n_est_pas_un_artiste() {
+        let tmp = TempDir::new("piste");
+        let covers = tmp.0.join("covers");
+        std::fs::create_dir_all(&covers).unwrap();
+        std::fs::write(tmp.0.join("13 - Funkorama.mp3"), b"illisible").unwrap();
+        let (tracks, _) = scan(std::slice::from_ref(&tmp.0), &covers, &all_formats(), &HashMap::new());
+        assert_eq!(tracks[0].artist, "");
+        assert_eq!(tracks[0].title, "Funkorama");
+    }
+
+    /// Bug de l'audit : un Ogg avec une piste image Theora perdait tous ses tags.
+    #[test]
+    fn un_ogg_avec_piste_video_garde_ses_tags() {
+        let tmp = TempDir::new("ogg-scan");
+        let covers = tmp.0.join("covers");
+        std::fs::create_dir_all(&covers).unwrap();
+        crate::ogg::tests::theora_then_vorbis(&tmp.0.join("01 - piste.ogg"), &["TITLE=Funkorama", "ARTIST=Quelqu'un"]);
+        let (tracks, _) = scan(std::slice::from_ref(&tmp.0), &covers, &all_formats(), &HashMap::new());
+        assert_eq!(tracks[0].title, "Funkorama");
+        assert_eq!(tracks[0].artist, "Quelqu'un");
+        assert!(tracks[0].has_audio && tracks[0].video);
+        assert_eq!(tracks[0].duration_ms, 3000);
     }
 
     #[test]

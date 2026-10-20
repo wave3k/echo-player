@@ -119,12 +119,13 @@ function rememberCover(id, paths) {
 }
 
 /// Petit affichage : la vignette suffit, l'image entière y serait décodée pour rien.
+/// La plus grande dimension compte : une tranche haute et étroite a besoin de l'image entière.
 function isSmallCover(node) {
   if (node.classList.contains("thumb")) return true;
   if (!node.dataset.coverSize) {
-    const w = node.offsetWidth;
-    if (!w) return false;
-    node.dataset.coverSize = w * (window.devicePixelRatio || 1) <= 160 ? "s" : "l";
+    const size = Math.max(node.offsetWidth, node.offsetHeight);
+    if (!size) return false;
+    node.dataset.coverSize = size * (window.devicePixelRatio || 1) <= 128 ? "s" : "l";
   }
   return node.dataset.coverSize === "s";
 }
@@ -137,7 +138,11 @@ function coverSrc(id) {
         rememberCover(id, paths);
         return coverUrls.get(id);
       })
-      .catch(() => null)
+      .catch(() => {
+        // Adresse introuvable : la pochette est traitée comme absente (dégradé), pas en attente.
+        rememberCover(id, null);
+        return null;
+      })
       .finally(() => coverPending.delete(id));
     coverPending.set(id, request);
   }
@@ -150,7 +155,14 @@ function paintCover(node, track, label = true) {
   const id = track && track.cover;
   const url = id ? (isSmallCover(node) && thumbUrls.get(id)) || coverUrls.get(id) : null;
   if (url) {
-    node.style.background = `#222 url("${url}") center / cover no-repeat`;
+    node.style.background = `var(--cover-bg) url("${url}") center / cover no-repeat`;
+    coverLabel(node, null);
+    return;
+  }
+  // Pochette connue mais adresse pas encore arrivée : un fond neutre, pas le dégradé
+  // « sans pochette » qui serait remplacé une fraction de seconde plus tard.
+  if (id && !coverUrls.has(id)) {
+    node.style.background = "var(--cover-bg)";
     coverLabel(node, null);
     return;
   }
@@ -183,6 +195,7 @@ function coverLabel(node, track) {
 
 function noCover(node) {
   delete node.dataset.shown;
+  delete node.dataset.coverOf;
   node.classList.add("no-cover");
   node.style.background = "";
   node.innerHTML = icon("note", 16);
@@ -196,20 +209,36 @@ function fillCover(node, track, label = true) {
     return;
   }
   // Déjà affichée telle quelle : la repeindre la ferait clignoter.
-  const shown = `${track.id}|${track.cover || ""}|${coverUrls.has(track.cover) ? 1 : 0}|${label}`;
+  // La vignette compte pour les petits affichages : quand elle arrive, elle remplace l'image entière.
+  const thumb = node.classList.contains("thumb") || node.dataset.coverSize === "s" ? thumbUrls.has(track.cover) : 0;
+  const shown = `${track.id}|${track.cover || ""}|${coverUrls.has(track.cover) ? 1 : 0}|${thumb ? 1 : 0}|${label}`;
   if (node.dataset.shown === shown && !node.classList.contains("no-cover")) return;
   node.dataset.shown = shown;
+  // Pour `repaintCovers` : quel morceau cet élément montre.
+  node.dataset.coverOf = track.id;
+  node.dataset.coverLabel = label ? "1" : "0";
   node.classList.remove("no-cover");
   node.innerHTML = "";
   // Les petites vignettes des listes restent sans texte : illisible, et redessiné au défilement.
-  if (node.classList.contains("thumb")) label = false;
+  if (node.classList.contains("thumb") || isSmallCover(node)) label = false;
   paintCover(node, track, label);
 
   if (!track.cover || coverUrls.has(track.cover)) return;
   // La pochette est reconnue : on la pose dès que son adresse est prête.
   const wanted = track.cover;
-  coverSrc(wanted).then((url) => {
-    if (url && track.cover === wanted) paintCover(node, track, label);
+  coverSrc(wanted).then(() => {
+    // L'élément montre peut-être déjà un autre morceau : on ne le repeint que s'il
+    // attend toujours celui-ci.
+    if (node.dataset.shown === shown) fillCover(node, track, label);
+  });
+}
+
+/// Des pochettes sont arrivées (adresses, images de clips) : seules les pochettes
+/// affichées qui changent vraiment sont repeintes, rien n'est reconstruit.
+function repaintCovers() {
+  document.querySelectorAll("[data-cover-of]").forEach((node) => {
+    const track = trackById(node.dataset.coverOf);
+    if (track) fillCover(node, track, node.dataset.coverLabel === "1");
   });
 }
 
@@ -260,6 +289,13 @@ function resolvedTheme() {
 function applySettings() {
   const s = state.settings;
   const body = document.body;
+  // Thème ou palette qui changent : tout bascule d'un coup, sans fondus décalés
+  // (fonds instantanés, boutons en fondu : on verrait un éclair).
+  if (body.dataset.theme !== resolvedTheme() || body.dataset.palette !== s.palette) {
+    const root = document.documentElement;
+    root.classList.add("switching");
+    requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove("switching")));
+  }
   body.dataset.theme = resolvedTheme();
   body.dataset.palette = s.palette;
   body.dataset.font = s.font;
@@ -339,7 +375,7 @@ function sectionApparence() {
   ).join("");
 
   const fontcards = FONTS.map(
-    (f) => `<button class="fontcard${s.font === f.id ? " sel" : ""}" data-set="font" data-value="${f.id}">
+    (f) => `<button class="fontcard${s.font === f.id ? " sel" : ""}" data-set="font" data-value="${f.id}" data-font="${f.id}">
       <span class="radio">${s.font === f.id ? icon("check", 14) : ""}</span>
       <div class="fprev">Écho</div>
       <div class="fname">${f.name}</div>
@@ -597,14 +633,46 @@ function controlSelector(node) {
   return null;
 }
 
+/// Met `a` à l'image de `b` en ne touchant qu'à ce qui diffère : les éléments restent
+/// les mêmes (interrupteurs qui glissent, survol et focus gardés, rien ne clignote).
+function morph(a, b) {
+  if (a.nodeType !== b.nodeType || a.nodeName !== b.nodeName) {
+    a.replaceWith(b);
+    return;
+  }
+  if (a.nodeType === Node.TEXT_NODE || a.nodeType === Node.COMMENT_NODE) {
+    if (a.nodeValue !== b.nodeValue) a.nodeValue = b.nodeValue;
+    return;
+  }
+  if (a.nodeType !== Node.ELEMENT_NODE) return;
+  for (const { name } of [...a.attributes]) if (!b.hasAttribute(name)) a.removeAttribute(name);
+  for (const { name, value } of [...b.attributes]) if (a.getAttribute(name) !== value) a.setAttribute(name, value);
+  if ((a.tagName === "INPUT" || a.tagName === "SELECT") && a.value !== b.value && document.activeElement !== a) a.value = b.value;
+  const ac = [...a.childNodes];
+  const bc = [...b.childNodes];
+  const n = Math.min(ac.length, bc.length);
+  for (let i = 0; i < n; i++) morph(ac[i], bc[i]);
+  for (let i = n; i < ac.length; i++) ac[i].remove();
+  for (let i = n; i < bc.length; i++) a.appendChild(bc[i]);
+}
+
 function refreshSettingsPanel() {
   const old = el("settings-panel");
   if (!old) return;
+  // Mise à jour sur place : le panneau garde ses éléments (et ses écouteurs, posés sur
+  // le panneau lui-même), son défilement et le focus.
+  const oldBody = old.querySelector(".settings-body");
+  const fresh = buildSettingsPanel();
+  const freshBody = fresh.querySelector(".settings-body");
+  if (oldBody && freshBody) {
+    morph(oldBody, freshBody);
+    syncSettingsNav();
+    return;
+  }
   // Le panneau est reconstruit : on garde la position de défilement et le focus clavier.
   const active = document.activeElement;
   const focusKey = active && old.contains(active) ? controlSelector(active) : null;
   const oldNav = document.querySelector(".settings-nav");
-  const fresh = buildSettingsPanel();
   const body = old.querySelector(".settings-body");
   const scroll = body ? body.scrollTop : 0;
   // Le nouveau panneau prend la place de l'ancien, y compris dans une fenêtre superposée :
@@ -765,6 +833,9 @@ function bindSettings(panel) {
         frameTried.clear();
         audioPaths.clear();
         state.cacheBytes = cleared.cache_bytes;
+        // Mêmes morceaux, mais toutes les pochettes sont à reposer.
+        snapshotSig = "";
+        libraryVersion += 1;
         applySnapshot(cleared.snapshot);
         refreshSettingsPanel();
         toast("Les pochettes ont été reconstruites.");
@@ -797,7 +868,7 @@ function bindSettings(panel) {
         const path = typeof picked === "string" ? picked : picked.path;
         try {
           const boot = await invoke("import_settings", { path });
-          applyBootstrap(boot);
+          await applyBootstrap(boot);
           toast("Réglages importés.");
         } catch (err) {
           toast(String(err));
@@ -811,7 +882,7 @@ function bindSettings(panel) {
         ]);
         if (!ok) return;
         const boot = await invoke("reset_settings");
-        applyBootstrap(boot);
+        await applyBootstrap(boot);
         toast("Réglages remis à zéro.");
         break;
       }
@@ -886,8 +957,11 @@ function virtualList(container, count, rowHeight, makeRow) {
     // Liste cachée (panneau fermé, onglet inactif) : rien à mesurer, on garde les lignes.
     if (!container.clientHeight) return;
     const top = container.scrollTop;
-    const first = Math.max(0, Math.floor(top / rowHeight) - 6);
-    const last = Math.min(count, Math.ceil((top + container.clientHeight) / rowHeight) + 6);
+    // Une hauteur d'écran de marge de chaque côté : au défilement rapide, les lignes
+    // sont déjà là (pas de bandes vides).
+    const pad = Math.max(6, Math.ceil(container.clientHeight / rowHeight));
+    const first = Math.max(0, Math.floor(top / rowHeight) - pad);
+    const last = Math.min(count, Math.ceil((top + container.clientHeight) / rowHeight) + pad);
     for (const [i, node] of rows) {
       if (i < first || i >= last) {
         node.remove();
@@ -923,6 +997,18 @@ function renderLibrary() {
   if (!listEl) return;
   const all = visibleTracks();
   state.listOrder = all.map((t) => t.id);
+  // Liste vide : on dit pourquoi (recherche sans résultat, ou rien encore).
+  const empty = all.length
+    ? ""
+    : state.search
+      ? `Aucun morceau pour « ${state.search} ».`
+      : state.tracks.length
+        ? "Aucun morceau à afficher."
+        : "Aucun morceau pour l'instant.";
+  if ((listEl.dataset.empty || "") !== empty) {
+    if (empty) listEl.dataset.empty = empty;
+    else delete listEl.dataset.empty;
+  }
   // Même liste qu'avant (lecture, pause, changement de vue) : on ne met à jour que l'état.
   if (all === libShown && listEl.querySelector(":scope > .list-spacer")) {
     if (listEl.vlDraw) listEl.vlDraw();
@@ -970,7 +1056,7 @@ function renderQueue() {
   if (!queue) return;
   const ids = state.queue;
   const count = el("queue-count");
-  if (count) count.textContent = ids.length ? `${ids.length} morceaux` : "";
+  if (count) setText(count, ids.length ? countLabel(ids.length) : "");
 
   if (ids.length === 0) {
     queueShown = "";
@@ -1068,6 +1154,8 @@ function renderCarousel() {
     const size = offset === 0 ? 190 : Math.abs(offset) === 1 ? 138 : 104;
     node.style.width = `${size}px`;
     node.style.height = `${size}px`;
+    // Taille connue d'avance : l'élément n'est pas encore dans la page, on ne peut pas la mesurer.
+    node.dataset.coverSize = size * (window.devicePixelRatio || 1) <= 128 ? "s" : "l";
     if (!track) {
       node.style.opacity = ".12";
       box.appendChild(node);
@@ -1132,19 +1220,36 @@ function currentAlbum() {
   return albums[0];
 }
 
+/// Morceau en cours et onde de lecture dans la liste du mode minimaliste, sans la refaire.
+function markMinimal(right) {
+  const playing = isPlaying();
+  right.querySelectorAll("[data-min-id]").forEach((node, i) => {
+    const current = node.dataset.minId === currentId();
+    node.classList.toggle("is-current", current);
+    const first = node.firstElementChild;
+    const wantWave = current && playing;
+    if (first && first.classList.contains("playing") !== wantWave) {
+      first.outerHTML = wantWave ? `<span class="playing">${ICONS.waveform}</span>` : `<span class="trk-n">${i + 1}</span>`;
+    }
+  });
+}
+
 function renderMinimal() {
   const right = el("min-right");
   if (!right || state.settings.mode !== "minimal") return;
 
   if (state.minSearch.trim()) {
-    right.dataset.shown = "";
+    // Mêmes résultats qu'au dernier rendu : seul l'état change (la liste garde sa place).
+    const shownKey = `q:${state.minSearch}|${libraryVersion}`;
+    if (right.dataset.shown === shownKey && right.querySelector(".album-tracks")) return markMinimal(right);
+    right.dataset.shown = shownKey;
     const q = normalize(state.minSearch);
     const matches = audioTracks().filter((t) => searchKey(t).includes(q));
     const results = matches.slice(0, 200);
     const capped = matches.length > results.length ? " · 200 premiers affichés" : "";
     right.innerHTML = `
       <div class="album-title">Résultats</div>
-      <div class="album-meta">${matches.length} morceau${matches.length > 1 ? "x" : ""} pour « ${escapeHtml(state.minSearch)} »${capped}</div>
+      <div class="album-meta">${countLabel(matches.length)} pour « ${escapeHtml(state.minSearch)} »${capped}</div>
       <div class="album-tracks">${results
         .map((t, i) => minimalTrackRow(t, i, true))
         .join("")}</div>`;
@@ -1167,25 +1272,13 @@ function renderMinimal() {
 
   // Même album qu'au dernier rendu (lecture, pause, morceau suivant) : seul l'état change.
   const key = `${album.key}|${libraryVersion}`;
-  if (right.dataset.shown === key && right.querySelector(".album-tracks")) {
-    const playing = isPlaying();
-    right.querySelectorAll("[data-min-id]").forEach((node, i) => {
-      const current = node.dataset.minId === currentId();
-      node.classList.toggle("is-current", current);
-      const first = node.firstElementChild;
-      const wantWave = current && playing;
-      if (first && first.classList.contains("playing") !== wantWave) {
-        first.outerHTML = wantWave ? `<span class="playing">${ICONS.waveform}</span>` : `<span class="trk-n">${i + 1}</span>`;
-      }
-    });
-    return;
-  }
+  if (right.dataset.shown === key && right.querySelector(".album-tracks")) return markMinimal(right);
   right.dataset.shown = key;
 
   const total = album.tracks.reduce((sum, t) => sum + (t.duration_ms || 0), 0);
   right.innerHTML = `
     <div class="album-title">${escapeHtml(album.name)}</div>
-    <div class="album-meta">${album.artist ? escapeHtml(album.artist) + " · " : ""}${album.tracks.length} titre${album.tracks.length > 1 ? "s" : ""} · ${formatTime(total)}</div>
+    <div class="album-meta">${album.artist ? escapeHtml(album.artist) + " · " : ""}${countLabel(album.tracks.length)} · ${formatTime(total)}</div>
     <div class="album-tracks">${album.tracks.map((t, i) => minimalTrackRow(t, i, false)).join("")}</div>`;
 
   right.querySelectorAll("[data-min-id]").forEach((node) => {
@@ -1270,6 +1363,8 @@ const nativeMedia = {
   duration: NaN,
   pos: 0,
   at: 0,
+  /// Morceau que le cœur joue (même s'il a disparu de la bibliothèque entre-temps).
+  id: null,
   get currentTime() {
     if (this.paused) return this.pos;
     const t = this.pos + (performance.now() - this.at) / 1000;
@@ -1281,68 +1376,129 @@ const nativeMedia = {
     invoke("player_seek", { ms: Math.round(this.pos * 1000) }).catch(() => {});
   },
   play() {
+    flushNativeQueue();
     this.at = performance.now();
     this.paused = false;
     invoke("player_set_playing", { playing: true }).catch(() => {});
+    renderPlayState();
     return Promise.resolve();
   },
   pause() {
     if (!this.paused) this.pos = this.currentTime;
     this.paused = true;
     invoke("player_set_playing", { playing: false }).catch(() => {});
+    renderPlayState();
   },
   update(s) {
+    const before = this.currentTime;
+    const pos = s.position_ms / 1000;
+    // La position interpolée a pu prendre quelques centièmes d'avance : on ne la fait
+    // pas reculer pour si peu (les paroles s'éteindraient puis se rallumeraient).
+    const keep = !s.changed && s.playing && !this.paused && before - pos > 0 && before - pos < 0.25;
     this.paused = !s.playing;
-    this.pos = s.position_ms / 1000;
+    this.pos = keep ? before : pos;
     this.at = performance.now();
-    this.duration = s.duration_ms > 0 ? s.duration_ms / 1000 : NaN;
+    this.id = s.id || null;
+    // Durée pas encore lue par le cœur : celle des tags, sinon la barre disparaîtrait.
+    const track = s.id ? trackById(s.id) : null;
+    const ms = s.duration_ms > 0 ? s.duration_ms : (track && track.duration_ms) || 0;
+    this.duration = ms > 0 ? ms / 1000 : NaN;
   },
 };
+
+/// Pendant la reprise d'une page rouverte, la file locale n'est pas encore la bonne :
+/// rien n'est envoyé au cœur, qui garde la sienne.
+let nativeAdopting = false;
+/// Dernier statut reçu : les statuts arrivés en retard (d'un autre fil) sont ignorés.
+let lastSeq = -1;
+/// Morceau demandé au cœur, pas encore confirmé.
+let nativeExpect = null;
 
 /// Passe la lecture au cœur. Renvoie vrai si une lecture y était déjà en cours
 /// (page rouverte depuis la barre du système) : la page reprend alors son état.
 async function enableNative() {
-  if (!NATIVE) {
-    NATIVE = true;
-    Sound.useNative({
-      media: nativeMedia,
-      setVolume: (volume, muted) => invoke("player_volume", { volume, muted }).catch(() => {}),
-    });
-    audio = nativeMedia;
-    Sound.configure(state.settings);
-    await listen("player", (event) => onNativeStatus(event.payload));
-    await listen("player-error", (event) => toast(String(event.payload)));
+  nativeAdopting = true;
+  try {
+    if (!NATIVE) {
+      NATIVE = true;
+      Sound.useNative({
+        media: nativeMedia,
+        setVolume: (volume, muted) => invoke("player_volume", { volume, muted }).catch(() => {}),
+      });
+      audio = nativeMedia;
+      await listen("player", (event) => onNativeStatus(event.payload));
+      await listen("player-error", (event) => toast(String(event.payload)));
+    }
+    const snap = await invoke("player_snapshot").catch(() => null);
+    // Volume et son coupé : ceux du cœur, qui ont pu changer pendant que la page était fermée.
+    if (snap && typeof snap.volume === "number") {
+      Sound.adopt(snap.volume, !!snap.muted);
+      // Le curseur et les réglages suivent, sinon le prochain réglage renverrait l'ancien volume.
+      state.settings.volume = Math.round(snap.volume * 100);
+      const slider = el("volume");
+      if (slider) {
+        slider.value = String(state.settings.volume);
+        slider.style.setProperty("--p", `${state.settings.volume}%`);
+      }
+    } else {
+      Sound.configure(state.settings);
+    }
+    refreshToggles();
+    if (!snap || !snap.status.id) return false;
+    state.queue = snap.ids;
+    const at = snap.ids[snap.status.index] === snap.status.id ? snap.status.index : snap.ids.indexOf(snap.status.id);
+    state.queueIndex = Math.max(0, at);
+    state.shuffle = snap.shuffle;
+    state.repeat = snap.repeat;
+    if (typeof snap.status.seq === "number") lastSeq = snap.status.seq;
+    nativeMedia.update(snap.status);
+    refreshToggles();
+    renderAll();
+    return true;
+  } finally {
+    nativeAdopting = false;
+    clearTimeout(queueTimer);
+    queueTimer = null;
+    pushedQueue = queueKey();
   }
-  const snap = await invoke("player_snapshot").catch(() => null);
-  if (!snap || !snap.status.id) return false;
-  state.queue = snap.ids;
-  state.queueIndex = snap.status.index;
-  state.shuffle = snap.shuffle;
-  state.repeat = snap.repeat;
-  nativeMedia.update(snap.status);
-  pushedQueue = queueKey();
-  refreshToggles();
-  renderAll();
-  return true;
+}
+
+/// Lecture ou pause affichées dans les listes et le carrousel (seulement au changement).
+let listPlaying = null;
+function renderPlayState() {
+  const playing = isPlaying();
+  if (playing === listPlaying) return;
+  listPlaying = playing;
+  renderCarousel();
+  renderMinimal();
+  renderLibrary();
 }
 
 /// Nouvelles du lecteur du cœur : position, lecture/pause, changement de morceau.
 function onNativeStatus(s) {
-  const wasPaused = nativeMedia.paused;
+  if (typeof s.seq === "number") {
+    if (s.seq <= lastSeq) return;
+    lastSeq = s.seq;
+  }
   const hadDuration = nativeMedia.duration;
   nativeMedia.update(s);
-  if (s.changed && s.id) {
+  if (nativeExpect) {
+    if (s.id === nativeExpect.id || performance.now() > nativeExpect.until) nativeExpect = null;
+    else if (!s.changed) return;
+  }
+  // Le morceau du cœur fait foi : la page s'y recale, changement annoncé ou non.
+  if (s.id && currentId() !== s.id) {
     const i = state.queue[s.index] === s.id ? s.index : state.queue.indexOf(s.id);
-    if (i >= 0) state.queueIndex = i;
+    if (i >= 0) {
+      state.queueIndex = i;
+      renderAll();
+    }
+  } else if (s.changed) {
     renderAll();
   }
-  if (s.id && !(hadDuration > 0) && nativeMedia.duration > 0) learnDuration(nativeMedia);
+  if (s.id && !(hadDuration > 0) && nativeMedia.duration > 0) learnDuration(nativeMedia, s.id);
   updateProgress();
-  if (wasPaused !== nativeMedia.paused && !s.changed) {
-    renderCarousel();
-    renderMinimal();
-    renderLibrary();
-  }
+  renderPlayState();
 }
 
 /// La file envoyée au cœur en dernier : il ne la reçoit que si elle a changé.
@@ -1353,21 +1509,31 @@ function queueKey() {
   return `${state.queue.length}|${state.queue.join("\n")}|${state.shuffle}|${state.repeat}`;
 }
 
+function sendNativeQueue() {
+  queueTimer = null;
+  const key = queueKey();
+  if (key === pushedQueue) return;
+  pushedQueue = key;
+  invoke("player_queue", {
+    ids: state.queue,
+    index: Math.max(0, state.queueIndex),
+    shuffle: state.shuffle,
+    repeat: state.repeat,
+  }).catch(() => {});
+}
+
 /// File modifiée (ajout, retrait, ordre, aléatoire, répétition) : le cœur suit.
 function syncNativeQueue() {
-  if (!NATIVE) return;
+  if (!NATIVE || nativeAdopting) return;
   clearTimeout(queueTimer);
-  queueTimer = setTimeout(() => {
-    const key = queueKey();
-    if (key === pushedQueue) return;
-    pushedQueue = key;
-    invoke("player_queue", {
-      ids: state.queue,
-      index: Math.max(0, state.queueIndex),
-      shuffle: state.shuffle,
-      repeat: state.repeat,
-    }).catch(() => {});
-  }, 80);
+  queueTimer = setTimeout(sendNativeQueue, 80);
+}
+
+/// Une file en attente d'envoi part tout de suite (avant Suivant, Lecture…).
+function flushNativeQueue() {
+  if (!NATIVE || nativeAdopting || !queueTimer) return;
+  clearTimeout(queueTimer);
+  sendNativeQueue();
 }
 
 /// Sous Linux, le lecteur audio de WebKitGTK n'accepte pas asset:// : on lui donne
@@ -1379,8 +1545,8 @@ const LINUX_WEBKIT = /Linux/.test(navigator.userAgent) && !/Android/.test(naviga
 if (!LINUX_WEBKIT) Sound.players.forEach((p) => (p.crossOrigin = "anonymous"));
 
 /// Durée inconnue des tags (fichier sans en-tête complet) : on garde celle du lecteur.
-function learnDuration(media) {
-  const track = currentTrack();
+function learnDuration(media, id = null) {
+  const track = id ? trackById(id) : currentTrack();
   if (!track || track.duration_ms > 0 || !isFinite(media.duration) || media.duration <= 0) return;
   track.duration_ms = Math.round(media.duration * 1000);
   invoke("set_duration", { id: track.id, durationMs: track.duration_ms }).catch(() => {});
@@ -1422,7 +1588,7 @@ function playFromList(index) {
 
 function playFromResults(id, ids) {
   state.queue = [...ids];
-  state.queueIndex = ids.indexOf(id);
+  state.queueIndex = Math.max(0, ids.indexOf(id));
   playCurrent();
 }
 
@@ -1439,6 +1605,28 @@ function buildQueueFromLibrary(startId) {
 function playCurrent({ autoplay = true } = {}) {
   const track = currentTrack();
   if (!track) return;
+  if (NATIVE) {
+    // Le cœur lit, enchaîne (et saute lui-même les vidéos muettes), prévient le
+    // système et retient la position.
+    const resume = state.resuming && state.resuming.id === track.id && state.settings.remember_position ? state.resuming.position : null;
+    state.resuming = null;
+    nativeMedia.update({ playing: autoplay, position_ms: resume || 0, duration_ms: track.duration_ms || 0 });
+    // Les nouvelles de l'ancien morceau encore en route ne doivent pas faire revenir la page.
+    nativeExpect = { id: track.id, until: performance.now() + 1500 };
+    clearTimeout(queueTimer);
+    queueTimer = null;
+    pushedQueue = queueKey();
+    invoke("player_play", {
+      ids: state.queue,
+      index: Math.max(0, state.queueIndex),
+      autoplay,
+      startMs: resume,
+      shuffle: state.shuffle,
+      repeat: state.repeat,
+    }).catch(() => {});
+    renderAll();
+    return;
+  }
   if (track.has_audio === false) {
     // Vidéo téléchargée sans son : rien à écouter, on passe à la suivante.
     toast(`« ${track.title} » n'a pas de piste son (vidéo seule).`);
@@ -1449,23 +1637,6 @@ function playCurrent({ autoplay = true } = {}) {
     return;
   }
   silentSkips = 0;
-  if (NATIVE) {
-    // Le cœur lit, enchaîne, prévient le système et retient la position.
-    const resume = state.resuming && state.resuming.id === track.id && state.settings.remember_position ? state.resuming.position : null;
-    state.resuming = null;
-    nativeMedia.update({ playing: autoplay, position_ms: resume || 0, duration_ms: track.duration_ms || 0 });
-    pushedQueue = queueKey();
-    invoke("player_play", {
-      ids: state.queue,
-      index: state.queueIndex,
-      autoplay,
-      startMs: resume,
-      shuffle: state.shuffle,
-      repeat: state.repeat,
-    }).catch(() => {});
-    renderAll();
-    return;
-  }
   Sound.cancelFade();
   const token = ++playToken;
   const begin = () => {
@@ -1533,6 +1704,12 @@ function prepareAudio(track) {
 
 function togglePlay() {
   const track = currentTrack();
+  // Le cœur joue un morceau qui a quitté la bibliothèque (rescan) : pause quand même.
+  if (!track && NATIVE && nativeMedia.id) {
+    if (audio.paused) startPlayback();
+    else audio.pause();
+    return;
+  }
   if (!track) {
     if (state.listOrder.length) playFromList(0);
     return;
@@ -1575,6 +1752,7 @@ function playContext() {
 
 function step(delta, auto = false) {
   if (NATIVE && state.queue.length) {
+    flushNativeQueue();
     invoke("player_step", { delta }).catch(() => {});
     return;
   }
@@ -1629,6 +1807,22 @@ function onFrame(draw) {
   };
 }
 
+/// Texte réécrit seulement s'il change (rien à repeindre sinon).
+function setText(node, text) {
+  if (node && node.textContent !== text) node.textContent = text;
+}
+
+/// Barre fine (compacte, minimaliste) : elle glisse d'une seconde à l'autre, mais saute
+/// sans animation en arrière ou sur un grand écart (nouveau morceau, saut).
+function setBar(bar, ratio) {
+  if (!bar) return;
+  const fill = bar.firstElementChild;
+  const next = ratio * 100;
+  const prev = parseFloat(fill.style.width) || 0;
+  fill.style.transition = next >= prev && next - prev < 3 ? "" : "none";
+  fill.style.width = `${next}%`;
+}
+
 function updateProgress() {
   const track = currentTrack();
   const media = audio;
@@ -1642,29 +1836,29 @@ function updateProgress() {
       seek.value = String(Math.round(ratio * 1000));
       seek.style.setProperty("--p", `${(ratio * 100).toFixed(2)}%`);
     }
-    const compBar = el("comp-bar");
-    if (compBar) compBar.firstElementChild.style.width = `${ratio * 100}%`;
-    const minBar = el("min-bar");
-    if (minBar) minBar.firstElementChild.style.width = `${ratio * 100}%`;
+    setBar(el("comp-bar"), ratio);
+    setBar(el("min-bar"), ratio);
   }
 
   const nowText = formatTime(now * 1000);
   const totalText = formatTime((dur || 0) * 1000);
-  ["time-now", "comp-now", "min-now-time"].forEach((id) => {
-    const node = el(id);
-    if (node) node.textContent = nowText;
-  });
-  ["time-total", "comp-total", "min-total-time"].forEach((id) => {
-    const node = el(id);
-    if (node) node.textContent = totalText;
-  });
+  // Pendant un glisser de la barre, le temps affiché est celui du curseur.
+  if (!state.seeking) ["time-now", "comp-now", "min-now-time"].forEach((id) => setText(el(id), nowText));
+  ["time-total", "comp-total", "min-total-time"].forEach((id) => setText(el(id), totalText));
 
   const playing = !media.paused;
   // Les boutons ne changent qu'au passage lecture ↔ pause, pas à chaque seconde.
   if (playing !== lastPlayingShown) {
     lastPlayingShown = playing;
     document.querySelectorAll(".ctl-play, .play-big").forEach((b) => b.classList.toggle("is-playing", playing));
-    el("btn-play").setAttribute("aria-label", playing ? "Pause" : "Lecture");
+    // Infobulle et nom accessible suivent l'état, sur tous les boutons lecture.
+    const label = playing ? "Pause" : "Lecture";
+    ["btn-play", "btn-play-big", "comp-play", "min-play"].forEach((id) => {
+      const b = el(id);
+      if (!b) return;
+      b.title = label;
+      b.setAttribute("aria-label", label);
+    });
     const compPlay = el("comp-play");
     if (compPlay) {
       compPlay.innerHTML = icon(playing ? "pause" : "play", 20);
@@ -1815,21 +2009,31 @@ let lastCarouselId = null;
 
 /// Rejoue une animation CSS sur un élément (la classe est retirée puis remise).
 function playAnim(node, cls) {
-  if (!node) return;
+  // Élément caché : rien à animer (et l'animation se rejouerait à son retour).
+  if (!node || !node.getClientRects().length) return;
   node.classList.remove(cls);
   void node.offsetWidth;
   node.classList.add(cls);
+  // Classe retirée à la fin : sinon l'animation repart quand l'élément réapparaît.
+  node.addEventListener("animationend", () => node.classList.remove(cls), { once: true });
 }
 
 function renderNowPlaying() {
   const track = currentTrack();
   if ((track ? track.id : null) !== lastNowId) {
+    // Premier affichage (démarrage, page rouverte) : pas d'animation de changement.
+    const animate = lastNowId !== null;
     lastNowId = track ? track.id : null;
     if (lyricsOpen) loadLyrics();
-    ["listen-cover", "mini-cover", "min-mini-cover"].forEach((id) => playAnim(el(id), "swap"));
-    ["listen-title", "listen-artist", "comp-title", "comp-artist", "mini-title", "mini-artist", "min-title", "min-artist"]
-      .forEach((id) => playAnim(el(id), "swap-text"));
+    if (animate) {
+      ["listen-cover", "mini-cover", "min-mini-cover"].forEach((id) => playAnim(el(id), "swap"));
+      ["listen-title", "listen-artist", "comp-title", "comp-artist", "mini-title", "mini-artist", "min-title", "min-artist"]
+        .forEach((id) => playAnim(el(id), "swap-text"));
+    }
   }
+  // « Modifier » sans morceau ne ferait rien : le bouton le dit.
+  const edit = el("btn-edit-listen");
+  if (edit) edit.disabled = !track;
   const cover = el("listen-cover");
   const miniCover = el("mini-cover");
   const minCover = el("min-mini-cover");
@@ -1852,6 +2056,8 @@ function renderNowPlaying() {
     fillCover(minCover, track);
   } else {
     [cover, miniCover, minCover].forEach((node) => {
+      delete node.dataset.shown;
+      delete node.dataset.coverOf;
       node.style.background = "";
       node.innerHTML = "";
     });
@@ -1863,12 +2069,8 @@ let bannerDismissed = null;
 function renderAll() {
   const audios = audioTracks().length;
   const count = el("track-count");
-  if (count) {
-    count.textContent =
-      state.tracks.length === 0
-        ? "Aucun morceau"
-        : `${audios} morceau${audios > 1 ? "x" : ""}`;
-  }
+  // Pendant une analyse, la pastille parle ; le compteur garde son dernier nombre.
+  setText(count, countLabel(audios));
 
   el("empty").hidden = state.folders.length > 0;
   const banner = el("banner");
@@ -1942,14 +2144,21 @@ function closeSheet() {
   el("sheet").hidden = true;
 }
 
+/// « Aucun morceau », « 1 morceau », « 12 morceaux ».
+function countLabel(n, zero = "Aucun morceau") {
+  return n ? `${n} morceau${n > 1 ? "x" : ""}` : zero;
+}
+
 function toast(text) {
   let node = el("toast");
   if (!node) {
     node = document.createElement("div");
     node.id = "toast";
-    node.className = "banner";
-    node.style.bottom = "150px";
-    document.querySelector(".app").appendChild(node);
+    // Au-dessus de tout (paroles, éditeur, fenêtres superposées) et lu par les lecteurs d'écran.
+    node.className = "banner toast";
+    node.setAttribute("role", "status");
+    node.setAttribute("aria-live", "polite");
+    document.body.appendChild(node);
   }
   node.textContent = text;
   node.hidden = false;
@@ -2008,7 +2217,7 @@ const DEFAULT_COVER = "linear-gradient(140deg, var(--accent), var(--accent2))";
 function paintEditCover(coverName, pickedPath = null) {
   const node = el("edit-cover");
   if (pickedPath) {
-    node.style.background = `#222 url("${convertFileSrc(pickedPath)}") center / cover no-repeat`;
+    node.style.background = `var(--cover-bg) url("${convertFileSrc(pickedPath)}") center / cover no-repeat`;
     return;
   }
   if (!coverName) {
@@ -2016,7 +2225,7 @@ function paintEditCover(coverName, pickedPath = null) {
     return;
   }
   coverSrc(coverName).then((url) => {
-    node.style.background = url ? `#222 url("${url}") center / cover no-repeat` : DEFAULT_COVER;
+    node.style.background = url ? `var(--cover-bg) url("${url}") center / cover no-repeat` : DEFAULT_COVER;
   });
 }
 
@@ -2064,6 +2273,8 @@ function bindEditor() {
     if (!picked) return;
     editing.pickedCover = typeof picked === "string" ? picked : picked.path;
     editing.clearCover = false;
+    // L'image peut venir de n'importe quel dossier : le cœur l'autorise pour l'aperçu.
+    await invoke("allow_preview", { path: editing.pickedCover }).catch(() => {});
     paintEditCover(null, editing.pickedCover);
   });
 
@@ -2141,7 +2352,7 @@ function enqueue(track, next) {
   state.queue = queue;
   renderQueue();
   renderCarousel();
-  toast(next ? "Joué juste après." : "Ajouté à la file.");
+  toast(next ? "Sera lu juste après." : "Ajouté à la file.");
 }
 
 function openTrackMenu(track, x, y, { playlist = null } = {}) {
@@ -2322,7 +2533,7 @@ function renderPlaylists() {
       <div class="pl-info">
         <div class="listen-kicker">Playlist</div>
         <div class="pl-title">${escapeHtml(open.name)}</div>
-        <div class="album-meta">${tracks.length} titre${tracks.length > 1 ? "s" : ""}${total ? " · " + formatTime(total) : ""}</div>
+        <div class="album-meta">${countLabel(tracks.length)}${total ? " · " + formatTime(total) : ""}</div>
         <div class="listen-actions">
           <button class="play-big" data-pl-act="play" aria-label="Lire la playlist" title="Lire">${icon("play", 20)}</button>
           <button class="ghost-btn" data-pl-act="shuffle">${icon("shuffle", 15)}Aléatoire</button>
@@ -2583,10 +2794,8 @@ function prefetchCovers() {
         img.decoding = "async";
         img.src = url;
       });
-      if (fresh.length) {
-        libShown = null;
-        renderAll();
-      }
+      // Les pochettes affichées prennent leur image sur place : rien n'est reconstruit.
+      if (fresh.length) repaintCovers();
     })
     .catch(() => {})
     .finally(() => {
@@ -2595,8 +2804,22 @@ function prefetchCovers() {
   return coverPrefetch;
 }
 
+/// Empreinte de la dernière bibliothèque reçue : un scan qui ne trouve rien de neuf
+/// (démarrage, surveillance des dossiers, « Actualiser ») ne redessine rien.
+let snapshotSig = "";
+
+function snapshotKey(snapshot) {
+  const tracks = (snapshot.tracks || [])
+    .map((t) => `${t.id}\u0001${t.cover || ""}\u0001${t.duration_ms}\u0001${t.title}\u0001${t.artist}\u0001${t.album}\u0001${t.has_audio}`)
+    .join("\u0002");
+  return `${(snapshot.folders || []).join("|")}#${(snapshot.folders_missing || []).join("|")}#${tracks}`;
+}
+
 function applySnapshot(snapshot) {
   if (!snapshot) return;
+  const sig = snapshotKey(snapshot);
+  if (sig === snapshotSig) return;
+  snapshotSig = sig;
   state.folders = snapshot.folders || [];
   state.foldersMissing = snapshot.folders_missing || [];
   state.tracks = snapshot.tracks || [];
@@ -2617,10 +2840,22 @@ function replaceTrack(track) {
   if (!track) return;
   const i = state.tracks.findIndex((t) => t.id === track.id);
   if (i < 0) return;
+  const before = state.tracks[i];
+  snapshotSig = "";
+  // Seule la pochette change (image tirée d'un clip) : elle est posée sur place. Le même
+  // objet est gardé, pour que les listes déjà calculées voient la nouvelle pochette.
+  const sameText =
+    before.title === track.title && before.artist === track.artist && before.album === track.album &&
+    before.duration_ms === track.duration_ms && before.has_audio === track.has_audio;
+  if (sameText) {
+    Object.assign(before, track);
+    if (!coversSoon) coversSoon = setTimeout(() => ((coversSoon = null), repaintCovers()), 300);
+    return;
+  }
   state.tracks[i] = track;
   trackIndex.set(track.id, track);
   libraryVersion += 1;
-  // Plusieurs pochettes arrivent d'affilée : un seul rendu pour la série.
+  // Plusieurs morceaux changent d'affilée : un seul rendu pour la série.
   if (renderSoon) return;
   renderSoon = setTimeout(() => {
     renderSoon = null;
@@ -2628,9 +2863,12 @@ function replaceTrack(track) {
     renderPlaylists();
   }, 120);
 }
+let coversSoon = null;
 let renderSoon = null;
 
-function applyBootstrap(boot) {
+async function applyBootstrap(boot) {
+  // Réglages importés ou remis à zéro : tout est redessiné, même bibliothèque ou non.
+  snapshotSig = "";
   state.settings = boot.settings;
   state.formats = boot.formats || [];
   state.cacheBytes = boot.cache_bytes || 0;
@@ -2641,10 +2879,11 @@ function applyBootstrap(boot) {
   state.repeat = boot.settings.repeat_default || "off";
   applySettings();
   applySnapshot(boot.snapshot);
+  // Le morceau (repris, ou celui que le cœur joue déjà) est en place avant que la
+  // fenêtre n'apparaisse : pas de « Rien en cours » suivi d'un changement animé.
   if (boot.native_audio) {
-    enableNative().then((adopted) => {
-      if (!adopted) prepareResume();
-    });
+    const adopted = await enableNative();
+    if (!adopted) prepareResume();
   } else {
     prepareResume();
   }
@@ -2666,14 +2905,27 @@ function prepareResume() {
    Branchements
    ============================================================ */
 
+/// Vrai quand le focus a été déplacé au clavier (Tab), faux après un clic : Espace
+/// active alors le bouton choisi, sinon il reste « lecture / pause ».
+let keyboardFocus = false;
+
 function bindOnce() {
+  document.addEventListener("keydown", (e) => e.key === "Tab" && (keyboardFocus = true), true);
+  document.addEventListener("pointerdown", () => (keyboardFocus = false), true);
   bindEditor();
   bindPlaylists();
   // Un clic ailleurs, un défilement ou une autre fenêtre ferment le menu d'un morceau.
   document.addEventListener("click", (e) => {
     if (!e.target.closest("#ctx-menu")) closeTrackMenu();
   });
-  document.addEventListener("scroll", closeTrackMenu, true);
+  // Défiler ailleurs ferme le menu ; défiler sa propre liste (playlists), non.
+  document.addEventListener(
+    "scroll",
+    (e) => {
+      if (!(e.target instanceof Element) || !e.target.closest("#ctx-menu")) closeTrackMenu();
+    },
+    true
+  );
   window.addEventListener("blur", closeTrackMenu);
   window.addEventListener("resize", closeTrackMenu);
   document.querySelectorAll(".nav-item").forEach((btn) => {
@@ -2709,6 +2961,8 @@ function bindOnce() {
   el("comp-next").addEventListener("click", () => step(1));
   el("comp-prev").addEventListener("click", () => step(-1));
   el("min-play").addEventListener("click", togglePlay);
+  el("min-prev").addEventListener("click", () => step(-1));
+  el("min-next").addEventListener("click", () => step(1));
 
   const toggleShuffle = () => {
     state.shuffle = !state.shuffle;
@@ -2871,9 +3125,29 @@ function bindOnce() {
       closeEditor();
       return;
     }
-    if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+    const inField = e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA";
+    if (inField) {
+      if (e.code !== "Escape") return;
+      // Échap dans un champ : annule la boîte de dialogue, sinon vide la recherche, sinon
+      // quitte le champ (et la feuille ou les paroles se ferment au prochain Échap).
+      if (!el("modal").hidden && modalCancel) {
+        e.preventDefault();
+        modalCancel();
+      } else if (e.target.type === "search" && e.target.value) {
+        e.target.value = "";
+        e.target.dispatchEvent(new Event("input", { bubbles: true }));
+      } else {
+        e.target.blur();
+        if (!el("sheet").hidden) closeSheet();
+      }
+      return;
+    }
     // Tant qu'une boîte de dialogue est ouverte, seule Échap agit : pas de lecture cachée.
     if (!el("modal").hidden && e.code !== "Escape") return;
+    // Espace sur un bouton atteint au clavier (Tab) : il l'active, comme partout. Après un
+    // clic de souris, Espace reste « lecture / pause ».
+    if (e.code === "Space" && e.target !== document.body && keyboardFocus &&
+        e.target.closest('button, a, [role="button"], [role="switch"], [role="slider"], [tabindex]')) return;
     const media = mediaEl();
     if (e.code === "Space") {
       e.preventDefault();
@@ -2883,7 +3157,9 @@ function bindOnce() {
     } else if (e.code === "ArrowLeft" && e.shiftKey) {
       step(-1);
     } else if (e.code === "ArrowRight") {
-      media.currentTime = Math.min(media.duration || 0, media.currentTime + state.settings.skip_seconds);
+      // Durée encore inconnue : on avance quand même (au lieu de revenir au début).
+      const end = isFinite(media.duration) && media.duration > 0 ? media.duration : Infinity;
+      media.currentTime = Math.min(end, media.currentTime + state.settings.skip_seconds);
     } else if (e.code === "ArrowLeft") {
       media.currentTime = Math.max(0, media.currentTime - state.settings.skip_seconds);
     } else if (e.code === "KeyL" && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -2926,7 +3202,11 @@ function refreshToggles() {
     }
   }
   const label = Sound.muted ? "Remettre le son" : "Couper le son";
-  ["dock-volume", "min-volume"].forEach((id) => el(id) && (el(id).title = label, el(id).setAttribute("aria-label", label)));
+  ["dock-volume", "min-volume", "btn-mute"].forEach((id) => el(id) && (el(id).title = label, el(id).setAttribute("aria-label", label)));
+  // Trois états pour Répéter : l'infobulle dit lequel.
+  const rep = { off: "Répéter : non", all: "Répéter : toute la file", one: "Répéter : ce morceau" }[repeat];
+  el("btn-repeat").title = rep;
+  el("btn-repeat").setAttribute("aria-label", rep);
 }
 
 /// Bibliothèque arrivée avant la fin du démarrage : appliquée juste après.
@@ -2937,14 +3217,33 @@ async function bindBackendEvents() {
     if (!state.settings) pendingLibrary = event.payload;
     else applySnapshot(event.payload);
   });
+  // Analyse des dossiers : une pastille visible dans toutes les dispositions, seulement
+  // si l'analyse dure (une analyse éclair ne doit rien faire clignoter).
+  let scanTimer = null;
   await listen("scanning", (event) => {
-    const count = el("track-count");
-    if (!count) return;
-    if (event.payload) count.textContent = "Analyse des dossiers…";
-    else {
-      const audios = audioTracks().length;
-      count.textContent = `${audios} morceau${audios > 1 ? "x" : ""}`;
+    const pill = el("scan-pill");
+    clearTimeout(scanTimer);
+    if (event.payload) {
+      scanTimer = setTimeout(() => pill && (pill.hidden = false), 600);
+    } else {
+      if (pill) pill.hidden = true;
+      setText(el("track-count"), countLabel(audioTracks().length));
     }
+  });
+  // Vignettes fabriquées en tâche de fond : posées sur place, par lots.
+  await listen("thumbs-ready", async (event) => {
+    const entries = Object.entries(event.payload || {});
+    // Décodées avant d'être posées : la vignette remplace l'image sans passer par un fond vide.
+    await Promise.all(
+      entries.map(([, paths]) => {
+        if (!paths || !paths.thumb) return null;
+        const img = new Image();
+        img.src = convertFileSrc(paths.thumb);
+        return img.decode().catch(() => {});
+      })
+    );
+    for (const [id, paths] of entries) rememberCover(id, paths);
+    repaintCovers();
   });
   // Le cœur a trouvé (ou installé) une mise à jour en tâche de fond.
   await listen("update-status", (event) => showUpdate(event.payload));
@@ -3016,11 +3315,15 @@ function paintLyricsHead(track) {
   const bg = el("lyr-bg");
   if (track) {
     fillCover(cover, track, false);
+    // Sous un flou de 60 px, la vignette suffit (et se décode tout de suite).
+    const pick = () => thumbUrls.get(track.cover) || coverUrls.get(track.cover);
     const paint = (url) => {
-      bg.style.background = url ? `url("${url}") center / cover no-repeat` : cover.style.background;
+      const value = url ? `url("${url}") center / cover no-repeat` : cover.style.background;
+      if (bg.style.background !== value) bg.style.background = value;
     };
-    if (track.cover && coverUrls.has(track.cover)) paint(coverUrls.get(track.cover));
-    else if (track.cover) coverSrc(track.cover).then(paint);
+    if (track.cover && coverUrls.has(track.cover)) paint(pick());
+    // Réponse tardive : seulement si ce morceau est toujours celui affiché.
+    else if (track.cover) coverSrc(track.cover).then(() => lyricsFor === track.id && paint(pick()));
     else paint(null);
   } else {
     bg.style.background = "";
@@ -3045,8 +3348,13 @@ async function loadLyrics(online = false) {
   lyricsFor = track.id;
   let lyrics = online ? null : lyricsCache.get(track.id);
   if (!lyrics) {
-    body.innerHTML = `<div class="lyr-loading">Recherche des paroles…</div>`;
+    // Le message d'attente n'apparaît que si la recherche dure : un fichier .lrc répond
+    // en quelques millisecondes, le message ne ferait que clignoter.
+    const slow = setTimeout(() => {
+      if (lyricsFor === track.id) body.innerHTML = `<div class="lyr-loading">Recherche des paroles…</div>`;
+    }, 250);
     lyrics = await invoke("get_lyrics", { id: track.id, online }).catch(() => null);
+    clearTimeout(slow);
     // Introuvable sans avoir cherché en ligne : on ne le retient pas, la recherche peut venir.
     if (lyrics && (lyrics.source !== "none" || online || state.settings.lyrics_online)) lyricsCache.set(track.id, lyrics);
     if (lyricsFor !== track.id || !lyricsOpen) return;
@@ -3350,6 +3658,8 @@ async function start() {
   el("min-theme").innerHTML = icon("moon", 18);
   el("min-settings").innerHTML = icon("settings", 18);
   el("min-play").innerHTML = icon("play", 18);
+  el("min-prev").innerHTML = icon("prev", 18);
+  el("min-next").innerHTML = icon("next", 18);
   el("min-queue").innerHTML = icon("queue", 18);
   el("min-volume").innerHTML = icon("volume_high", 18);
   el("sheet-close").innerHTML = icon("close", 18);
@@ -3359,7 +3669,7 @@ async function start() {
 
   state.playlists = await invoke("get_playlists").catch(() => []);
   const boot = await invoke("bootstrap");
-  applyBootstrap(boot);
+  await applyBootstrap(boot);
   if (pendingLibrary) {
     applySnapshot(pendingLibrary);
     pendingLibrary = null;
@@ -3380,4 +3690,10 @@ start()
     console.error("démarrage d'Écho", err);
     toast("Écho n'a pas pu démarrer correctement.");
   })
-  .finally(() => document.body.classList.add("ready"));
+  .finally(() => {
+    document.body.classList.add("ready");
+    // La fenêtre est montrée par le cœur une fois la page dessinée : pas de flash blanc
+    // puis sombre, ni d'écran vide le temps du chargement.
+    // (Pas de requestAnimationFrame : il peut être suspendu tant que la fenêtre est cachée.)
+    setTimeout(() => invoke("ui_ready").catch(() => {}), 30);
+  });

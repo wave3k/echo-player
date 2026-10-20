@@ -223,7 +223,7 @@
       <div class="min-top">
         <label class="search min-search">
           <span data-icon="search" data-size="15"></span>
-          <input type="search" id="min-search" aria-label="Rechercher un son" placeholder="Rechercher un son, un artiste…" />
+          <input type="search" id="min-search" aria-label="Rechercher un morceau" placeholder="Rechercher un morceau, un artiste…" />
         </label>
         <div class="min-actions">
           <button aria-label="Clair ou sombre" class="icon-btn" id="min-theme" title="Clair ou sombre"></button>
@@ -248,7 +248,9 @@
             <div class="mini-title" id="min-title">Aucun morceau</div>
             <div class="mini-artist" id="min-artist">—</div>
           </div>
+          <button aria-label="Précédent" class="icon-btn" id="min-prev" title="Précédent"></button>
           <button aria-label="Lecture" class="icon-btn" id="min-play" title="Lecture"></button>
+          <button aria-label="Suivant" class="icon-btn" id="min-next" title="Suivant"></button>
         </div>
         <div class="min-progress">
           <div class="bar" id="min-bar"><i></i></div>
@@ -359,6 +361,8 @@
         <div class="modal-actions" id="modal-actions"></div>
       </div>
     </div>
+
+    <div class="scan-pill" id="scan-pill" role="status" hidden><span class="spinner" aria-hidden="true"></span>Analyse de ta musique…</div>
 
     <audio id="audio" preload="auto"></audio>
     <audio id="audio2" preload="auto"></audio>
