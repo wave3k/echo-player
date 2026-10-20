@@ -20,8 +20,7 @@ fn platform_config(handle: &tauri::AppHandle) -> PlatformConfig<'static> {
     };
     // Sous Windows, les contrôles média s'attachent à la fenêtre principale.
     #[cfg(target_os = "windows")]
-    let hwnd = handle
-        .get_webview_window("main")
+    let hwnd = tauri::Manager::get_webview_window(handle, "main")
         .and_then(|w| w.hwnd().ok())
         .map(|h| h.0 as *mut std::ffi::c_void);
 
