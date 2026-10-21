@@ -115,17 +115,36 @@ impl Deck {
             .map_err(|e| e.to_string())?;
         // Calcul en flottant jusqu'au limiteur : l'égaliseur et le volume égal peuvent
         // dépasser 0 dB sans écrêter, le limiteur ramène ensuite le tout.
+        // Sortie : PulseAudio / PipeWire quand ils sont là, avec une identité propre.
+        // La vidéo muette des clips ouvre aussi un flux (WebKit) sous le nom
+        // « echo-player » : le serveur de son retient « coupé » par nom d'application et
+        // l'appliquait à la musique. Avec sa propre clé de mémorisation, la musique n'en
+        // dépend plus ; et elle part toujours non coupée.
+        let sink = if gst::ElementFactory::find("pulsesink").is_some() { "pulsesink name=out" } else { "autoaudiosink name=out" };
         let chain = gst::parse::bin_from_description(
-            "audioconvert ! audioresample ! audio/x-raw,format=F32LE \
-             ! equalizer-nbands name=eq num-bands=5 \
-             ! level name=meter interval=250000000 post-messages=false \
-             ! spectrum name=spec bands=512 threshold=-75 interval=50000000 post-messages=false \
-             ! volume name=norm ! volume name=fade ! volume name=master \
-             ! audiodynamic name=limiter characteristics=hard-knee mode=compressor threshold=0.84 \
-             ! audioconvert ! autoaudiosink",
+            &format!(
+                "audioconvert ! audioresample ! audio/x-raw,format=F32LE \
+                 ! equalizer-nbands name=eq num-bands=5 \
+                 ! level name=meter interval=250000000 post-messages=false \
+                 ! spectrum name=spec bands=512 threshold=-75 interval=50000000 post-messages=false \
+                 ! volume name=norm ! volume name=fade ! volume name=master \
+                 ! audiodynamic name=limiter characteristics=hard-knee mode=compressor threshold=0.84 \
+                 ! audioconvert ! {sink}"
+            ),
             true,
         )
         .map_err(|e| e.to_string())?;
+        if let Some(out) = chain.by_name("out").filter(|o| o.find_property("stream-properties").is_some()) {
+            let props = gst::Structure::builder("props")
+                .field("application.name", "Écho")
+                .field("application.id", "com.echo.player")
+                .field("application.icon_name", "echo-player")
+                .field("module-stream-restore.id", "echo-player-musique")
+                .build();
+            out.set_property("stream-properties", props);
+            out.set_property("client-name", "Écho");
+            out.set_property("mute", false);
+        }
         let pipe = gst::Pipeline::new();
         pipe.add_many([&source, chain.upcast_ref()]).map_err(|e| e.to_string())?;
         let input = chain.static_pad("sink").ok_or("entrée absente")?;
@@ -1573,4 +1592,30 @@ mod tests {
         let b = next_seq();
         assert!(b > a);
     }
+}
+
+/// Essai réel (silencieux) : cargo test player::essai_sortie -- --ignored --nocapture
+#[cfg(test)]
+#[test]
+#[ignore]
+fn essai_sortie() {
+    gst::init().unwrap();
+    let pipe = gst::parse::launch("audiotestsrc volume=0 ! pulsesink name=out").unwrap().downcast::<gst::Pipeline>().unwrap();
+    let out = pipe.by_name("out").unwrap();
+    let props = gst::Structure::builder("props")
+        .field("application.name", "Écho")
+        .field("module-stream-restore.id", "echo-player-musique")
+        .build();
+    out.set_property("stream-properties", props);
+    out.set_property("client-name", "Écho");
+    out.set_property("mute", false);
+    pipe.set_state(gst::State::Playing).unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let list = std::process::Command::new("pactl").args(["list", "sink-inputs"]).output().unwrap();
+    for line in String::from_utf8_lossy(&list.stdout).lines() {
+        if line.contains("Sink Input") || line.contains("Mute") || line.contains("application.name") || line.contains("stream-restore") {
+            println!("{line}");
+        }
+    }
+    pipe.set_state(gst::State::Null).unwrap();
 }

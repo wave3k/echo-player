@@ -1320,14 +1320,14 @@ body[data-mode="minimal"] .clip-mini { bottom: 92px; }
 /* Liste en ruban (fenêtre étroite) : pas de titres de groupe entre les pastilles. */
 @media (max-width: 760px) { .pl-group, .pl-list .pl-empty { display: none; } }
 
-/* ---------- 21. Visualiseur ---------- */
+/* ---------- 21. Visualiseur ----------
+   Une bande à lui dans chaque disposition : jamais derrière un texte ou un bouton
+   (des barres qui bougent derrière le contenu donnaient l'impression qu'il clignote). */
 
-.listen-card { position: relative; overflow: hidden; }
-.listen-card > :not(.visual) { position: relative; z-index: 1; }
-.visual { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; pointer-events: none; opacity: 0; transition: opacity .4s ease; }
-.visual.on { opacity: 1; }
-.visual-listen { height: 64%; }
-.visual-listen.on { opacity: .22; }
-.visual-lyrics { height: 22%; z-index: 0; }
-.visual-lyrics.on { opacity: .28; }
-body[data-anim="off"] .visual { transition: none; }
+.visual { display: block; width: 100%; pointer-events: none; }
+body[data-visual="off"] .visual { display: none; }
+.visual-listen { height: 44px; margin: -10px 0 18px; }
+.visual-compact { width: min(560px, 62vw); height: 40px; margin: 18px auto 0; }
+.visual-minimal { height: 34px; flex: none; padding: 0 22px; box-sizing: border-box; }
+.visual-lyrics { position: absolute; left: 0; right: 0; bottom: 0; height: 72px; z-index: 0; }
+body:not([data-visual="off"]) .lyr-body { margin-bottom: 72px; }

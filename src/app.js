@@ -341,6 +341,7 @@ function applySettings() {
   body.dataset.font = s.font;
   body.dataset.mode = s.mode;
   body.dataset.anim = s.animations ? "on" : "off";
+  body.dataset.visual = s.visualizer === "off" ? "off" : "on";
   syncSettingsNav();
   document.documentElement.dataset.text = s.text_size;
   body.style.setProperty("--radius", `${s.radius}px`);
@@ -504,7 +505,7 @@ function sectionLecture() {
     <h4 style="margin-top:18px">Son</h4>
     <div class="card">
       ${rowSwitch("Volume égal", "Rattrape les différences de niveau entre les morceaux, sans jamais saturer", "loudness", s.loudness)}
-      ${rowSeg("Visualiseur", "Le son mis en image dans « Écouter » et derrière les paroles", "visualizer", [
+      ${rowSeg("Visualiseur", "Le son mis en image sous le morceau en cours (dans chaque disposition) et sous les paroles", "visualizer", [
         { value: "bars", label: "Barres" },
         { value: "wave", label: "Onde" },
         { value: "off", label: "Aucun" },
@@ -3022,16 +3023,21 @@ const visual = {
   /// Spectre demandé au lecteur du cœur.
   asked: false,
   raf: 0,
+  last: 0,
   received: 0,
+  colors: null,
 };
 
-/// Toiles à l'écran : « Écouter » (disposition normale) et les paroles.
+/// Toile à l'écran, selon la disposition : « Écouter » (normale), sous le titre
+/// (compacte), au-dessus de la barre de lecture (minimaliste), ou les paroles.
 function visualCanvases() {
   if (!state.settings || state.settings.visualizer === "off" || document.hidden) return [];
-  const out = [];
-  if (lyricsOpen) out.push(el("visual-lyrics"));
-  else if (document.body.dataset.mode === "normal" && state.view === "listen" && el("sheet").hidden) out.push(el("visual-listen"));
-  return out;
+  if (lyricsOpen) return [el("visual-lyrics")];
+  if (!el("sheet").hidden) return [];
+  const mode = document.body.dataset.mode;
+  if (mode === "compact") return [el("visual-compact")];
+  if (mode === "minimal") return [el("visual-minimal")];
+  return state.view === "listen" ? [el("visual-listen")] : [];
 }
 
 /// Allume le visualiseur s'il est à l'écran et que la musique joue ; sinon il retombe
@@ -3043,27 +3049,30 @@ function updateVisual() {
     visual.asked = want;
     invoke("player_visual", { on: want }).catch(() => {});
   }
-  for (const id of ["visual-listen", "visual-lyrics"]) {
-    const c = el(id);
-    if (c) c.classList.toggle("on", canvases.includes(c));
-  }
   if (!want) visual.target.fill(0);
   if (canvases.length && !visual.raf) visual.raf = requestAnimationFrame(drawVisual);
 }
 
-function drawVisual() {
+function drawVisual(now) {
   visual.raf = 0;
   const canvases = visualCanvases();
   if (!canvases.length) return;
   const playing = isPlaying();
+  // 30 images par seconde suffisent (le spectre arrive 20 fois par seconde) : deux
+  // fois moins de dessin, et un mouvement plus posé.
+  if (now - visual.last < 30) {
+    visual.raf = requestAnimationFrame(drawVisual);
+    return;
+  }
+  visual.last = now;
   // Lecture dans la page (Windows) : le spectre vient de la chaîne Web Audio.
   if (!NATIVE && playing && !Sound.spectrum(visual.target)) visual.target.fill(0);
   let energy = 0;
   for (let i = 0; i < VISUAL_BANDS; i++) {
     const t = visual.target[i];
     const v = visual.shown[i];
-    // Montée vive, descente douce : le rythme se lit sans clignoter.
-    visual.shown[i] = v + (t - v) * (t > v ? 0.45 : 0.12);
+    // Montée franche mais amortie, descente lente : le rythme se lit sans à-coups.
+    visual.shown[i] = v + (t - v) * (t > v ? 0.35 : 0.1);
     energy += visual.shown[i];
   }
   const style = state.settings.visualizer;
@@ -3093,6 +3102,8 @@ function paintVisual(canvas, style) {
   grad.addColorStop(0, visual.colors[0]);
   grad.addColorStop(1, visual.colors[1]);
   g.fillStyle = grad;
+  // Transparence dessinée dans la toile (pas d'opacité CSS à recomposer).
+  g.globalAlpha = canvas.id === "visual-lyrics" ? 0.35 : 0.75;
   const n = VISUAL_BANDS;
   if (style === "wave") {
     // Onde : une courbe lisse qui passe par chaque bande, remplie jusqu'en bas.
@@ -3112,14 +3123,14 @@ function paintVisual(canvas, style) {
     g.lineTo(w, py);
     g.lineTo(w, h);
     g.closePath();
-    g.globalAlpha = 0.55;
+    g.globalAlpha *= 0.7;
     g.fill();
     g.globalAlpha = 1;
     return;
   }
   const gap = Math.max(2, Math.round(w / n / 4));
   const bar = (w - gap * (n - 1)) / n;
-  const r = Math.min(bar / 2, 4 * dpr);
+  const r = Math.min(bar / 2, 3 * dpr);
   for (let i = 0; i < n; i++) {
     const bh = Math.max(2 * dpr, visual.shown[i] * h * 0.95);
     const x = i * (bar + gap);
@@ -3129,6 +3140,7 @@ function paintVisual(canvas, style) {
     else g.rect(x, y, bar, bh);
     g.fill();
   }
+  g.globalAlpha = 1;
 }
 
 async function bindVisual() {

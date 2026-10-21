@@ -51,7 +51,6 @@
       <section class="view" id="view-listen">
         <h2 class="view-title">Écouter</h2>
         <div class="listen-card">
-          <canvas class="visual visual-listen" id="visual-listen" aria-hidden="true"></canvas>
           <div class="listen-cover" id="listen-cover"></div>
           <div class="listen-info">
             <div class="listen-kicker">En cours de lecture</div>
@@ -71,6 +70,7 @@
             </div>
           </div>
         </div>
+        <canvas class="visual visual-listen" id="visual-listen" aria-hidden="true"></canvas>
         <div class="section-head">
           <h3>File d'attente</h3>
           <span class="muted" id="queue-count"></span>
@@ -229,6 +229,8 @@
       <div class="car-title" id="comp-title">Rien en cours</div>
       <div class="car-artist" id="comp-artist">Choisis un morceau dans ta bibliothèque</div>
 
+      <canvas class="visual visual-compact" id="visual-compact" aria-hidden="true"></canvas>
+
       <div class="car-progress">
         <div class="bar" id="comp-bar"><i></i></div>
         <div class="times"><span id="comp-now">0:00</span><span id="comp-total">0:00</span></div>
@@ -277,6 +279,8 @@
         </div>
         <div class="min-right" id="min-right"></div>
       </div>
+
+      <canvas class="visual visual-minimal" id="visual-minimal" aria-hidden="true"></canvas>
 
       <div class="min-player">
         <div class="min-now">
