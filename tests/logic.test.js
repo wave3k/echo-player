@@ -1,4 +1,4 @@
-// Règles de lecture d'Écho. Lancer : node --test tests/
+// Règles de lecture d'Écho. Lancer : node --test tests/*.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { freshBag, nextIndex, prevIndex, syncFolders, lyricTime, fileTime, addAnchor } = require("../src/logic.js");
@@ -99,3 +99,10 @@ test("paroles : recaler près d'un calage le remplace", () => {
   assert.equal(addAnchor(godsPlan, 90000, 50000).length, 3);
 });
 
+
+test("le texte inséré dans le HTML est échappé, apostrophe comprise", () => {
+  const { escapeHtml } = require("../src/logic.js");
+  assert.equal(escapeHtml(`<b a="x" b='y'>&</b>`), "&lt;b a=&quot;x&quot; b=&#39;y&#39;&gt;&amp;&lt;/b&gt;");
+  assert.equal(escapeHtml(null), "");
+  assert.equal(escapeHtml(42), "42");
+});
