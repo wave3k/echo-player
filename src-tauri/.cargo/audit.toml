@@ -1,0 +1,10 @@
+# Avis ignorés par `cargo audit`, chacun avec sa raison. À revoir à chaque mise à jour.
+[advisories]
+ignore = [
+  # zip 4.x, tiré par tauri-plugin-updater 2.x (dernière version stable) : l'extraction
+  # ne sert qu'à l'installeur Windows, et seulement après vérification de la signature
+  # d'Écho. Un attaquant sans la clé privée ne peut pas fournir d'archive.
+  "RUSTSEC-2026-0367",
+  "RUSTSEC-2026-0368",
+  "RUSTSEC-2026-0369",
+]

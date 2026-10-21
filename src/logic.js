@@ -1,6 +1,6 @@
 /* ============================================================
    Écho — règles de lecture, sans rien d'affiché.
-   Gardées à part pour être testées (node --test tests/).
+   Gardées à part pour être testées (node --test tests/*.test.js).
    ============================================================ */
 
 (function (root) {
@@ -89,7 +89,15 @@
     return kept.sort((x, y) => x.at_ms - y.at_ms);
   }
 
-  const api = { freshBag, nextIndex, prevIndex, syncFolders, lyricTime, fileTime, addAnchor };
+  /// Texte sûr à insérer dans du HTML, y compris dans un attribut entre apostrophes.
+  function escapeHtml(text) {
+    return String(text ?? "").replace(
+      /[&<>"']/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+    );
+  }
+
+  const api = { freshBag, nextIndex, prevIndex, syncFolders, lyricTime, fileTime, addAnchor, escapeHtml };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.EchoLogic = api;
 })(typeof window !== "undefined" ? window : globalThis);

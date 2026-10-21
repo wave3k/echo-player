@@ -4,7 +4,7 @@
 
 # Écho
 
-**Un lecteur de musique local pour Linux et Windows : léger, sans publicité, sans compte, sans réseau.**
+**Un lecteur de musique local pour Linux et Windows : léger, sans publicité, sans compte, sans connexion obligatoire.**
 
 Tu lui montres un dossier, il joue tout ce qu'il contient.
 
@@ -140,7 +140,7 @@ cargo test             # tests du cœur : scan, pochettes, formats, réglages, c
 cargo clippy --all-targets
 
 cd ..
-node --test tests/     # tests des règles de lecture
+node --test tests/*.test.js   # tests des règles de lecture
 ```
 
 ## Données et vie privée

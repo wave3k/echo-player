@@ -56,9 +56,7 @@ function hueFor(text) {
   return h;
 }
 
-function escapeHtml(text) {
-  return String(text ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-}
+const escapeHtml = EchoLogic.escapeHtml;
 
 /// Table id → morceau, refaite à chaque nouvelle bibliothèque.
 let trackIndex = new Map();
