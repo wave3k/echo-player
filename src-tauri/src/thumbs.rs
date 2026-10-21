@@ -80,14 +80,22 @@ fn make(full: &Path, out: &Path) -> Made {
         return Made::Failed;
     }
     // Les dimensions se lisent dans l'en-tête : une petite image n'est pas décodée.
+    // Au-delà de 8000 px de côté, ce n'est pas une pochette : pas de décodage géant.
     match image::image_dimensions(full) {
-        Ok((w, h)) if w > SIZE * 3 / 2 || h > SIZE * 3 / 2 => {}
+        Ok((w, h)) if (w > SIZE * 3 / 2 || h > SIZE * 3 / 2) && w <= 8000 && h <= 8000 => {}
         _ => return Made::Never,
     }
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8000);
+    limits.max_image_height = Some(8000);
+    limits.max_alloc = Some(256 * 1024 * 1024);
     let Some(img) = image::ImageReader::open(full)
         .ok()
         .and_then(|r| r.with_guessed_format().ok())
-        .and_then(|r| r.decode().ok())
+        .and_then(|mut r| {
+            r.limits(limits);
+            r.decode().ok()
+        })
     else {
         return Made::Never;
     };

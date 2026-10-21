@@ -113,6 +113,7 @@ const Sound = (() => {
       return true;
     } catch (err) {
       console.error("chaîne audio indisponible", err);
+      if (ctx) ctx.close().catch(() => {});
       ctx = null;
       return false;
     }
@@ -194,7 +195,9 @@ const Sound = (() => {
     /// à 16 kHz (échelle logarithmique, comme celles du lecteur du cœur). Faux sans
     /// chaîne Web Audio.
     spectrum(out) {
-      if (native || !graph() || !analyser) return false;
+      // Le visualiseur seul ne monte pas la chaîne Web Audio (un lecteur ne peut plus
+      // s'en détacher) : il se sert de celle de l'égaliseur ou du volume égal.
+      if (native || !ctx || !analyser) return false;
       if (!freq || freq.length !== analyser.frequencyBinCount) freq = new Float32Array(analyser.frequencyBinCount);
       analyser.getFloatFrequencyData(freq);
       const hz = ctx.sampleRate / 2 / freq.length;

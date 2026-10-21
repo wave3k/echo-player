@@ -220,7 +220,15 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = unique_tmp(path, "tmp");
-    let written = std::fs::write(&tmp, contents).and_then(|_| std::fs::rename(&tmp, path));
+    // Données forcées sur le disque avant le renommage : une coupure de courant juste
+    // après ne laisse jamais un fichier vide à la place de l'ancien.
+    let written = (|| {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }

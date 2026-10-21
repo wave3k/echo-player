@@ -164,6 +164,15 @@ fn ui_ready(app: tauri::AppHandle) {
     }
 }
 
+/// Dossier acceptable comme dossier de musique venu d'un fichier importé.
+fn is_music_folder(path: &Path) -> bool {
+    let system = ["/", "/proc", "/sys", "/dev", "/etc", "/usr", "/boot", "/bin", "/sbin", "/lib", "/var", "/run", "/root"];
+    path.is_absolute()
+        && path.is_dir()
+        && path.parent().is_some()
+        && !system.iter().any(|s| path == Path::new(s) || (*s != "/" && path.starts_with(s)))
+}
+
 /// Autorise l'aperçu d'une image choisie hors des dossiers de musique (éditeur de
 /// pochette). Seules les images sont acceptées, un fichier à la fois.
 #[tauri::command]
@@ -654,6 +663,8 @@ async fn clear_cover_cache(app: tauri::AppHandle) -> Cleared {
         // Les copies audio des clips se refont à la demande.
         let _ = std::fs::remove_dir_all(cache_dir(&app).join("audio"));
         let _ = std::fs::remove_dir_all(thumbs::dir(&dir));
+        // Aperçus de la fenêtre des pochettes en ligne : à refaire au besoin.
+        let _ = std::fs::remove_dir_all(dir.join("candidates"));
         // Les pochettes choisies à la main restent : elles ne sont pas une copie à reconstruire.
         let keep: std::collections::HashSet<String> =
             overrides_of(&app).values().filter_map(|o| o.cover.clone()).collect();
@@ -690,7 +701,7 @@ async fn clear_cover_cache(app: tauri::AppHandle) -> Cleared {
 fn export_settings(settings: State<AppSettings>, path: String) -> Result<(), String> {
     let cfg = settings.0.lock().unwrap().clone();
     let json = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| format!("Impossible d'écrire ce fichier : {e}"))
+    store::write_atomic(Path::new(&path), json.as_bytes()).map_err(|e| format!("Impossible d'écrire ce fichier : {e}"))
 }
 
 #[tauri::command]
@@ -699,6 +710,9 @@ async fn import_settings(app: tauri::AppHandle, path: String) -> Result<Bootstra
     let mut imported: store::Settings =
         serde_json::from_str(&text).map_err(|_| "Ce fichier n'est pas un réglage d'Écho.".to_string())?;
     imported.sanitize();
+    // Un fichier de réglages ne peut pas ouvrir à la page tout le disque : la racine et
+    // les dossiers du système sont écartés (ils deviendraient lisibles par l'interface).
+    imported.folders.retain(|f| is_music_folder(Path::new(f)));
 
     update_settings(&app, |cfg| *cfg = imported.clone());
     set_media_keys(&app, imported.media_keys);
@@ -991,9 +1005,10 @@ fn set_online_cover(app: &tauri::AppHandle, ids: &[String], name: &str, online: 
                 entry.no_online = false;
             }
         }
-        store::save_overrides(&config_dir(app), &map);
         map.clone()
     };
+    // Écrites hors du verrou : l'éditeur et les doublons n'attendent pas le disque.
+    save_overrides_now(app);
     let state = app.state::<AppData>();
     let mut data = state.0.lock().unwrap();
     data.covers.insert(name.to_string(), covers.join(name));
@@ -1048,6 +1063,9 @@ async fn use_online_cover(app: tauri::AppHandle, id: String, url: String) -> Res
 #[tauri::command]
 async fn save_lyrics_sync(app: tauri::AppHandle, id: String, anchors: Vec<lyrics::Anchor>) -> Result<(), String> {
     offload(move || {
+        // Deux calages envoyés coup sur coup : l'un attend l'autre, aucun ne se perd.
+        static WRITE: Mutex<()> = Mutex::new(());
+        let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
         let dir = config_dir(&app);
         let mut map = store::load_lyrics_sync(&dir);
         let mut anchors = anchors;
@@ -1301,37 +1319,80 @@ fn notify_icon(app: &tauri::AppHandle) -> Option<String> {
 /// qu'elle n'en a pas (`None`). Renvoie le morceau à jour.
 fn store_frame(app: &tauri::AppHandle, id: &str, jpeg: Option<Vec<u8>>) -> Option<Track> {
     let covers = store::covers_dir(&cache_dir(app));
-    let state = app.state::<AppData>();
-    let mut data = state.0.lock().unwrap();
-    let index = data.tracks.iter().position(|t| t.id == id)?;
-    let mtime = data.tracks[index].mtime;
-    match jpeg.filter(|b| b.len() > 100 && b.len() < 8 * 1024 * 1024) {
+    let mtime = {
+        let state = app.state::<AppData>();
+        let data = state.0.lock().unwrap();
+        data.tracks.iter().find(|t| t.id == id)?.mtime
+    };
+    // L'image est écrite avant de prendre le verrou de la bibliothèque (le disque peut
+    // être lent) ; la bibliothèque n'est mise à jour qu'ensuite, en un instant.
+    let name = match jpeg.filter(|b| b.len() > 100 && b.len() < 8 * 1024 * 1024) {
         Some(bytes) => {
             let name = library::frame_name(id, mtime);
-            std::fs::write(covers.join(&name), bytes).ok()?;
-            data.covers.insert(name.clone(), covers.join(&name));
-            data.tracks[index].cover = Some(name);
+            store::write_atomic(&covers.join(&name), &bytes).ok()?;
+            Some(name)
         }
         None => {
             let _ = std::fs::write(covers.join(library::no_frame_marker(id, mtime)), b"");
-            data.tracks[index].no_frame = true;
+            None
         }
-    }
-    let track = data.tracks[index].clone();
-    let folders: Vec<PathBuf> = app
-        .state::<AppSettings>()
-        .0
-        .lock()
-        .unwrap()
-        .folders
-        .iter()
-        .map(PathBuf::from)
-        .filter(|f| f.is_dir())
-        .collect();
-    let cache = cache_of(&data.tracks, &folders);
-    drop(data);
-    store::save_cache(&config_dir(app), &cache);
+    };
+    let track = {
+        let state = app.state::<AppData>();
+        let mut data = state.0.lock().unwrap();
+        let index = data.tracks.iter().position(|t| t.id == id)?;
+        match name {
+            Some(name) => {
+                data.covers.insert(name.clone(), covers.join(&name));
+                data.tracks[index].cover = Some(name);
+            }
+            None => data.tracks[index].no_frame = true,
+        }
+        data.tracks[index].clone()
+    };
+    save_cache_soon(app);
     Some(with_override(&track, &overrides_of(app)))
+}
+
+/// Écrit les corrections, une écriture à la fois (l'ordre d'arrivée fait foi).
+fn save_overrides_now(app: &tauri::AppHandle) {
+    static WRITE: Mutex<()> = Mutex::new(());
+    let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    // Relues sous le verrou d'écriture : la dernière version connue part sur le disque.
+    let latest = overrides_of(app);
+    store::save_overrides(&config_dir(app), &latest);
+}
+
+/// Une écriture du cache de la bibliothèque est prévue.
+static CACHE_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Écrit le cache de la bibliothèque un peu plus tard, une fois pour toute une série
+/// de changements (des centaines d'images de clips ne font qu'une écriture).
+fn save_cache_soon(app: &tauri::AppHandle) {
+    if CACHE_PENDING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        CACHE_PENDING.store(false, Ordering::SeqCst);
+        let folders: Vec<PathBuf> = app
+            .state::<AppSettings>()
+            .0
+            .lock()
+            .unwrap()
+            .folders
+            .iter()
+            .map(PathBuf::from)
+            .filter(|f| f.is_dir())
+            .collect();
+        let cache = {
+            let state = app.state::<AppData>();
+            let data = state.0.lock().unwrap();
+            cache_of(&data.tracks, &folders)
+        };
+        store::save_cache(&config_dir(&app), &cache);
+    });
 }
 
 /// Image tirée d'une vidéo par l'interface (Windows, macOS).
@@ -1361,10 +1422,11 @@ async fn grab_frame(app: tauri::AppHandle, id: String) -> Result<Grabbed, String
             let Some(path) = path else {
                 return Ok(Grabbed { track: None, missing: false });
             };
-            Ok(match frames::grab(&path) {
+            Ok(match low_priority(move || frames::grab(&path)) {
                 frames::Frame::Image(bytes) => Grabbed { track: store_frame(&app, &id, Some(bytes)), missing: false },
                 frames::Frame::None => Grabbed { track: store_frame(&app, &id, None), missing: false },
                 frames::Frame::Undecodable => Grabbed { track: None, missing: true },
+                frames::Frame::Later => Grabbed { track: None, missing: false },
             })
         })
         .await
@@ -1381,17 +1443,35 @@ async fn grab_frame(app: tauri::AppHandle, id: String) -> Result<Grabbed, String
 #[cfg(target_os = "linux")]
 static POSTER_LOCK: Mutex<()> = Mutex::new(());
 
+/// Exécute un travail lourd et sans urgence (image d'un clip) sur un fil de priorité
+/// basse : la lecture et l'interface passent toujours avant.
+#[cfg(target_os = "linux")]
+fn low_priority<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::Builder::new()
+        .name("images".into())
+        .spawn(move || {
+            // Le fil courant seulement (identifiant du fil, pas du processus).
+            unsafe {
+                libc::setpriority(libc::PRIO_PROCESS, libc::gettid() as libc::id_t, 19);
+            }
+            f()
+        })
+        .expect("fil des images")
+        .join()
+        .unwrap_or_else(|e| std::panic::resume_unwind(e))
+}
+
 /// Affiche 16:9 d'un clip pour la grille des clips (chemin sur le disque), faite au
 /// premier besoin puis gardée. `None` : pas d'image (ou système autre que Linux,
-/// où la grille montre la pochette).
+/// où la grille montre la pochette). `Err` : échec passager, à redemander plus tard.
 #[tauri::command]
-async fn clip_poster(app: tauri::AppHandle, id: String) -> Option<String> {
+async fn clip_poster(app: tauri::AppHandle, id: String) -> Result<Option<String>, String> {
     #[cfg(target_os = "linux")]
     {
         let (path, mtime) = {
             let state = app.state::<AppData>();
             let data = state.0.lock().unwrap();
-            let t = data.tracks.iter().find(|t| t.id == id && t.video)?;
+            let Some(t) = data.tracks.iter().find(|t| t.id == id && t.video) else { return Ok(None) };
             (PathBuf::from(&t.path), t.mtime)
         };
         let covers = store::covers_dir(&cache_dir(&app));
@@ -1401,22 +1481,23 @@ async fn clip_poster(app: tauri::AppHandle, id: String) -> Option<String> {
         offload_heavy(move || {
             let _guard = POSTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             if dest.is_file() {
-                return Some(dest.to_string_lossy().into_owned());
+                return Ok(Some(dest.to_string_lossy().into_owned()));
             }
             if none.is_file() {
-                return None;
+                return Ok(None);
             }
             let (w, h) = frames::POSTER;
-            match frames::grab_sized(&path, w, h) {
+            match low_priority(move || frames::grab_sized(&path, w, h)) {
                 frames::Frame::Image(bytes) => {
-                    store::write_atomic(&dest, &bytes).ok()?;
-                    Some(dest.to_string_lossy().into_owned())
+                    store::write_atomic(&dest, &bytes).map_err(|e| e.to_string())?;
+                    Ok(Some(dest.to_string_lossy().into_owned()))
                 }
                 frames::Frame::None => {
                     let _ = std::fs::write(&none, b"");
-                    None
+                    Ok(None)
                 }
-                frames::Frame::Undecodable => None,
+                frames::Frame::Undecodable => Ok(None),
+                frames::Frame::Later => Err("plus tard".into()),
             }
         })
         .await
@@ -1424,7 +1505,7 @@ async fn clip_poster(app: tauri::AppHandle, id: String) -> Option<String> {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (app, id);
-        None
+        Ok(None)
     }
 }
 
@@ -1442,8 +1523,17 @@ fn set_duration(state: State<AppData>, id: String, duration_ms: u64) {
 /// Écoutes et favoris (stats.json).
 struct AppStats(Mutex<store::Stats>);
 
-/// Morceau en cours d'écoute : dernière position vue, temps vraiment écouté, déjà compté.
-static LISTENING: Mutex<Option<(String, u64, u64, bool)>> = Mutex::new(None);
+/// Morceau en cours d'écoute : dernière position vue et à quel moment, temps vraiment
+/// écouté, déjà compté.
+struct Listening {
+    id: String,
+    pos: u64,
+    at: std::time::Instant,
+    listened: u64,
+    counted: bool,
+}
+
+static LISTENING: Mutex<Option<Listening>> = Mutex::new(None);
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -1453,22 +1543,37 @@ fn now_secs() -> u64 {
 }
 
 /// Compte une écoute après 30 s vraiment écoutées (ou la moitié d'un morceau plus
-/// court). Les sauts ne comptent pas : seule l'avance normale de la lecture s'ajoute.
+/// court). Seule compte l'avance normale de la lecture : la position a avancé d'autant
+/// que l'horloge (à 2 s près). Un saut, en avant comme en arrière, ne compte pas ; un
+/// retour au début (titre répété, relancé) ouvre une nouvelle écoute.
 fn count_listening(app: &tauri::AppHandle, id: &str, position_ms: u64, playing: bool) {
+    let now = std::time::Instant::now();
     let reached = {
         let mut slot = LISTENING.lock().unwrap();
-        let fresh = slot.as_ref().is_none_or(|(cur, ..)| cur != id);
-        if fresh {
-            *slot = Some((id.to_string(), position_ms, 0, false));
+        let restart = |slot: &mut Option<Listening>| {
+            *slot = Some(Listening { id: id.to_string(), pos: position_ms, at: now, listened: 0, counted: false });
+        };
+        match slot.as_ref() {
+            Some(l) if l.id == id => {}
+            _ => {
+                restart(&mut slot);
+                return;
+            }
+        }
+        let Some(l) = slot.as_mut() else { return };
+        // Retour au début : c'est une nouvelle écoute du même morceau.
+        if position_ms + 5_000 < l.pos && position_ms < 5_000 {
+            restart(&mut slot);
             return;
         }
-        let Some((_, last, listened, counted)) = slot.as_mut() else { return };
-        // Avance normale entre deux nouvelles (jusqu'à 20 s) : du temps écouté.
-        if playing && position_ms > *last && position_ms - *last <= 20_000 {
-            *listened += position_ms - *last;
+        let moved = position_ms as i64 - l.pos as i64;
+        let elapsed = now.duration_since(l.at).as_millis() as i64;
+        if playing && moved > 0 && (moved - elapsed).abs() <= 2_000 {
+            l.listened += moved as u64;
         }
-        *last = position_ms;
-        if *counted {
+        l.pos = position_ms;
+        l.at = now;
+        if l.counted {
             return;
         }
         let duration = app
@@ -1482,10 +1587,10 @@ fn count_listening(app: &tauri::AppHandle, id: &str, position_ms: u64, playing: 
             .map(|t| t.duration_ms)
             .unwrap_or(0);
         let needed = if duration > 0 { (duration / 2).min(30_000) } else { 30_000 };
-        if *listened < needed {
+        if l.listened < needed {
             return;
         }
-        *counted = true;
+        l.counted = true;
         true
     };
     if reached {
@@ -1495,10 +1600,14 @@ fn count_listening(app: &tauri::AppHandle, id: &str, position_ms: u64, playing: 
             let entry = stats.plays.entry(id.to_string()).or_default();
             entry.count += 1;
             entry.last = now_secs();
-            let plays = *entry;
-            let _ = store::save_stats(&config_dir(app), &stats);
-            plays
+            *entry
         };
+        // Écrit hors du verrou et hors du fil appelant (souvent le fil principal).
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            let stats = app2.state::<AppStats>().0.lock().unwrap().clone();
+            let _ = store::save_stats(&config_dir(&app2), &stats);
+        });
         let _ = app.emit("played", (id, plays));
     }
 }
@@ -1617,6 +1726,7 @@ struct Imported {
 async fn import_playlists(app: tauri::AppHandle, paths: Vec<String>) -> Result<Imported, String> {
     offload(move || {
         let tracks = shown_tracks(&app);
+        let _guard = PLAYLISTS_WRITE.lock().unwrap_or_else(|e| e.into_inner());
         let mut playlists = store::load_playlists(&config_dir(&app));
         let mut report = Vec::new();
         for path in paths {
@@ -1653,8 +1763,13 @@ fn get_playlists(app: tauri::AppHandle) -> Vec<store::Playlist> {
     store::load_playlists(&config_dir(&app))
 }
 
+/// Une lecture-modification-écriture de playlists.json à la fois : un import et une
+/// modification faite pendant ce temps ne s'écrasent pas.
+static PLAYLISTS_WRITE: Mutex<()> = Mutex::new(());
+
 #[tauri::command]
 fn save_playlists(app: tauri::AppHandle, playlists: Vec<store::Playlist>) -> Vec<store::Playlist> {
+    let _guard = PLAYLISTS_WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let clean = store::sanitize_playlists(playlists);
     store::save_playlists(&config_dir(&app), &clean);
     clean
@@ -1698,21 +1813,18 @@ fn store_cover(covers: &Path, source: &str) -> Result<String, String> {
         return Err("Cette image est trop lourde (20 Mo au maximum).".into());
     }
     let bytes = std::fs::read(source).map_err(|e| format!("Image illisible : {e}"))?;
-    let ext = match Path::new(source)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("png") => "png",
-        Some("gif") => "gif",
-        Some("webp") => "webp",
-        _ => "jpg",
+    // Le contenu fait foi, pas l'extension : seul un vrai fichier image est copié.
+    let ext = match bytes.get(..12) {
+        Some([0xFF, 0xD8, 0xFF, ..]) => "jpg",
+        Some(h) if h.starts_with(b"\x89PNG") => "png",
+        Some(h) if h.starts_with(b"GIF8") => "gif",
+        Some(h) if h.starts_with(b"RIFF") && &h[8..12] == b"WEBP" => "webp",
+        _ => return Err("Ce fichier n'est pas une image (JPEG, PNG, WebP ou GIF).".into()),
     };
     let name = format!("{:016x}.{}", library::stable_hash(&bytes), ext);
     let dest = covers.join(&name);
     if !dest.exists() {
-        std::fs::write(&dest, &bytes).map_err(|e| format!("Impossible d'enregistrer la pochette : {e}"))?;
+        store::write_atomic(&dest, &bytes).map_err(|e| format!("Impossible d'enregistrer la pochette : {e}"))?;
     }
     Ok(name)
 }
@@ -1948,6 +2060,7 @@ fn attach_window(window: &tauri::WebviewWindow) {
                     // La musique est lue par le cœur : la page est fermée pour de bon
                     // (≈ 200 Mo rendus), et recréée quand on rouvre Écho.
                     IN_TRAY.store(true, Ordering::SeqCst);
+                    player::visual_off(win.app_handle());
                     // WebKit garderait son processus d'affichage en réserve : on l'arrête.
                     #[cfg(target_os = "linux")]
                     let _ = win.with_webview(|webview| {
@@ -2004,6 +2117,8 @@ fn main() {
 
             // Reprise de l'ancienne version (MusicApp) si besoin.
             store::migrate_from_musicapp(&config_dir(&handle), &cache_dir(&handle));
+            // Aperçus d'une ancienne fenêtre de choix des pochettes : effacés après un jour.
+            covers_online::prune_candidates(&store::covers_dir(&cache_dir(&handle)));
 
             let settings = store::load_settings(&config_dir(&handle));
             let overrides = store::load_overrides(&config_dir(&handle));
@@ -2267,10 +2382,16 @@ mod tests {
         file.set_len(21 * 1024 * 1024).unwrap();
         assert!(store_cover(&tmp.0, &big.to_string_lossy()).is_err());
 
-        let small = tmp.0.join("small.PNG");
-        std::fs::write(&small, b"png").unwrap();
+        // Le contenu fait foi : un vrai PNG nommé « .jpg » reste un PNG…
+        let small = tmp.0.join("small.jpg");
+        std::fs::write(&small, b"\x89PNG\r\n\x1a\n0000").unwrap();
         let name = store_cover(&tmp.0, &small.to_string_lossy()).unwrap();
         assert!(name.ends_with(".png"));
         assert!(tmp.0.join(name).is_file());
+
+        // … et un fichier qui n'est pas une image est refusé, quelle que soit son extension.
+        let fake = tmp.0.join("faux.png");
+        std::fs::write(&fake, b"pas une image du tout").unwrap();
+        assert!(store_cover(&tmp.0, &fake.to_string_lossy()).is_err());
     }
 }

@@ -26,6 +26,7 @@ const state = {
   resuming: null,
   shuffle: false,
   repeat: "off",
+  listOrder: [],
   /// Écoutes et favoris (playlists automatiques), gardés par le cœur.
   stats: { plays: {}, favorites: [] },
   playlists: [],
@@ -94,6 +95,29 @@ function silentReason(track) {
 
 function muteBadge(track, cls = "badge mute-badge") {
   return `<span class="${cls}" title="${escapeHtml(silentReason(track))}">${/\.f\d+\./i.test(track.path || "") ? "incomplet" : "muet"}</span>`;
+}
+
+/// Monte ou baisse le volume (en points de pourcentage) et le montre brièvement.
+function nudgeVolume(delta) {
+  const v = Math.min(100, Math.max(0, Math.round((state.settings.volume + delta) / 5) * 5));
+  if (Sound.muted && delta > 0) Sound.setMuted(false);
+  Sound.setVolume(v / 100);
+  saveSettings({ volume: v }, { refresh: false });
+  const slider = el("volume");
+  if (slider) {
+    slider.value = String(v);
+    slider.style.setProperty("--p", `${v}%`);
+  }
+  refreshToggles();
+  toast(`Volume : ${v} %`);
+}
+
+/// Déplace la lecture, bornée au morceau. Durée encore inconnue (MP3 sans durée dans
+/// ses tags) : seul le début borne, sinon la lecture repartirait de 0:00.
+function seekTo(seconds) {
+  const media = mediaEl();
+  const end = isFinite(media.duration) && media.duration > 0 ? media.duration : Infinity;
+  media.currentTime = Math.min(end, Math.max(0, seconds));
 }
 
 function audioTracks() {
@@ -331,6 +355,7 @@ function applySettings() {
   }
   // Disposition ou visualiseur changés : la vidéo et le spectre suivent.
   if (typeof updateVisual === "function" && state.tracks) {
+    visual.colors = null;
     updateVisual();
     updateClipVideo();
   }
@@ -641,7 +666,7 @@ function buildSettingsPanel() {
         ["Données", "history"],
         ["À propos", "dashboard"],
       ]
-        .map(([name, ic], i) => `<button data-goto="${i}" class="${i === 0 ? "on" : ""}">${icon(ic, 15)}<span>${name}</span></button>`)
+        .map(([name, ic], i) => `<button data-goto="${i}" class="${i === 0 ? "on" : ""}" aria-label="${name}" title="${name}">${icon(ic, 15)}<span>${name}</span></button>`)
         .join("")}
     </div>
     <div class="settings-body" id="settings-body">
@@ -906,7 +931,7 @@ function bindSettings(panel) {
         const path = typeof picked === "string" ? picked : picked.path;
         try {
           const boot = await invoke("import_settings", { path });
-          await applyBootstrap(boot);
+          await applyBootstrap(boot, { resume: false });
           toast("Réglages importés.");
         } catch (err) {
           toast(String(err));
@@ -920,7 +945,7 @@ function bindSettings(panel) {
         ]);
         if (!ok) return;
         const boot = await invoke("reset_settings");
-        await applyBootstrap(boot);
+        await applyBootstrap(boot, { resume: false });
         toast("Réglages remis à zéro.");
         break;
       }
@@ -1505,6 +1530,9 @@ async function enableNative() {
 let listPlaying = null;
 function renderPlayState() {
   updateVisual();
+  syncClip();
+  markPlaylists();
+  if (!clipBusy() && posterWanted.length) pumpPosters();
   const playing = isPlaying();
   if (playing === listPlaying) return;
   listPlaying = playing;
@@ -1519,12 +1547,14 @@ function onNativeStatus(s) {
     if (s.seq <= lastSeq) return;
     lastSeq = s.seq;
   }
-  const hadDuration = nativeMedia.duration;
-  nativeMedia.update(s);
+  // Un morceau vient d'être demandé : les nouvelles des autres (encore en route) ne
+  // touchent ni l'horloge ni l'affichage, sinon la page reviendrait un instant en arrière.
   if (nativeExpect) {
     if (s.id === nativeExpect.id || performance.now() > nativeExpect.until) nativeExpect = null;
-    else if (!s.changed) return;
+    else return;
   }
+  const hadDuration = nativeMedia.duration;
+  nativeMedia.update(s);
   // Le morceau du cœur fait foi : la page s'y recale, changement annoncé ou non.
   if (s.id && currentId() !== s.id) {
     const i = state.queue[s.index] === s.id ? s.index : state.queue.indexOf(s.id);
@@ -1645,7 +1675,8 @@ function playCurrent({ autoplay = true } = {}) {
   const track = currentTrack();
   if (!track) return;
   // Vidéo sans son : on dit pourquoi elle est sautée (téléchargement incomplet…).
-  if (track.has_audio === false && autoplay) toast(`« ${track.title} » est sauté. ${silentReason(track)}`);
+  // (Lecteur du cœur : c'est lui qui le dit, une seule fois.)
+  if (track.has_audio === false && autoplay && !NATIVE) toast(`« ${track.title} » est sauté. ${silentReason(track)}`);
   if (NATIVE) {
     // Le cœur lit, enchaîne (et saute lui-même les vidéos muettes), prévient le
     // système et retient la position.
@@ -1786,7 +1817,13 @@ function maybeCrossfade() {
 let shuffleBag = EchoLogic.freshBag(null);
 
 function playContext() {
-  if (shuffleBag.queue !== state.queue) shuffleBag = EchoLogic.freshBag(state.queue);
+  // Nouvelle file : nouvelle tournée. Un simple ajout (même début, plus long) la garde.
+  if (shuffleBag.queue !== state.queue) {
+    const old = shuffleBag.queue;
+    const extended = old && state.queue.length > old.length && old.every((id, i) => state.queue[i] === id);
+    if (extended) shuffleBag.queue = state.queue;
+    else shuffleBag = EchoLogic.freshBag(state.queue);
+  }
   return { n: state.queue.length, index: state.queueIndex, shuffle: state.shuffle, repeat: state.repeat, bag: shuffleBag };
 }
 
@@ -1998,9 +2035,9 @@ async function bindMediaKeys() {
     const [action, raw] = String(event.payload).split(":");
     const ms = Number(raw);
     if (action === "set-position" && isFinite(ms)) {
-      media.currentTime = Math.min(media.duration || 0, Math.max(0, ms / 1000));
+      seekTo(ms / 1000);
     } else if (action === "seek-by" && isFinite(ms)) {
-      media.currentTime = Math.min(media.duration || 0, Math.max(0, media.currentTime + ms / 1000));
+      seekTo(media.currentTime + ms / 1000);
     } else if (action === "quit") {
       saveProgress(true);
       invoke("quit_app").catch(() => {});
@@ -2027,7 +2064,7 @@ async function bindMediaKeys() {
         step(-1);
         break;
       case "seek-forward":
-        media.currentTime = Math.min(media.duration || 0, media.currentTime + state.settings.skip_seconds);
+        seekTo(media.currentTime + state.settings.skip_seconds);
         break;
       case "seek-backward":
         media.currentTime = Math.max(0, media.currentTime - state.settings.skip_seconds);
@@ -2049,6 +2086,7 @@ let lastCarouselId = null;
 
 /// Rejoue une animation CSS sur un élément (la classe est retirée puis remise).
 function playAnim(node, cls) {
+  if (document.body.dataset.anim === "off") return;
   // Élément caché : rien à animer (et l'animation se rejouerait à son retour).
   if (!node || !node.getClientRects().length) return;
   node.classList.remove(cls);
@@ -2134,6 +2172,7 @@ function renderAll() {
   renderMinimal();
   updateProgress();
   updateClipVideo();
+  markPlaylists();
 }
 
 function switchView(view) {
@@ -2273,7 +2312,10 @@ function paintEditCover(coverName, pickedPath = null) {
     node.style.background = DEFAULT_COVER;
     return;
   }
+  const editingId = editing && editing.id;
   coverSrc(coverName).then((url) => {
+    // Un autre morceau a été ouvert entre-temps : sa pochette ne doit pas être remplacée.
+    if (!editing || editing.id !== editingId) return;
     node.style.background = url ? `var(--cover-bg) url("${url}") center / cover no-repeat` : DEFAULT_COVER;
   });
 }
@@ -2492,13 +2534,15 @@ function bindCoverPicker() {
 /* ---------------- clips ---------------- */
 
 /// Affiches 16:9 déjà faites (identifiant → adresse), `null` : pas d'affiche (la
-/// pochette sert alors). Faites par le cœur une à la fois, au premier affichage.
+/// pochette sert alors). Faites par le cœur une à la fois, pour les cartes visibles.
 const clipPosters = new Map();
 const posterWanted = [];
 let posterBusy = false;
+let posterObserver = null;
 let clipQuery = "";
-/// Clip dont la mini-fenêtre a été fermée : elle revient au clip suivant.
-let clipMiniClosed = null;
+/// Mini-fenêtre fermée par l'utilisateur : elle reste fermée jusqu'à ce qu'il ouvre
+/// un clip ou la section Clips.
+let clipMiniClosed = false;
 /// Clip chargé dans le lecteur vidéo.
 let clipShownId = null;
 let clipSyncTimer = null;
@@ -2508,16 +2552,24 @@ function isClip(track) {
   return !!track && track.video && track.has_audio !== false;
 }
 
+function allClips() {
+  return state.tracks.filter((t) => t.video).sort((a, b) => COLLATOR.compare(a.title, b.title));
+}
+
 function clipTracks() {
   const q = normalize(clipQuery).trim();
-  return state.tracks
-    .filter((t) => t.video && (!q || searchKey(t).includes(q)))
-    .sort((a, b) => COLLATOR.compare(a.title, b.title));
+  const all = allClips();
+  return q ? all.filter((t) => searchKey(t).includes(q)) : all;
 }
 
 /// Le panneau des clips est à l'écran (vue Clips, ou feuille des autres dispositions).
 function clipsPanelShown() {
   return el("clips-panel").offsetParent !== null;
+}
+
+/// Un clip joue à l'écran : le processeur lui revient en priorité.
+function clipBusy() {
+  return !!clipShownId && !mediaEl().paused;
 }
 
 function paintPoster(node, track) {
@@ -2529,36 +2581,55 @@ function paintPoster(node, track) {
   }
   // En attendant l'affiche (ou à défaut) : la pochette, comme dans la bibliothèque.
   fillCover(node, track, false);
-  if (url === undefined) wantPoster(track.id);
 }
 
 function wantPoster(id) {
-  if (!posterWanted.includes(id)) posterWanted.push(id);
+  if (clipPosters.has(id) || posterWanted.includes(id)) return;
+  posterWanted.push(id);
   pumpPosters();
 }
 
+/// Fabrique les affiches demandées, une à la fois. Chaque affiche décode une image
+/// 4K : rien ne se fait tant qu'un clip joue à l'écran (la file reprend à la pause).
 async function pumpPosters() {
   if (posterBusy) return;
   posterBusy = true;
   try {
-    while (posterWanted.length) {
+    while (posterWanted.length && !clipBusy()) {
       const id = posterWanted.shift();
       if (clipPosters.has(id)) continue;
-      // Plus à l'écran : on ne décode pas une image 4K pour rien.
-      if (!clipsPanelShown() && clipShownId !== id) {
-        continue;
-      }
-      const path = await invoke("clip_poster", { id }).catch(() => null);
+      const path = await invoke("clip_poster", { id }).catch(() => undefined);
+      // Échec passager (fichier lent à ouvrir) : rien n'est retenu, on réessaiera.
+      if (path === undefined) continue;
       const url = path ? convertFileSrc(path) : null;
       clipPosters.set(id, url);
       const track = trackById(id);
       if (!track) continue;
       document.querySelectorAll(`[data-poster-of="${CSS.escape(id)}"]`).forEach((node) => paintPoster(node, track));
-      if (url && clipShownId === id) el("clip-video").poster = url;
     }
   } finally {
     posterBusy = false;
   }
+}
+
+/// Les affiches ne sont demandées que pour les cartes qui entrent à l'écran.
+function observePosters(grid) {
+  if (!posterObserver) {
+    posterObserver = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          posterObserver.unobserve(e.target);
+          wantPoster(e.target.dataset.posterOf);
+        }
+      },
+      { root: el("clip-scroll"), rootMargin: "200px 0px" }
+    );
+  }
+  posterObserver.disconnect();
+  grid.querySelectorAll("[data-poster-of]").forEach((node) => {
+    if (!clipPosters.has(node.dataset.posterOf)) posterObserver.observe(node);
+  });
 }
 
 function renderClips() {
@@ -2569,7 +2640,12 @@ function renderClips() {
   const key = `${libraryVersion}|${clipQuery}|${list.length}`;
   if (key === clipsShown) {
     // Seul le clip en cours a changé : la carte est marquée sur place (pas de clignotement).
-    grid.querySelectorAll(".clip-card").forEach((card) => card.classList.toggle("is-current", card.dataset.clipId === current));
+    grid.querySelectorAll(".clip-card").forEach((card) => {
+      const on = card.dataset.clipId === current;
+      card.classList.toggle("is-current", on);
+      if (on) card.setAttribute("aria-current", "true");
+      else card.removeAttribute("aria-current");
+    });
     return;
   }
   clipsShown = key;
@@ -2582,7 +2658,8 @@ function renderClips() {
   grid.innerHTML = list
     .map((t) => {
       const sub = [t.artist || "", t.duration_ms ? formatTime(t.duration_ms) : ""].filter(Boolean).join(" · ");
-      return `<button type="button" class="clip-card${t.id === current ? " is-current" : ""}" data-clip-id="${escapeHtml(t.id)}" aria-label="${escapeHtml(`${t.title} — ${t.artist || ""}`)}">
+      const on = t.id === current;
+      return `<button type="button" class="clip-card${on ? " is-current" : ""}"${on ? ' aria-current="true"' : ""} data-clip-id="${escapeHtml(t.id)}" aria-label="${escapeHtml(`${t.title} — ${t.artist || ""}`)}">
         <span class="clip-poster" data-poster-of="${escapeHtml(t.id)}"></span>
         ${t.has_audio === false ? muteBadge(t, "clip-badge") : ""}
         <span class="clip-card-title">${escapeHtml(t.title)}</span>
@@ -2594,6 +2671,7 @@ function renderClips() {
     const track = trackById(node.dataset.posterOf);
     if (track) paintPoster(node, track);
   });
+  observePosters(grid);
 }
 
 function playClip(id) {
@@ -2603,11 +2681,12 @@ function playClip(id) {
     toast(`« ${track.title} » : ${silentReason(track)}`);
     return;
   }
-  clipMiniClosed = null;
+  clipMiniClosed = false;
   if (currentId() === id) {
     if (audio.paused) startPlayback();
   } else {
-    const ids = clipTracks().filter(isClip).map((t) => t.id);
+    // Tous les clips à la suite (pas seulement les résultats d'une recherche).
+    const ids = allClips().filter(isClip).map((t) => t.id);
     state.queue = ids.includes(id) ? ids : [id];
     state.queueIndex = state.queue.indexOf(id);
     playCurrent();
@@ -2615,28 +2694,32 @@ function playClip(id) {
   el("clip-scroll").scrollTo({ top: 0, behavior: state.settings.animations ? "smooth" : "auto" });
 }
 
-/// Où montrer la vidéo : la grande scène, la mini-fenêtre, ou nulle part (le lecteur
-/// vidéo est alors vidé : aucune image décodée pour rien).
-function clipHost() {
+/// Où montrer la vidéo : la grande scène, la mini-fenêtre, « de côté » (paroles
+/// ouvertes : la vidéo garde sa place mais ne joue plus), ou nulle part (le lecteur
+/// vidéo est vidé : aucune image décodée pour rien).
+function clipPlace() {
   const track = currentTrack();
-  if (!isClip(track) || document.hidden || lyricsOpen) return null;
-  if (clipsPanelShown()) return el("clip-frame");
-  if (clipMiniClosed === track.id) return null;
-  return el("clip-mini-frame");
+  if (!isClip(track) || document.hidden) return null;
+  if (lyricsOpen) return "parked";
+  if (clipsPanelShown()) return "stage";
+  if (clipMiniClosed) return null;
+  return "mini";
 }
 
 function updateClipVideo() {
   const video = el("clip-video");
   const track = currentTrack();
-  const host = clipHost();
+  const place = clipPlace();
   el("clip-stage").hidden = !isClip(track);
   if (isClip(track)) {
     setText(el("clip-title"), track.title);
     setText(el("clip-artist"), track.artist || "—");
   }
-  el("clip-mini").hidden = host !== el("clip-mini-frame");
+  el("clip-mini").hidden = place !== "mini";
+  // La vidéo quitte la scène : le plein écran (qui ne montrerait plus que du noir) aussi.
+  if (place !== "stage" && document.fullscreenElement) document.exitFullscreen().catch(() => {});
   renderClips();
-  if (!host) {
+  if (!place) {
     stopClipSync();
     if (clipShownId) {
       clipShownId = null;
@@ -2646,52 +2729,77 @@ function updateClipVideo() {
       video.load();
     }
     video.hidden = true;
-    if (video.parentElement !== document.body) document.body.appendChild(video);
     return;
   }
+  if (place === "parked") {
+    stopClipSync();
+    video.pause();
+    video.hidden = true;
+    return;
+  }
+  const host = place === "stage" ? el("clip-frame") : el("clip-mini-frame");
   if (video.parentElement !== host) host.appendChild(video);
   video.hidden = false;
   if (clipShownId !== track.id) {
     clipShownId = track.id;
     const poster = clipPosters.get(track.id);
     if (poster) video.poster = poster;
-    else {
-      video.removeAttribute("poster");
-      wantPoster(track.id);
-    }
+    else video.removeAttribute("poster");
+    clipSync.lastFix = 0;
     video.src = mediaSrc(track.path);
   }
   startClipSync();
   syncClip();
 }
 
-/// Cale la vidéo sur le son : un petit écart se rattrape en douceur (vitesse ±6 %),
-/// un grand (saut, changement de morceau) d'un coup.
+/// Cale la vidéo sur le son. La vidéo défile librement : changer sa vitesse ou la
+/// déplacer force WebKit à redécoder depuis l'image clé précédente (très coûteux en
+/// AV1 4K, d'où des saccades). On ne la recale donc que si l'écart se voit (0,2 s),
+/// au plus toutes les 2,5 s, ou tout de suite après un saut demandé (plus d'1 s).
+/// Le temps que prend un recalage est mesuré et compensé au suivant.
+const clipSync = { lastFix: 0, lag: 0.15, fixStarted: 0, waiting: false };
+
 function syncClip() {
   const video = el("clip-video");
-  if (!clipShownId || clipShownId !== currentId() || video.readyState < 1) return;
+  if (!clipShownId || clipShownId !== currentId() || video.readyState < 1 || video.seeking) return;
   const media = mediaEl();
   const target = media.currentTime;
   if (!isFinite(target)) return;
-  if (media.paused) {
+  if (video.playbackRate !== 1) video.playbackRate = 1;
+  const end = isFinite(video.duration) ? video.duration : Infinity;
+  // Le son continue après la fin de l'image (clip coupé) : la dernière image reste.
+  if (target >= end - 0.05) {
     if (!video.paused) video.pause();
-    if (Math.abs(video.currentTime - target) > 0.1) video.currentTime = target;
     return;
   }
   const diff = video.currentTime - target;
-  if (Math.abs(diff) > 0.45) {
-    video.playbackRate = 1;
-    if (!video.seeking) video.currentTime = target + 0.08;
-  } else if (Math.abs(diff) > 0.07) {
-    video.playbackRate = diff > 0 ? 0.94 : 1.06;
-  } else if (video.playbackRate !== 1) {
-    video.playbackRate = 1;
+  if (media.paused) {
+    if (!video.paused) video.pause();
+    // À l'arrêt, l'image suit les sauts (sans coût tant que rien ne change).
+    if (Math.abs(diff) > 0.25) seekClip(video, target, false);
+    return;
   }
-  if (video.paused) video.play().catch(() => {});
+  // Décodage en retard (image clé lointaine, processeur pris) : on ne recale pas
+  // pendant qu'il rattrape, sinon chaque recalage recommencerait le travail.
+  if (clipSync.waiting && Math.abs(diff) < 1) return;
+  const now = performance.now();
+  if (Math.abs(diff) > 1 || (Math.abs(diff) > 0.2 && now - clipSync.lastFix > 2500)) {
+    seekClip(video, target, true);
+    return;
+  }
+  if (video.paused && !video.ended) video.play().catch(() => {});
+}
+
+function seekClip(video, target, playing) {
+  clipSync.lastFix = performance.now();
+  clipSync.fixStarted = clipSync.lastFix;
+  // En lecture, on vise un peu plus loin : le son avance pendant que la vidéo se recale.
+  const aim = playing ? target + clipSync.lag : target;
+  video.currentTime = isFinite(video.duration) ? Math.min(aim, Math.max(0, video.duration - 0.1)) : aim;
 }
 
 function startClipSync() {
-  if (!clipSyncTimer) clipSyncTimer = setInterval(syncClip, 250);
+  if (!clipSyncTimer) clipSyncTimer = setInterval(syncClip, 500);
 }
 
 function stopClipSync() {
@@ -2706,6 +2814,7 @@ function toggleClipFullscreen() {
 }
 
 function openClips() {
+  clipMiniClosed = false;
   if (document.body.dataset.mode === "normal") {
     closeSheet();
     switchView("clips");
@@ -2719,6 +2828,16 @@ function openClips() {
 function bindClips() {
   const video = el("clip-video");
   video.addEventListener("loadedmetadata", syncClip);
+  video.addEventListener("waiting", () => (clipSync.waiting = true));
+  video.addEventListener("playing", () => (clipSync.waiting = false));
+  // Durée réelle d'un recalage (décodage depuis l'image clé) : visée au suivant.
+  video.addEventListener("seeked", () => {
+    if (!clipSync.fixStarted) return;
+    const took = (performance.now() - clipSync.fixStarted) / 1000;
+    clipSync.fixStarted = 0;
+    clipSync.lag = Math.min(1.5, Math.max(0.05, clipSync.lag * 0.5 + took * 0.5));
+    if (!mediaEl().paused) video.play().catch(() => {});
+  });
   video.addEventListener("dblclick", toggleClipFullscreen);
   el("clip-full").addEventListener("click", toggleClipFullscreen);
   el("clip-grid").addEventListener("click", (e) => {
@@ -2734,11 +2853,19 @@ function bindClips() {
     }, 120);
   });
   el("clip-mini-open").addEventListener("click", openClips);
-  el("clip-mini-close").addEventListener("click", () => {
-    clipMiniClosed = currentId();
+  el("clip-mini-close").addEventListener("click", (e) => {
+    e.stopPropagation();
+    clipMiniClosed = true;
     updateClipVideo();
   });
-  el("clip-mini-frame").addEventListener("click", openClips);
+  const mini = el("clip-mini-frame");
+  mini.addEventListener("click", openClips);
+  mini.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openClips();
+    }
+  });
   el("dock-clips").addEventListener("click", openClips);
   el("min-clips").addEventListener("click", openClips);
   // Fenêtre cachée ou réduite : plus d'images décodées, elles reviennent au retour.
@@ -2748,6 +2875,8 @@ function bindClips() {
 /* ---------------- doublons ---------------- */
 
 let dupBusy = false;
+/// Résultat de la dernière recherche : les masquages le modifient sur place.
+let dupData = null;
 
 function formatSize(bytes) {
   if (!bytes) return "";
@@ -2768,15 +2897,22 @@ function closeDuplicates() {
 async function renderDuplicates() {
   const body = el("dup-body");
   body.innerHTML = `<div class="cover-wait"><span class="spinner" aria-hidden="true"></span>Recherche des doublons…</div>`;
-  let groups = [];
-  let hidden = [];
   try {
-    [groups, hidden] = await Promise.all([invoke("find_duplicates"), invoke("hidden_tracks")]);
+    const [groups, hidden] = await Promise.all([invoke("find_duplicates"), invoke("hidden_tracks")]);
+    dupData = { groups, hidden };
   } catch (err) {
     body.innerHTML = `<div class="cover-wait">${escapeHtml(String(err))}</div>`;
     return;
   }
   if (el("dup-dialog").hidden) return;
+  paintDuplicates();
+}
+
+/// Dessine les doublons connus, en gardant la position du défilement.
+function paintDuplicates() {
+  const body = el("dup-body");
+  const scroll = body.scrollTop;
+  const { groups, hidden } = dupData;
   const advised = groups.filter((g) => !g.mixed).flatMap((g) => g.items.filter((i) => !i.keep).map((i) => i.id));
   const row = (i, mixed) => {
     const meta = [i.format, formatSize(i.size), i.duration_ms ? formatTime(i.duration_ms) : ""].filter(Boolean).join(" · ");
@@ -2815,6 +2951,7 @@ async function renderDuplicates() {
       }</div>${list}${hiddenList}`
     : `<div class="cover-wait">Aucun doublon dans ta bibliothèque.</div>${hiddenList}`;
   body.dataset.advised = JSON.stringify(advised);
+  body.scrollTop = scroll;
 }
 
 async function setHidden(ids, hidden) {
@@ -2826,10 +2963,26 @@ async function setHidden(ids, hidden) {
     toast(hidden ? `${countLabel(ids.length)} masqué${ids.length > 1 ? "s" : ""}.` : `${countLabel(ids.length)} réaffiché${ids.length > 1 ? "s" : ""}.`);
   } catch (err) {
     toast(String(err));
-  } finally {
     dupBusy = false;
+    return;
   }
-  await renderDuplicates();
+  dupBusy = false;
+  if (!dupData) return renderDuplicates();
+  // La liste est mise à jour sur place : pas de nouvelle recherche, pas de saut en haut.
+  const set = new Set(ids);
+  if (hidden) {
+    for (const g of dupData.groups) {
+      for (const i of g.items.filter((i) => set.has(i.id))) {
+        dupData.hidden.push({ id: i.id, title: i.title, artist: i.artist, path: i.path });
+      }
+      g.items = g.items.filter((i) => !set.has(i.id));
+    }
+    dupData.groups = dupData.groups.filter((g) => g.items.length > 1);
+    paintDuplicates();
+  } else {
+    // Un morceau réaffiché peut reformer un groupe : là, une nouvelle recherche s'impose.
+    await renderDuplicates();
+  }
 }
 
 function bindDuplicates() {
@@ -2930,10 +3083,15 @@ function paintVisual(canvas, style) {
   }
   const g = canvas.getContext("2d");
   g.clearRect(0, 0, w, h);
-  const css = getComputedStyle(document.body);
+  // Couleurs du thème lues une seule fois (pas à chaque image) : remises à zéro
+  // quand le thème ou la palette changent.
+  if (!visual.colors) {
+    const css = getComputedStyle(document.body);
+    visual.colors = [css.getPropertyValue("--accent").trim() || "#38bdf8", css.getPropertyValue("--accent2").trim() || "#8b5cf6"];
+  }
   const grad = g.createLinearGradient(0, 0, w, 0);
-  grad.addColorStop(0, css.getPropertyValue("--accent").trim() || "#38bdf8");
-  grad.addColorStop(1, css.getPropertyValue("--accent2").trim() || "#8b5cf6");
+  grad.addColorStop(0, visual.colors[0]);
+  grad.addColorStop(1, visual.colors[1]);
   g.fillStyle = grad;
   const n = VISUAL_BANDS;
   if (style === "wave") {
@@ -3081,9 +3239,9 @@ function openTrackMenu(track, x, y, { playlist = null } = {}) {
         const list = state.playlists.find((p) => p.id === btn.dataset.pl);
         if (!list) return;
         const had = list.tracks.includes(track.id);
+        const before = playlistsCopy();
         list.tracks = had ? list.tracks.filter((id) => id !== track.id) : [...list.tracks, track.id];
-        await savePlaylists();
-        toast(had ? `Retiré de « ${list.name} ».` : `Ajouté à « ${list.name} ».`);
+        if (await savePlaylists(before)) toast(had ? `Retiré de « ${list.name} ».` : `Ajouté à « ${list.name} ».`);
         lists();
         break;
       }
@@ -3097,8 +3255,9 @@ function openTrackMenu(track, x, y, { playlist = null } = {}) {
         closeTrackMenu();
         const list = state.playlists.find((p) => p.id === playlist);
         if (!list) return;
+        const before = playlistsCopy();
         list.tracks = list.tracks.filter((id) => id !== track.id);
-        await savePlaylists();
+        await savePlaylists(before);
         break;
       }
       case "edit":
@@ -3138,13 +3297,23 @@ function newPlaylistId() {
   return `pl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-async function savePlaylists() {
+/// Enregistre les playlists. Faux en cas d'échec : `previous` (copie d'avant la
+/// modification) est alors remis, pour que l'écran ne mente pas.
+async function savePlaylists(previous = null) {
+  let ok = true;
   try {
     state.playlists = await invoke("save_playlists", { playlists: state.playlists });
   } catch (err) {
+    ok = false;
+    if (previous) state.playlists = previous;
     toast(`Playlist non enregistrée : ${err}`);
   }
   renderPlaylists();
+  return ok;
+}
+
+function playlistsCopy() {
+  return state.playlists.map((p) => ({ ...p, tracks: [...p.tracks] }));
 }
 
 async function createPlaylist(tracks = []) {
@@ -3154,10 +3323,10 @@ async function createPlaylist(tracks = []) {
   ], { input: `Playlist ${state.playlists.length + 1}` });
   if (!name) return null;
   const list = { id: newPlaylistId(), name, tracks };
+  const before = playlistsCopy();
   state.playlists = [...state.playlists, list];
   state.playlistOpen = list.id;
-  await savePlaylists();
-  return list;
+  return (await savePlaylists(before)) ? list : null;
 }
 
 function playlistTracks(list) {
@@ -3167,6 +3336,17 @@ function playlistTracks(list) {
 /* --- playlists automatiques --- */
 
 let statsVersion = 0;
+let playedRender = null;
+
+/// Met à jour les compteurs de la colonne des listes, sans toucher au détail ouvert.
+function renderPlaylistCounts() {
+  const byId = new Map([...state.playlists, ...autoLists()].map((p) => [p.id, p]));
+  document.querySelectorAll("#pl-list [data-open]").forEach((item) => {
+    const p = byId.get(item.dataset.open);
+    const count = item.querySelector(".pl-count");
+    if (p && count) setText(count, String(playlistTracks(p).length));
+  });
+}
 let autoMemo = { key: "", lists: [] };
 
 function isFavorite(id) {
@@ -3181,10 +3361,11 @@ function artistIndex() {
     const key = normalize(name).replace(/\s+/g, " ").trim();
     if (!key) return;
     let entry = index.get(key);
-    if (!entry) index.set(key, (entry = { key, names: new Map(), main: [], guest: [] }));
+    if (!entry) index.set(key, (entry = { key, names: new Map(), main: [], guest: [], seen: new Set() }));
     entry.names.set(name, (entry.names.get(name) || 0) + 1);
-    const bucket = guest ? entry.guest : entry.main;
-    if (!bucket.includes(track.id) && !entry.main.includes(track.id)) bucket.push(track.id);
+    if (entry.seen.has(track.id)) return;
+    entry.seen.add(track.id);
+    (guest ? entry.guest : entry.main).push(track.id);
   };
   for (const t of state.tracks) {
     const main = t.artists && t.artists.length ? t.artists : t.artist ? [t.artist] : [];
@@ -3228,8 +3409,8 @@ function autoLists() {
     },
     {
       id: "auto:never", auto: true, icon: "magic", name: "Jamais écoutés",
-      desc: "Des morceaux de ta bibliothèque qui attendent leur tour.",
-      tracks: ids(state.tracks.filter((t) => !plays[t.id] && t.has_audio !== false).sort(byTitle)),
+      desc: "Jusqu'à 300 morceaux de ta bibliothèque qui attendent leur tour.",
+      tracks: ids(state.tracks.filter((t) => !plays[t.id] && t.has_audio !== false).sort(byTitle).slice(0, 300)),
     },
   ];
   const artists = [...artistIndex().values()]
@@ -3298,9 +3479,15 @@ function renderLove() {
 }
 
 function playPlaylist(list, { shuffle = false, startId = null } = {}) {
-  const tracks = playlistTracks(list).filter((t) => t.has_audio !== false);
+  const all = playlistTracks(list);
+  const tracks = all.filter((t) => t.has_audio !== false);
   if (!tracks.length) {
-    toast("Cette playlist est vide.");
+    toast(all.length ? "Aucun morceau de cette playlist n'a de son (vidéos sans piste son)." : "Cette playlist est vide.");
+    return;
+  }
+  const start = startId ? trackById(startId) : null;
+  if (start && start.has_audio === false) {
+    toast(`« ${start.title} » : ${silentReason(start)}`);
     return;
   }
   state.queue = tracks.map((t) => t.id);
@@ -3392,6 +3579,24 @@ function renderPlaylists() {
   detail.querySelectorAll(".pl-row").forEach((row, i) => fillCover(row.querySelector(".thumb"), tracks[i]));
 }
 
+/// Morceau en cours dans la playlist affichée : marqué sur place, sans tout redessiner.
+function markPlaylists() {
+  const detail = el("pl-detail");
+  if (!detail || !detail.isConnected) return;
+  const current = currentId();
+  const playing = isPlaying();
+  detail.querySelectorAll(".pl-row").forEach((row, i) => {
+    const on = row.dataset.trackId === current;
+    row.classList.toggle("is-current", on);
+    const n = row.querySelector(".trk-n");
+    const html = on && playing ? `<span class="playing">${ICONS.waveform}</span>` : String(i + 1);
+    if (n && n.dataset.shown !== html) {
+      n.dataset.shown = html;
+      n.innerHTML = html;
+    }
+  });
+}
+
 async function exportList(list) {
   const tracks = playlistTracks(list);
   if (!tracks.length) return;
@@ -3453,8 +3658,9 @@ function bindPlaylists() {
     const remove = e.target.closest("[data-remove]");
     if (remove && !open.auto) {
       e.stopPropagation();
+      const before = playlistsCopy();
       open.tracks = open.tracks.filter((id) => id !== remove.dataset.remove);
-      await savePlaylists();
+      await savePlaylists(before);
       return;
     }
     const unlove = e.target.closest("[data-unlove]");
@@ -3482,8 +3688,9 @@ function bindPlaylists() {
             { label: "Renommer", value: true, primary: true },
           ], { input: open.name });
           if (name) {
+            const before = playlistsCopy();
             open.name = name;
-            await savePlaylists();
+            await savePlaylists(before);
           }
           break;
         }
@@ -3494,8 +3701,9 @@ function bindPlaylists() {
             { label: "Supprimer", value: true, primary: true },
           ]);
           if (ok) {
+            const before = playlistsCopy();
             state.playlists = state.playlists.filter((p) => p.id !== open.id);
-            await savePlaylists();
+            await savePlaylists(before);
           }
           break;
         }
@@ -3605,6 +3813,11 @@ async function extractFrames() {
   let missing = 0;
   try {
     for (;;) {
+      // Un clip joue à l'écran : les pochettes attendront (chacune décode une image 4K).
+      if (clipBusy()) {
+        scheduleFrames();
+        break;
+      }
       const track = state.tracks.find((t) => t.video && !t.cover && !t.no_frame && !frameTried.has(t.id));
       if (!track) break;
       frameTried.add(track.id);
@@ -3755,7 +3968,7 @@ function replaceTrack(track) {
 let coversSoon = null;
 let renderSoon = null;
 
-async function applyBootstrap(boot) {
+async function applyBootstrap(boot, { resume = true } = {}) {
   // Réglages importés ou remis à zéro : tout est redessiné, même bibliothèque ou non.
   snapshotSig = "";
   state.settings = boot.settings;
@@ -3770,7 +3983,11 @@ async function applyBootstrap(boot) {
   applySnapshot(boot.snapshot);
   // Le morceau (repris, ou celui que le cœur joue déjà) est en place avant que la
   // fenêtre n'apparaisse : pas de « Rien en cours » suivi d'un changement animé.
-  if (boot.native_audio) {
+  // Réglages importés ou remis à zéro : la musique en cours continue.
+  if (!resume) {
+    refreshToggles();
+    renderAll();
+  } else if (boot.native_audio) {
     const adopted = await enableNative();
     if (!adopted) prepareResume();
   } else {
@@ -3887,6 +4104,14 @@ function bindOnce() {
     Sound.setVolume(v / 100);
     saveSettings({ volume: v }, { refresh: false });
   });
+  // Pas de curseur en disposition compacte, minimaliste ou en fenêtre étroite : la
+  // molette sur le bouton du son règle le volume.
+  for (const id of ["dock-volume", "min-volume", "btn-mute"]) {
+    el(id).addEventListener("wheel", (e) => {
+      e.preventDefault();
+      nudgeVolume(e.deltaY < 0 ? 5 : -5);
+    }, { passive: false });
+  }
 
   el("seek").addEventListener("input", (e) => {
     state.seeking = true;
@@ -4044,8 +4269,8 @@ function bindOnce() {
         e.target.value = "";
         e.target.dispatchEvent(new Event("input", { bubbles: true }));
       } else {
+        // Le champ est quitté ; la feuille ou les paroles se ferment au prochain Échap.
         e.target.blur();
-        if (!el("sheet").hidden) closeSheet();
       }
       return;
     }
@@ -4069,9 +4294,12 @@ function bindOnce() {
       media.currentTime = Math.min(end, media.currentTime + state.settings.skip_seconds);
     } else if (e.code === "ArrowLeft") {
       media.currentTime = Math.max(0, media.currentTime - state.settings.skip_seconds);
+    } else if ((e.code === "ArrowUp" || e.code === "ArrowDown") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      nudgeVolume(e.code === "ArrowUp" ? 5 : -5);
     } else if (e.code === "KeyL" && !e.ctrlKey && !e.metaKey && !e.altKey) {
       toggleLyrics();
-    } else if (e.code === "KeyF" && !e.ctrlKey && !e.metaKey && !e.altKey && clipShownId && clipsPanelShown()) {
+    } else if (e.code === "KeyF" && !e.ctrlKey && !e.metaKey && !e.altKey && (document.fullscreenElement || (clipShownId && clipsPanelShown()))) {
       toggleClipFullscreen();
     } else if (e.code === "Escape") {
       if (!el("modal").hidden && modalCancel) modalCancel();
@@ -4164,7 +4392,14 @@ async function bindBackendEvents() {
     if (!id) return;
     state.stats.plays[id] = plays;
     statsVersion += 1;
-    if (state.view === "playlists" || !el("sheet").hidden) renderPlaylists();
+    // Seules les listes tirées des écoutes changent ; les autres ne sont pas redessinées.
+    const open = state.playlistOpen || "";
+    const affected = open === "auto:top" || open === "auto:history" || open === "auto:never";
+    const shown = state.view === "playlists" || (!el("sheet").hidden && el("pl-detail").isConnected);
+    if (shown) {
+      clearTimeout(playedRender);
+      playedRender = setTimeout(() => (affected ? renderPlaylists() : renderPlaylistCounts()), 400);
+    }
   });
   // Pochettes trouvées en ligne : posées sur place.
   await listen("tracks-updated", (event) => {

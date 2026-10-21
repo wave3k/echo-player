@@ -29,6 +29,8 @@ pub fn media_control(_app: &AppHandle, _action: &str) -> bool {
 
 pub fn save_now(_app: &AppHandle) {}
 
+pub fn visual_off(_app: &AppHandle) {}
+
 #[tauri::command]
 pub fn player_play(_ids: Vec<String>, _index: usize, _autoplay: bool, _start_ms: Option<u64>, _shuffle: bool, _repeat: String) {}
 

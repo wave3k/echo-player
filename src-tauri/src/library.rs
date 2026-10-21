@@ -293,7 +293,8 @@ fn save_cover(data: &[u8], mime: &str, covers_dir: &Path, covers: &mut HashMap<S
     let dest = covers_dir.join(&name);
     if !covers.contains_key(&name) {
         if !dest.exists() {
-            let _ = std::fs::write(&dest, data);
+            // Écriture atomique : une coupure ne laisse pas une image tronquée pour toujours.
+            let _ = crate::store::write_atomic(&dest, data);
         }
         covers.insert(name.clone(), dest);
     }

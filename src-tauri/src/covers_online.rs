@@ -563,6 +563,11 @@ async fn settle_deezer(client: &reqwest::Client, list: &mut [Candidate]) {
 /// Toutes les pochettes possibles, les meilleures d'abord. `thorough` : on interroge
 /// toutes les sources (fenêtre de choix) au lieu de s'arrêter à la première qui convient.
 async fn gather(client: &reqwest::Client, want: &Want, thorough: bool) -> Result<Vec<Candidate>, String> {
+    gather_all(client, want, thorough).await.map(|(list, _)| list)
+}
+
+/// Comme `gather`, et vrai en plus si une source n'a pas répondu (résultat partiel).
+async fn gather_all(client: &reqwest::Client, want: &Want, thorough: bool) -> Result<(Vec<Candidate>, bool), String> {
     let strict = !thorough;
     let floor = if thorough { LOOSE } else { AUTO };
     let mut list: Vec<Candidate> = Vec::new();
@@ -589,7 +594,7 @@ async fn gather(client: &reqwest::Client, want: &Want, thorough: bool) -> Result
         rank(&mut list, want.prefer);
         return match failure {
             Some(e) if list.is_empty() => Err(e),
-            _ => Ok(list),
+            _ => Ok((list, failure.is_some())),
         };
     }
     if thorough || !good(&list) {
@@ -623,7 +628,7 @@ async fn gather(client: &reqwest::Client, want: &Want, thorough: bool) -> Result
             return Err(e);
         }
     }
-    Ok(list)
+    Ok((list, failure.is_some()))
 }
 
 /// Télécharge une image (8 Mo au plus) et vérifie que c'en est bien une.
@@ -636,11 +641,13 @@ async fn fetch_image(client: &reqwest::Client, url: &str) -> Result<Option<(Vec<
     if !res.status().is_success() {
         return Err(format!("image : {}", res.status()));
     }
-    if res.content_length().is_some_and(|n| n > 8 * 1024 * 1024) {
+    // Après redirection (le Cover Art Archive renvoie vers archive.org), l'image doit
+    // toujours venir d'un des services connus.
+    if !image_host(res.url()) {
         return Ok(None);
     }
-    let bytes = res.bytes().await.map_err(|e| e.to_string())?;
-    if bytes.len() > 8 * 1024 * 1024 || bytes.len() < 200 {
+    let Some(bytes) = crate::lyrics::read_capped(res, 8 * 1024 * 1024).await? else { return Ok(None) };
+    if bytes.len() < 200 {
         return Ok(None);
     }
     let ext = match image::guess_format(&bytes) {
@@ -649,7 +656,15 @@ async fn fetch_image(client: &reqwest::Client, url: &str) -> Result<Option<(Vec<
         Ok(image::ImageFormat::WebP) => "webp",
         _ => return Ok(None),
     };
-    Ok(Some((bytes.to_vec(), ext)))
+    Ok(Some((bytes, ext)))
+}
+
+/// Hôtes d'où une image de pochette peut venir.
+fn image_host(url: &reqwest::Url) -> bool {
+    url.scheme() == "https"
+        && url.host_str().is_some_and(|h| {
+            h == "coverartarchive.org" || h == "archive.org" || h.ends_with(".archive.org") || h == "dzcdn.net" || h.ends_with(".dzcdn.net")
+        })
 }
 
 /// Range l'image dans le cache des pochettes, sous un nom tiré de son contenu.
@@ -722,18 +737,27 @@ pub async fn lookup(cache_dir: &Path, covers: &Path, want: &Want) -> Result<Opti
         return Ok(hit);
     }
     let client = crate::lyrics::client()?;
-    let list = gather(&client, want, false).await?;
+    let (list, partial) = gather_all(&client, want, false).await?;
     let mut found = None;
+    let mut image_failed = false;
     for c in list.iter().take(4) {
-        // Sortie sans image au Cover Art Archive : on passe à la suivante.
-        if let Some((bytes, ext)) = fetch_image(&client, &c.full).await? {
-            found = store_image(covers, &bytes, ext);
-            if found.is_some() {
-                break;
+        // Sortie sans image, ou image en panne : on passe à la suivante.
+        match fetch_image(&client, &c.full).await {
+            Ok(Some((bytes, ext))) => {
+                found = store_image(covers, &bytes, ext);
+                if found.is_some() {
+                    break;
+                }
             }
+            Ok(None) => {}
+            Err(_) => image_failed = true,
         }
     }
-    remember(cache_dir, want, found.as_deref());
+    // « Introuvable » n'est retenu que si toutes les sources ont répondu : sinon on
+    // réessaiera à la prochaine passe.
+    if found.is_some() || (!partial && !image_failed) {
+        remember(cache_dir, want, found.as_deref());
+    }
     Ok(found)
 }
 

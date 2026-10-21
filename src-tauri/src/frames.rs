@@ -20,6 +20,8 @@ pub enum Frame {
     None,
     /// Le système ne sait pas décoder cette vidéo (greffon manquant) : on réessaiera.
     Undecodable,
+    /// Trop lent cette fois (processeur occupé, disque endormi) : on réessaiera plus tard.
+    Later,
 }
 
 /// Points essayés, en fraction de la durée : le tiers évite le noir du début.
@@ -79,7 +81,13 @@ fn run(pipeline: &gst::Pipeline, sink: &gst::Element, width: usize, height: usiz
                 break;
             }
         }
-        let Some(rgb) = preroll(sink, width * height * 3) else { break };
+        let Some(rgb) = preroll(sink, width * height * 3) else {
+            // Aucune image obtenue à temps : ce n'est pas une vidéo sans image.
+            if best.is_none() {
+                return Frame::Later;
+            }
+            break;
+        };
         let light = brightness(&rgb);
         if best.as_ref().map(|(l, _)| light > *l).unwrap_or(true) {
             best = Some((light, rgb));
@@ -112,7 +120,8 @@ fn settle(bus: &gst::Bus) -> Result<(), Frame> {
             }
             _ => Err(Frame::None),
         },
-        None => Err(Frame::None),
+        // Délai dépassé : la vidéo n'est pas en cause, on réessaiera.
+        None => Err(Frame::Later),
     }
 }
 
@@ -189,6 +198,7 @@ fn essai_sur_un_dossier() {
             }
             Frame::None => "aucune".into(),
             Frame::Undecodable => "indécodable".into(),
+            Frame::Later => "plus tard".into(),
         };
         println!("{:>6} ms  {what:<16} {name}", t.elapsed().as_millis());
     }

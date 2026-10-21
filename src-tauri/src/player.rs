@@ -468,7 +468,9 @@ impl Player {
     /// elle-même la musique, comme avant.
     pub fn new(app: &AppHandle) -> Self {
         let ready = gst::init().is_ok()
-            && ["playbin", "equalizer-nbands", "level", "audiodynamic", "volume", "audioconvert"]
+            // Exactement les éléments de la chaîne d'un lecteur (Deck::open) : s'il en
+            // manque un, la page lit elle-même la musique au lieu d'échouer à chaque morceau.
+            && ["uridecodebin", "audioconvert", "audioresample", "equalizer-nbands", "level", "spectrum", "volume", "audiodynamic", "autoaudiosink"]
                 .iter()
                 .all(|f| gst::ElementFactory::find(f).is_some());
         if !ready || std::env::var_os("ECHO_WEB_AUDIO").is_some() {
@@ -615,7 +617,7 @@ impl Engine {
             self.begin_level(id.as_deref());
             // Appliqué tout de suite : le battement ne rattrape que les petits écarts.
             if let Some(d) = &self.deck {
-                d.norm.set_property("volume", self.norm_now);
+                set_volume(&d.norm, self.norm_now);
             }
         }
         if !self.loudness {
@@ -634,7 +636,7 @@ impl Engine {
         let limit = self.loudness || self.eq.iter().any(|g| *g != 0.0);
         for deck in [&self.deck, &self.outgoing].into_iter().flatten() {
             deck.set_eq(&self.eq, limit);
-            deck.master.set_property("volume", self.volume);
+            set_volume(&deck.master, self.volume);
             deck.master.set_property("mute", self.muted);
             // La mesure du niveau ne sert qu'au volume égal.
             deck.meter.set_property("post-messages", self.loudness);
@@ -645,7 +647,7 @@ impl Engine {
     fn begin_level(&mut self, id: Option<&str>) {
         self.measured = 0.0;
         self.samples = 0;
-        let known = id.and_then(|id| self.gains.get(id).copied());
+        let known = id.and_then(|id| self.gains.get(id).copied()).filter(|g| g.is_finite() && (MIN_GAIN..=MAX_GAIN).contains(g));
         self.norm_target = if self.loudness { known.unwrap_or(1.0) } else { self.eq_compensation() };
         self.norm_now = self.norm_target;
         self.norm_tau = 0.4;
@@ -696,11 +698,18 @@ impl Engine {
         self.fade_in = false;
         self.outgoing = None;
         if let Some(d) = &self.deck {
-            d.fade.set_property("volume", 1.0f64);
+            set_volume(&d.fade, 1.0f64);
         }
     }
 
     fn remember_gain(&mut self, id: String, gain: f64) {
+        if !gain.is_finite() {
+            return;
+        }
+        // Correction inchangée (à 0,5 % près) : rien à réécrire sur le disque.
+        if self.gains.get(&id).is_some_and(|g| (g - gain).abs() <= g.abs() * 0.005) {
+            return;
+        }
         if self.gains.insert(id.clone(), gain).is_none() {
             self.gains_order.push_back(id);
             while self.gains.len() > MAX_GAINS {
@@ -740,6 +749,10 @@ impl Engine {
             self.plan.index = index;
             let opened = match track_of(app, &id) {
                 Some(t) if t.has_audio => Deck::open(&t),
+                Some(t) if is_partial_download(&t.path) => Err(format!(
+                    "« {} » est sauté : téléchargement incomplet, ce fichier n'est que l'image du clip. Retélécharge-le.",
+                    t.title
+                )),
                 Some(t) => Err(format!("« {} » n'a pas de piste son (vidéo seule).", t.title)),
                 None => Err("Ce morceau n'est plus dans la bibliothèque.".into()),
             };
@@ -748,6 +761,12 @@ impl Engine {
                 Err(msg) => {
                     fx.push(Effect::Error(msg));
                     start_ms = None;
+                    // Réglage « passer au suivant en cas d'erreur » coupé : un morceau choisi
+                    // qui ne s'ouvre pas arrête la lecture (une vidéo sans son est toujours sautée).
+                    let silent = track_of(app, &id).is_some_and(|t| !t.has_audio);
+                    if !self.next_on_error && way != Way::Auto && !silent {
+                        break;
+                    }
                     let next = if way == Way::Back { self.plan.prev() } else { self.pick_after_failure() };
                     match next {
                         Some(i) if i != index => index = i,
@@ -774,7 +793,7 @@ impl Engine {
         }
         self.begin_level(Some(&id));
         if let Some(d) = &self.deck {
-            d.norm.set_property("volume", self.norm_now);
+            set_volume(&d.norm, self.norm_now);
         }
         self.apply_sound();
         self.playing = autoplay;
@@ -962,13 +981,13 @@ impl Engine {
         }
         self.flush_gains(fx);
         self.plan.index = i;
-        deck.fade.set_property("volume", 0.0f64);
+        set_volume(&deck.fade, 0.0f64);
         deck.announced = true;
         self.outgoing = self.deck.take();
         self.deck = Some(deck);
         self.begin_level(Some(&id));
         if let Some(d) = &self.deck {
-            d.norm.set_property("volume", self.norm_now);
+            set_volume(&d.norm, self.norm_now);
         }
         self.apply_sound();
         if let Some(d) = self.deck.as_mut() {
@@ -987,7 +1006,14 @@ impl Engine {
             return;
         }
         let Ok(rms) = s.get::<gst::glib::ValueArray>("rms") else { return };
-        let values: Vec<f64> = rms.iter().filter_map(|v| v.get::<f64>().ok()).map(|db| 10f64.powf(db / 20.0)).collect();
+        // GStreamer donne parfois « NaN » (tampon vide après un saut) : ignoré, sinon il
+        // empoisonnerait toute la correction (et la valeur gardée pour ce morceau).
+        let values: Vec<f64> = rms
+            .iter()
+            .filter_map(|v| v.get::<f64>().ok())
+            .map(|db| 10f64.powf(db / 20.0))
+            .filter(|v| v.is_finite())
+            .collect();
         if values.is_empty() {
             return;
         }
@@ -1000,6 +1026,11 @@ impl Engine {
         self.measured = if self.measured > 0.0 { self.measured * (1.0 - weight) + rms * weight } else { rms };
         // La mesure est prise avant la correction : on vise directement le bon gain.
         let wanted = (TARGET_RMS / self.measured).clamp(MIN_GAIN, MAX_GAIN);
+        if !wanted.is_finite() {
+            self.measured = 0.0;
+            self.samples = 0;
+            return;
+        }
         self.norm_target = wanted;
         self.norm_tau = if self.samples < 12 { 0.4 } else { 1.2 };
         if let Some(id) = self.deck.as_ref().map(|d| d.id.clone()) {
@@ -1011,7 +1042,13 @@ impl Engine {
     /// la durée n'est pas connue ; lent sinon.
     fn beat(&self) -> Duration {
         let unsettled = self.deck.as_ref().is_some_and(|d| {
-            !d.broken && (d.duration_ms == 0 || d.pending_seek.is_some() || d.seek_hold.is_some() || d.resume)
+            // Durée encore inconnue : battement rapide quelques secondes seulement (un fichier
+            // qui ne la donne jamais ne réveille pas le lecteur 20 fois par seconde en pause).
+            !d.broken
+                && ((d.duration_ms == 0 && d.opened.elapsed() < Duration::from_secs(5))
+                    || d.pending_seek.is_some()
+                    || d.seek_hold.is_some()
+                    || d.resume)
         });
         if (self.playing && self.deck.is_some()) || self.fade.is_some() || unsettled {
             FAST
@@ -1114,10 +1151,10 @@ impl Engine {
         if let Some((start, ms)) = self.fade {
             let k = (now.duration_since(start).as_millis() as f64 / ms as f64).min(1.0);
             if let (true, Some(d)) = (self.fade_in, &self.deck) {
-                d.fade.set_property("volume", k);
+                set_volume(&d.fade, k);
             }
             if let Some(d) = &self.outgoing {
-                d.fade.set_property("volume", 1.0 - k);
+                set_volume(&d.fade, 1.0 - k);
             }
             if k >= 1.0 {
                 self.fade = None;
@@ -1126,11 +1163,18 @@ impl Engine {
             }
         }
 
-        // Volume égal : la correction rejoint doucement sa cible.
+        // Volume égal : la correction rejoint doucement sa cible (une valeur devenue
+        // invalide repart d'une cible saine plutôt que de rester bloquée).
+        if !self.norm_target.is_finite() {
+            self.norm_target = 1.0;
+        }
+        if !self.norm_now.is_finite() {
+            self.norm_now = self.norm_target;
+        }
         if (self.norm_now - self.norm_target).abs() > 1e-3 {
             self.norm_now += (self.norm_target - self.norm_now) * (1.0 - (-dt / self.norm_tau).exp());
             if let Some(d) = &self.deck {
-                d.norm.set_property("volume", self.norm_now);
+                set_volume(&d.norm, self.norm_now);
             }
         }
 
@@ -1206,7 +1250,10 @@ fn with_engine(app: &AppHandle, f: impl FnOnce(&mut Engine, &mut Vec<Effect>)) -
 }
 
 fn run_effects(app: &AppHandle, fx: Vec<Effect>) {
-    for effect in fx {
+    // La page d'abord : le nouveau morceau s'affiche sans attendre la notification,
+    // les touches média ni Discord.
+    let (first, rest): (Vec<Effect>, Vec<Effect>) = fx.into_iter().partition(|e| matches!(e, Effect::Emit(_)));
+    for effect in first.into_iter().chain(rest) {
         match effect {
             Effect::Started(track) => crate::announce_track(app, &track),
             Effect::Playback(playing, pos) => crate::playback_changed(app, playing, pos),
@@ -1344,6 +1391,26 @@ pub fn player_step(app: AppHandle, delta: i32) {
 #[tauri::command]
 pub fn player_seek(app: AppHandle, ms: u64) {
     send(&app, Order::Seek(ms));
+}
+
+/// Règle un élément « volume » de GStreamer. Une valeur hors de ses bornes (0 à 10)
+/// ou invalide ferait échouer `set_property`, et le fil lecteur avec : elle est bornée,
+/// et une valeur invalide laisse le volume tel quel.
+fn set_volume(element: &gst::Element, value: f64) {
+    if value.is_finite() {
+        element.set_property("volume", value.clamp(0.0, 10.0));
+    }
+}
+
+/// Morceau intermédiaire de yt-dlp (« Titre.f616.webm ») : l'image sans le son.
+fn is_partial_download(path: &str) -> bool {
+    let name = Path::new(path).file_stem().and_then(|n| n.to_str()).unwrap_or("");
+    name.rsplit_once(".f").is_some_and(|(_, n)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// La page va disparaître (fenêtre rangée dans la barre) : plus de spectre à calculer.
+pub fn visual_off(app: &AppHandle) {
+    send(app, Order::Visual(false));
 }
 
 /// Le visualiseur s'affiche (ou disparaît) : le spectre n'est calculé que s'il est vu.

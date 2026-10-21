@@ -17,19 +17,19 @@
       </div>
 
       <nav class="nav" id="nav">
-        <button class="nav-item" data-view="listen">
+        <button class="nav-item" data-view="listen" aria-label="Écouter" title="Écouter">
           <span data-icon="home" data-size="17"></span><span>Écouter</span>
         </button>
-        <button class="nav-item" data-view="library">
+        <button class="nav-item" data-view="library" aria-label="Bibliothèque" title="Bibliothèque">
           <span data-icon="library" data-size="17"></span><span>Bibliothèque</span>
         </button>
-        <button class="nav-item" data-view="clips">
+        <button class="nav-item" data-view="clips" aria-label="Clips" title="Clips">
           <span data-icon="video" data-size="17"></span><span>Clips</span>
         </button>
-        <button class="nav-item" data-view="playlists">
+        <button class="nav-item" data-view="playlists" aria-label="Playlists" title="Playlists">
           <span data-icon="playlist" data-size="17"></span><span>Playlists</span>
         </button>
-        <button class="nav-item" data-view="settings">
+        <button class="nav-item" data-view="settings" aria-label="Réglages" title="Réglages">
           <span data-icon="settings" data-size="17"></span><span>Réglages</span>
         </button>
       </nav>
@@ -371,14 +371,14 @@
 
     <!-- Mini-fenêtre : le clip en cours reste à l'écran quand on change de section -->
     <div class="clip-mini" id="clip-mini" hidden>
-      <div class="clip-mini-frame" id="clip-mini-frame"></div>
+      <div class="clip-mini-frame" id="clip-mini-frame" role="button" tabindex="0" aria-label="Ouvrir les clips"></div>
       <div class="clip-mini-bar">
         <button type="button" class="icon-btn" id="clip-mini-open" title="Ouvrir les clips" aria-label="Ouvrir les clips"></button>
         <button type="button" class="icon-btn" id="clip-mini-close" title="Masquer la vidéo" aria-label="Masquer la vidéo"></button>
       </div>
     </div>
     <!-- La vidéo n'a jamais de son : la musique vient du lecteur, la vidéo s'y cale. -->
-    <video id="clip-video" muted playsinline preload="auto" disablepictureinpicture disableremoteplayback hidden></video>
+    <video id="clip-video" muted playsinline preload="metadata" disablepictureinpicture disableremoteplayback aria-hidden="true" hidden></video>
 
     <!-- Doublons : le même morceau en plusieurs fichiers, à masquer (rien n'est supprimé) -->
     <div class="edit-dialog dup-dialog" id="dup-dialog" role="dialog" aria-modal="true" aria-labelledby="dup-title" hidden>
