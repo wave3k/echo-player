@@ -4,7 +4,7 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 permissions:
@@ -25,10 +25,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          working-directory: src-tauri
+      - uses: dtolnay/rust-toolchain@stable
+      # cargo audit lit src-tauri/.cargo/audit.toml (avis ignorés et leur raison).
+      - name: Dépendances vulnérables
+        working-directory: src-tauri
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
 
   coeur:
     runs-on: ubuntu-22.04
