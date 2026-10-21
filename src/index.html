@@ -23,6 +23,9 @@
         <button class="nav-item" data-view="library">
           <span data-icon="library" data-size="17"></span><span>Bibliothèque</span>
         </button>
+        <button class="nav-item" data-view="clips">
+          <span data-icon="video" data-size="17"></span><span>Clips</span>
+        </button>
         <button class="nav-item" data-view="playlists">
           <span data-icon="playlist" data-size="17"></span><span>Playlists</span>
         </button>
@@ -48,6 +51,7 @@
       <section class="view" id="view-listen">
         <h2 class="view-title">Écouter</h2>
         <div class="listen-card">
+          <canvas class="visual visual-listen" id="visual-listen" aria-hidden="true"></canvas>
           <div class="listen-cover" id="listen-cover"></div>
           <div class="listen-info">
             <div class="listen-kicker">En cours de lecture</div>
@@ -102,13 +106,43 @@
         </div>
       </section>
 
-      <!-- Réglages -->
+      <!-- Clips : la vidéo du morceau en cours, calée sur le son, et la grille des clips -->
+      <section class="view" id="view-clips">
+        <div class="clips-panel" id="clips-panel">
+          <div class="view-head">
+            <h2 class="view-title">Clips</h2>
+            <div class="controls">
+              <label class="search">
+                <span data-icon="search" data-size="15"></span>
+                <input type="search" id="clip-search" aria-label="Rechercher un clip" placeholder="Rechercher un clip…" />
+              </label>
+            </div>
+          </div>
+          <div class="clip-scroll" id="clip-scroll">
+          <div class="clip-stage" id="clip-stage" hidden>
+            <div class="clip-frame" id="clip-frame"></div>
+            <div class="clip-info">
+              <div class="clip-text">
+                <div class="clip-title" id="clip-title"></div>
+                <div class="clip-artist" id="clip-artist"></div>
+              </div>
+              <button type="button" class="icon-btn" id="clip-full" title="Plein écran (F)" aria-label="Plein écran"></button>
+            </div>
+          </div>
+          <div class="clip-grid" id="clip-grid"></div>
+          </div>
+        </div>
+      </section>
+
       <!-- Playlists -->
       <section class="view" id="view-playlists">
         <div class="playlists-panel" id="playlists-panel">
           <div class="view-head">
             <h2 class="view-title">Playlists</h2>
             <div class="controls">
+              <button class="ghost-btn" id="btn-import-playlist" title="Importer des playlists M3U (VLC, foobar2000, Winamp…)">
+                <span data-icon="download" data-size="15"></span>Importer
+              </button>
               <button class="primary-btn" id="btn-new-playlist">
                 <span data-icon="plus" data-size="15"></span>Nouvelle playlist
               </button>
@@ -135,6 +169,7 @@
           <div class="mini-title" id="mini-title">Aucun morceau</div>
           <div class="mini-artist" id="mini-artist">—</div>
         </div>
+        <button class="ctl ctl-love" id="btn-love" aria-pressed="false" title="Ajouter aux favoris" aria-label="Ajouter aux favoris" disabled></button>
       </div>
 
       <div class="player-center">
@@ -213,6 +248,7 @@
         <button aria-label="Rechercher" class="icon-btn" id="dock-search" title="Rechercher"></button>
         <button aria-label="Bibliothèque" class="icon-btn" id="dock-library" title="Bibliothèque"></button>
         <button aria-label="Playlists" class="icon-btn" id="dock-playlists" title="Playlists"></button>
+        <button aria-label="Clips" class="icon-btn" id="dock-clips" title="Clips"></button>
         <button aria-label="Réglages" class="icon-btn" id="dock-settings" title="Réglages"></button>
         <button aria-label="Couper le son" class="icon-btn" id="dock-volume" title="Couper le son"></button>
       </div>
@@ -227,6 +263,7 @@
         </label>
         <div class="min-actions">
           <button aria-label="Clair ou sombre" class="icon-btn" id="min-theme" title="Clair ou sombre"></button>
+          <button aria-label="Clips" class="icon-btn" id="min-clips" title="Clips"></button>
           <button aria-label="Playlists" class="icon-btn" id="min-playlists" title="Playlists"></button>
           <button aria-label="Réglages" class="icon-btn" id="min-settings" title="Réglages"></button>
         </div>
@@ -276,6 +313,7 @@
       </header>
       <div class="lyr-bar" id="lyr-bar" hidden></div>
       <div class="lyr-body" id="lyr-body"></div>
+      <canvas class="visual visual-lyrics" id="visual-lyrics" aria-hidden="true"></canvas>
     </div>
 
     <!-- ================= mise à jour ================= -->
@@ -329,6 +367,31 @@
           <button type="submit" class="primary-btn" id="edit-save">Enregistrer</button>
         </div>
       </form>
+    </div>
+
+    <!-- Mini-fenêtre : le clip en cours reste à l'écran quand on change de section -->
+    <div class="clip-mini" id="clip-mini" hidden>
+      <div class="clip-mini-frame" id="clip-mini-frame"></div>
+      <div class="clip-mini-bar">
+        <button type="button" class="icon-btn" id="clip-mini-open" title="Ouvrir les clips" aria-label="Ouvrir les clips"></button>
+        <button type="button" class="icon-btn" id="clip-mini-close" title="Masquer la vidéo" aria-label="Masquer la vidéo"></button>
+      </div>
+    </div>
+    <!-- La vidéo n'a jamais de son : la musique vient du lecteur, la vidéo s'y cale. -->
+    <video id="clip-video" muted playsinline preload="auto" disablepictureinpicture disableremoteplayback hidden></video>
+
+    <!-- Doublons : le même morceau en plusieurs fichiers, à masquer (rien n'est supprimé) -->
+    <div class="edit-dialog dup-dialog" id="dup-dialog" role="dialog" aria-modal="true" aria-labelledby="dup-title" hidden>
+      <div class="edit-box dup-box">
+        <div class="edit-head">
+          <div>
+            <div class="modal-title" id="dup-title">Doublons</div>
+            <div class="cover-query">Un morceau masqué disparaît de la bibliothèque, mais son fichier reste sur le disque.</div>
+          </div>
+          <button type="button" class="icon-btn" id="dup-close" title="Fermer" aria-label="Fermer"></button>
+        </div>
+        <div class="dup-body" id="dup-body" aria-live="polite"></div>
+      </div>
     </div>
 
     <!-- Pochettes trouvées en ligne pour un morceau : on choisit celle qui convient -->

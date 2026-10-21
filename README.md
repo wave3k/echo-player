@@ -37,11 +37,15 @@ Tu lui montres un dossier, il joue tout ce qu'il contient.
 | | |
 |---|---|
 | 📁 **Bibliothèque** | Un ou plusieurs dossiers analysés en profondeur : titre, artiste, album, durée, pochette. Les nouveaux fichiers apparaissent tout seuls. Les analyses suivantes ne relisent que les fichiers modifiés. |
-| 🎬 **Vidéos musicales** | Les clips (webm, mp4, mkv) sont lus pour leur son. Leur pochette est une image tirée de la vidéo (sous Linux, une seule image décodée par GStreamer, en tâche de fond), et l'artiste est deviné dans le titre (« Artiste - Titre (Official Video) ft. Invité » → *Artiste* / *Titre (feat. Invité)*). Une vidéo téléchargée sans son est signalée « muet ». |
+| 🎞️ **Clips** | Une section pour regarder tes clips (webm, mp4, mkv) : la vidéo est calée sur le son, qui garde le fondu enchaîné, l'égaliseur et les touches média. En plein écran avec **F**, et dans une mini-fenêtre qui reste à l'écran quand tu changes de section (on la ferme d'un clic). La vidéo n'est décodée que quand elle est visible. L'artiste est deviné dans le titre (« Artiste - Titre (Official Video) ft. Invité » → *Artiste* / *Titre (feat. Invité)*). Un téléchargement incomplet de yt-dlp (« .f616.webm », l'image sans le son) est signalé. |
+| 🎤 **Featurings** | Les invités sont reconnus dans l'artiste (« Tiakola x Dave », « Ninho feat. Niska ») et dans le titre (« (feat. Dave) ») : chaque artiste a sa liste, featurings compris, et le clic droit sur un morceau mène à ses artistes. |
 | 🔊 **Son** | Volume égal (niveau des plateformes de streaming, sans saturer), égaliseur à 6 préréglages (Neutre, Basses, Rap, Voix, Aigus, Acoustique), fondu enchaîné de 3, 6 ou 10 s. |
 | 🎤 **Paroles** | Paroles synchronisées en plein écran (touche **L**) : la ligne chantée s'illumine, un clic sur une ligne y saute. Lues dans un fichier `.lrc` à côté du morceau, dans les tags du fichier, ou en ligne (à activer : seuls l'artiste, le titre et la durée sont envoyés) sur [LRCLIB](https://lrclib.net), base libre de paroles synchronisées, puis lyrics.ovh en secours (texte seul). Les noms de clips YouTube sont décomposés (« Tiakola x Dave - Meridian (Clip officiel) ») pour retrouver le bon morceau. Un clip plus long que le son (intro, scènes) se cale en un clic : on touche la ligne au moment où elle est chantée, et le calage est retenu. |
 | 🖼️ **Pochettes en ligne** | Pour les morceaux sans pochette, ou dont la pochette est une image de clip (à activer) : recherche sur [MusicBrainz](https://musicbrainz.org) et le [Cover Art Archive](https://coverartarchive.org), bases libres et sans compte, puis Deezer en secours. Une pochette n'est posée que si l'artiste, le titre et la durée correspondent, et jamais à la place d'une pochette choisie à la main. Au choix, celle de l'album ou celle du single (« Auto » : l'album s'il est dans les tags). Clic droit → « Chercher une pochette en ligne… » pour choisir parmi plusieurs propositions. |
-| 📃 **Playlists** | Crée tes playlists, ajoute un morceau par clic droit → « Ajouter à une playlist », lis-les dans l'ordre ou en aléatoire. |
+| 📃 **Playlists** | Crée tes playlists, ajoute un morceau par clic droit → « Ajouter à une playlist », lis-les dans l'ordre ou en aléatoire. Importe et exporte-les au format M3U (VLC, foobar2000, Winamp, baladeurs…) : une playlist venue d'un autre ordinateur est retrouvée par nom de fichier ou par « Artiste - Titre ». |
+| ❤️ **Favoris et listes automatiques** | Un cœur pour aimer un morceau, et des listes qui se remplissent seules : favoris, ajoutés récemment, les plus écoutés, écoutés récemment, jamais écoutés, et une liste par artiste. Une écoute compte après 30 secondes ; ces statistiques restent sur ta machine. |
+| 🌊 **Visualiseur** | Le son mis en image, en barres ou en onde, dans « Écouter » et derrière les paroles. Calculé seulement quand il est à l'écran. |
+| 🧹 **Doublons** | **Réglages → Bibliothèque → Trouver les doublons** : le même morceau en plusieurs fichiers (MP3 et FLAC, clip téléchargé deux fois…), avec le fichier de meilleure qualité signalé. Un doublon se masque d'un clic ; le fichier n'est jamais supprimé, et on peut le réafficher. |
 | 🔎 **Recherche et tri** | Recherche instantanée, sans tenir compte des accents. Tri par titre, artiste, album ou durée. Reste fluide avec des dizaines de milliers de morceaux. |
 | ▶️ **Lecture** | Aléatoire (chaque morceau passe une fois), répétition de la file ou d'un titre, reprise au morceau et à la position de la dernière fois. |
 | 🎨 **Trois dispositions** | **Normale** (bibliothèque et file d'attente), **Compacte** (pochettes en carrousel), **Minimaliste** (un album ouvert). S'adaptent aux fenêtres étroites des gestionnaires en mosaïque (Hyprland, Sway…). |
@@ -54,7 +58,6 @@ Tu lui montres un dossier, il joue tout ce qu'il contient.
 
 | | |
 |---|---|
-| 🎞️ **Clips** | Une section pour regarder les clips dans un lecteur vidéo fluide, avec une petite fenêtre qui reste à l'écran quand on change de section. |
 | 🎚️ **Studio de transitions** | Des transitions façon DJ entre les morceaux : tempo et temps analysés, plusieurs styles, réglage à la main sur la forme d'onde, et une transition par enchaînement dans les playlists. |
 
 ## Installation
@@ -97,6 +100,8 @@ Aucun droit administrateur n'est nécessaire : tout est installé dans `~/.local
 | `Espace` | Lecture / pause |
 | `Maj` + `→` / `←` | Morceau suivant / précédent |
 | `→` / `←` | Avancer / reculer de quelques secondes (5, 10 ou 30 s) |
+| `L` | Paroles en plein écran |
+| `F` | Clip en plein écran (section Clips) |
 | `Échap` | Fermer une fenêtre ou un panneau |
 | Touches média | Lecture, pause, suivant, précédent |
 | `Tab` | Déplacer le focus. Les barres de progression se règlent avec `←` / `→`. |
@@ -104,7 +109,7 @@ Aucun droit administrateur n'est nécessaire : tout est installé dans `~/.local
 ## Formats pris en charge
 
 mp3, flac, m4a, aac, ogg, opus, wav, aiff, wma, ainsi que d'autres formats moins courants (wv, ape, mpc…).
-Les conteneurs vidéo (mp4, webm, mkv, mov) sont lus pour leur **piste son uniquement**.
+Les conteneurs vidéo (mp4, webm, mkv, mov) sont lus pour leur son ; leur image s'affiche dans la section **Clips**.
 
 Tu peux choisir les formats dans **Réglages → Formats acceptés**. Le décodage passe par GStreamer : un format peu courant peut demander un greffon (`gst-plugins-good`, `gst-libav`).
 

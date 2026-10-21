@@ -34,6 +34,12 @@ pub struct Track {
     /// Version des règles de titres appliquées (voir `titles::VERSION`).
     #[serde(default)]
     pub parsed: u32,
+    /// Artistes principaux et invités (featurings), déduits de l'artiste et du titre
+    /// affichés. Calculés pour l'interface, jamais gardés dans le cache.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artists: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub featured: Vec<String>,
 }
 
 fn yes() -> bool {
@@ -50,6 +56,11 @@ pub fn is_video(path: &Path) -> bool {
 /// Nom du fichier de pochette tiré d'une vidéo : change avec le fichier.
 pub fn frame_name(id: &str, mtime: u64) -> String {
     format!("still-{:016x}-{mtime}.jpg", stable_hash(id.as_bytes()))
+}
+
+/// Affiche 16:9 d'un clip (grille des clips) : change avec le fichier.
+pub fn poster_name(id: &str, mtime: u64) -> String {
+    format!("poster-{:016x}-{mtime}.jpg", stable_hash(id.as_bytes()))
 }
 
 /// Pochettes « frame-… » des versions 1.1.0 : souvent noires (vidéos AV1), on les refait.
@@ -199,6 +210,8 @@ pub fn scan(
                 video: is_video(path),
                 no_frame: false,
                 parsed: crate::titles::VERSION,
+                artists: Vec::new(),
+                featured: Vec::new(),
             };
 
             let meta = match ext.as_str() {
@@ -395,6 +408,27 @@ pub(crate) mod tests {
     use lofty::picture::{MimeType, Picture, PictureType};
     use lofty::prelude::*;
     use lofty::tag::{Tag, TagType};
+
+    /// Un morceau minimal, pour les tests des autres modules.
+    pub fn track(path: &str, title: &str) -> Track {
+        Track {
+            id: path.into(),
+            path: path.into(),
+            title: title.into(),
+            artist: String::new(),
+            album: String::new(),
+            duration_ms: 0,
+            cover: None,
+            mtime: 1,
+            size: 1,
+            has_audio: true,
+            video: false,
+            no_frame: false,
+            parsed: crate::titles::VERSION,
+            artists: Vec::new(),
+            featured: Vec::new(),
+        }
+    }
 
     /// Un dossier temporaire propre à chaque test, effacé à la fin.
     pub struct TempDir(pub PathBuf);

@@ -10,6 +10,9 @@ use std::time::Duration;
 /// Côté de la pochette produite, en pixels.
 const SIDE: usize = 480;
 
+/// Affiche d'un clip (grille des clips) : 16:9, assez net pour une carte de 240 px.
+pub const POSTER: (usize, usize) = (480, 270);
+
 pub enum Frame {
     /// Image JPEG carrée, prise au centre de la vidéo.
     Image(Vec<u8>),
@@ -23,16 +26,21 @@ pub enum Frame {
 const POINTS: [f64; 4] = [0.33, 0.5, 0.18, 0.7];
 
 pub fn grab(path: &Path) -> Frame {
+    grab_sized(path, SIDE, SIDE)
+}
+
+/// Une image de la vidéo, recadrée au centre à `width`×`height`.
+pub fn grab_sized(path: &Path, width: usize, height: usize) -> Frame {
     if gst::init().is_err() {
         return Frame::Undecodable;
     }
     let Ok(uri) = gst::glib::filename_to_uri(path, None) else {
         return Frame::None;
     };
-    // Recadrage au carré et réduction avant la conversion : on ne convertit que 480×480 pixels.
+    // Recadrage et réduction avant la conversion : on ne convertit que les pixels gardés.
     let desc = format!(
-        "uridecodebin name=src ! aspectratiocrop aspect-ratio=1/1 ! videoscale ! videoconvert ! \
-         video/x-raw,format=RGB,width={SIDE},height={SIDE},pixel-aspect-ratio=1/1 ! \
+        "uridecodebin name=src ! aspectratiocrop aspect-ratio={width}/{height} ! videoscale ! videoconvert ! \
+         video/x-raw,format=RGB,width={width},height={height},pixel-aspect-ratio=1/1 ! \
          appsink name=sink sync=false max-buffers=1 drop=true"
     );
     let Ok(pipeline) = gst::parse::launch(&desc).map(|e| e.downcast::<gst::Pipeline>()) else {
@@ -43,12 +51,12 @@ pub fn grab(path: &Path) -> Frame {
         return Frame::Undecodable;
     };
     src.set_property("uri", uri.as_str());
-    let result = run(&pipeline, &sink);
+    let result = run(&pipeline, &sink, width, height);
     let _ = pipeline.set_state(gst::State::Null);
     result
 }
 
-fn run(pipeline: &gst::Pipeline, sink: &gst::Element) -> Frame {
+fn run(pipeline: &gst::Pipeline, sink: &gst::Element, width: usize, height: usize) -> Frame {
     if pipeline.set_state(gst::State::Paused).is_err() {
         return Frame::Undecodable;
     }
@@ -71,7 +79,7 @@ fn run(pipeline: &gst::Pipeline, sink: &gst::Element) -> Frame {
                 break;
             }
         }
-        let Some(rgb) = preroll(sink) else { break };
+        let Some(rgb) = preroll(sink, width * height * 3) else { break };
         let light = brightness(&rgb);
         if best.as_ref().map(|(l, _)| light > *l).unwrap_or(true) {
             best = Some((light, rgb));
@@ -81,7 +89,7 @@ fn run(pipeline: &gst::Pipeline, sink: &gst::Element) -> Frame {
             break;
         }
     }
-    match best.and_then(|(_, rgb)| jpeg(&rgb)) {
+    match best.and_then(|(_, rgb)| jpeg(&rgb, width, height)) {
         Some(bytes) => Frame::Image(bytes),
         None => Frame::None,
     }
@@ -108,14 +116,14 @@ fn settle(bus: &gst::Bus) -> Result<(), Frame> {
     }
 }
 
-/// L'image prête dans le collecteur, en RGB 480×480.
-fn preroll(sink: &gst::Element) -> Option<Vec<u8>> {
+/// L'image prête dans le collecteur, en RGB (`len` octets).
+fn preroll(sink: &gst::Element, len: usize) -> Option<Vec<u8>> {
     let wait = Duration::from_secs(5).as_nanos() as u64;
     let sample = sink.emit_by_name::<Option<gst::Sample>>("try-pull-preroll", &[&wait])?;
     let buffer = sample.buffer()?;
     let map = buffer.map_readable().ok()?;
     let data = map.as_slice();
-    (data.len() >= SIDE * SIDE * 3).then(|| data[..SIDE * SIDE * 3].to_vec())
+    (data.len() >= len).then(|| data[..len].to_vec())
 }
 
 /// Luminosité moyenne (0 à 255), mesurée sur un pixel sur 64.
@@ -133,10 +141,10 @@ fn brightness(rgb: &[u8]) -> f64 {
     }
 }
 
-fn jpeg(rgb: &[u8]) -> Option<Vec<u8>> {
+fn jpeg(rgb: &[u8], width: usize, height: usize) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     jpeg_encoder::Encoder::new(&mut out, 86)
-        .encode(rgb, SIDE as u16, SIDE as u16, jpeg_encoder::ColorType::Rgb)
+        .encode(rgb, width as u16, height as u16, jpeg_encoder::ColorType::Rgb)
         .ok()?;
     Some(out)
 }
@@ -153,7 +161,7 @@ mod tests {
 
     #[test]
     fn une_image_est_encodee_en_jpeg() {
-        let bytes = jpeg(&vec![120u8; SIDE * SIDE * 3]).unwrap();
+        let bytes = jpeg(&vec![120u8; SIDE * SIDE * 3], SIDE, SIDE).unwrap();
         assert_eq!(&bytes[..2], &[0xFF, 0xD8]);
     }
 

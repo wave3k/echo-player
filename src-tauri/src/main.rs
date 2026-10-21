@@ -3,6 +3,7 @@
 
 #[cfg(target_os = "linux")]
 mod audio_only;
+mod collection;
 mod covers_online;
 mod discord;
 #[cfg(target_os = "linux")]
@@ -274,6 +275,7 @@ struct Snapshot {
 }
 
 fn snapshot(settings: &store::Settings, data: &Data, overrides: &store::Overrides) -> Snapshot {
+    learn_solo_artists(&data.tracks, overrides);
     Snapshot {
         folders: settings.folders.clone(),
         folders_missing: settings
@@ -282,7 +284,12 @@ fn snapshot(settings: &store::Settings, data: &Data, overrides: &store::Override
             .filter(|f| !Path::new(f).is_dir())
             .cloned()
             .collect(),
-        tracks: data.tracks.iter().map(|t| with_override(t, overrides)).collect(),
+        tracks: data
+            .tracks
+            .iter()
+            .filter(|t| !overrides.get(&t.id).is_some_and(|o| o.hidden))
+            .map(|t| with_override(t, overrides))
+            .collect(),
     }
 }
 
@@ -303,7 +310,31 @@ fn with_override(track: &Track, overrides: &store::Overrides) -> Track {
             out.cover = Some(v.clone());
         }
     }
+    let solo = SOLO_ARTISTS.lock().unwrap();
+    let known = |name: &str| solo.contains(&artist_key(name));
+    (out.artists, out.featured) = titles::credits(&out.artist, &out.title, &known);
     out
+}
+
+/// Artistes qui ont au moins un morceau à leur seul nom : eux seuls permettent de couper
+/// « A & B » en deux artistes (voir `titles::credits`).
+static SOLO_ARTISTS: Mutex<std::collections::BTreeSet<String>> = Mutex::new(std::collections::BTreeSet::new());
+
+fn artist_key(name: &str) -> String {
+    name.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn learn_solo_artists(tracks: &[Track], overrides: &store::Overrides) {
+    let separators = [" x ", " & ", ",", ";", " feat", " ft.", " ft ", " et ", " and ", " vs"];
+    let mut solo = std::collections::BTreeSet::new();
+    for t in tracks {
+        let artist = overrides.get(&t.id).and_then(|o| o.artist.as_deref()).unwrap_or(&t.artist);
+        let lower = artist.to_lowercase();
+        if !lower.trim().is_empty() && !separators.iter().any(|s| lower.contains(s)) {
+            solo.insert(artist_key(artist));
+        }
+    }
+    *SOLO_ARTISTS.lock().unwrap() = solo;
 }
 
 /// Les morceaux du cache encore valables : ceux rangés dans un dossier choisi qui existe
@@ -1102,6 +1133,9 @@ static PROGRESS_PENDING: AtomicBool = AtomicBool::new(false);
 /// La progression est gardée en mémoire tout de suite, mais écrite au plus une fois
 /// toutes les 2 s ; `force` (pause, sortie) l'écrit sans attendre.
 fn save_progress_impl(app: &tauri::AppHandle, track_id: Option<String>, position_ms: u64, playing: bool, force: bool) {
+    if let Some(id) = &track_id {
+        count_listening(app, id, position_ms, playing);
+    }
     {
         let settings = app.state::<AppSettings>();
         let mut cfg = settings.0.lock().unwrap();
@@ -1342,6 +1376,58 @@ async fn grab_frame(app: tauri::AppHandle, id: String) -> Result<Grabbed, String
     }
 }
 
+/// Affiches de clips en cours de fabrication : une à la fois (une image 4K décodée
+/// coûte cher), les demandes suivantes attendent leur tour.
+#[cfg(target_os = "linux")]
+static POSTER_LOCK: Mutex<()> = Mutex::new(());
+
+/// Affiche 16:9 d'un clip pour la grille des clips (chemin sur le disque), faite au
+/// premier besoin puis gardée. `None` : pas d'image (ou système autre que Linux,
+/// où la grille montre la pochette).
+#[tauri::command]
+async fn clip_poster(app: tauri::AppHandle, id: String) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let (path, mtime) = {
+            let state = app.state::<AppData>();
+            let data = state.0.lock().unwrap();
+            let t = data.tracks.iter().find(|t| t.id == id && t.video)?;
+            (PathBuf::from(&t.path), t.mtime)
+        };
+        let covers = store::covers_dir(&cache_dir(&app));
+        let name = library::poster_name(&id, mtime);
+        let dest = covers.join(&name);
+        let none = covers.join(format!("{name}.none"));
+        offload_heavy(move || {
+            let _guard = POSTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            if dest.is_file() {
+                return Some(dest.to_string_lossy().into_owned());
+            }
+            if none.is_file() {
+                return None;
+            }
+            let (w, h) = frames::POSTER;
+            match frames::grab_sized(&path, w, h) {
+                frames::Frame::Image(bytes) => {
+                    store::write_atomic(&dest, &bytes).ok()?;
+                    Some(dest.to_string_lossy().into_owned())
+                }
+                frames::Frame::None => {
+                    let _ = std::fs::write(&none, b"");
+                    None
+                }
+                frames::Frame::Undecodable => None,
+            }
+        })
+        .await
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app, id);
+        None
+    }
+}
+
 /// Durée trouvée par le lecteur quand les tags n'en donnaient pas.
 #[tauri::command]
 fn set_duration(state: State<AppData>, id: String, duration_ms: u64) {
@@ -1349,6 +1435,217 @@ fn set_duration(state: State<AppData>, id: String, duration_ms: u64) {
     if let Some(track) = data.tracks.iter_mut().find(|t| t.id == id && t.duration_ms == 0) {
         track.duration_ms = duration_ms;
     }
+}
+
+/* ---------------- écoutes, favoris, doublons, M3U ---------------- */
+
+/// Écoutes et favoris (stats.json).
+struct AppStats(Mutex<store::Stats>);
+
+/// Morceau en cours d'écoute : dernière position vue, temps vraiment écouté, déjà compté.
+static LISTENING: Mutex<Option<(String, u64, u64, bool)>> = Mutex::new(None);
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Compte une écoute après 30 s vraiment écoutées (ou la moitié d'un morceau plus
+/// court). Les sauts ne comptent pas : seule l'avance normale de la lecture s'ajoute.
+fn count_listening(app: &tauri::AppHandle, id: &str, position_ms: u64, playing: bool) {
+    let reached = {
+        let mut slot = LISTENING.lock().unwrap();
+        let fresh = slot.as_ref().is_none_or(|(cur, ..)| cur != id);
+        if fresh {
+            *slot = Some((id.to_string(), position_ms, 0, false));
+            return;
+        }
+        let Some((_, last, listened, counted)) = slot.as_mut() else { return };
+        // Avance normale entre deux nouvelles (jusqu'à 20 s) : du temps écouté.
+        if playing && position_ms > *last && position_ms - *last <= 20_000 {
+            *listened += position_ms - *last;
+        }
+        *last = position_ms;
+        if *counted {
+            return;
+        }
+        let duration = app
+            .state::<AppData>()
+            .0
+            .lock()
+            .unwrap()
+            .tracks
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.duration_ms)
+            .unwrap_or(0);
+        let needed = if duration > 0 { (duration / 2).min(30_000) } else { 30_000 };
+        if *listened < needed {
+            return;
+        }
+        *counted = true;
+        true
+    };
+    if reached {
+        let plays = {
+            let state = app.state::<AppStats>();
+            let mut stats = state.0.lock().unwrap();
+            let entry = stats.plays.entry(id.to_string()).or_default();
+            entry.count += 1;
+            entry.last = now_secs();
+            let plays = *entry;
+            let _ = store::save_stats(&config_dir(app), &stats);
+            plays
+        };
+        let _ = app.emit("played", (id, plays));
+    }
+}
+
+#[tauri::command]
+fn get_stats(app: tauri::AppHandle) -> store::Stats {
+    app.state::<AppStats>().0.lock().unwrap().clone()
+}
+
+/// Aime (ou n'aime plus) un morceau. Renvoie la liste des favoris à jour.
+#[tauri::command]
+fn set_favorite(app: tauri::AppHandle, id: String, on: bool) -> Vec<String> {
+    let state = app.state::<AppStats>();
+    let mut stats = state.0.lock().unwrap();
+    stats.favorites.retain(|f| f != &id);
+    if on {
+        stats.favorites.insert(0, id);
+    }
+    let _ = store::save_stats(&config_dir(&app), &stats);
+    stats.favorites.clone()
+}
+
+/// Morceaux affichés (corrections comprises, masqués exclus).
+fn shown_tracks(app: &tauri::AppHandle) -> Vec<Track> {
+    let overrides = overrides_of(app);
+    let data = app.state::<AppData>();
+    let data = data.0.lock().unwrap();
+    data.tracks
+        .iter()
+        .filter(|t| !overrides.get(&t.id).is_some_and(|o| o.hidden))
+        .map(|t| with_override(t, &overrides))
+        .collect()
+}
+
+#[tauri::command]
+async fn find_duplicates(app: tauri::AppHandle) -> Vec<collection::DupGroup> {
+    offload(move || collection::duplicates(&shown_tracks(&app))).await
+}
+
+#[derive(Serialize)]
+struct HiddenTrack {
+    id: String,
+    title: String,
+    artist: String,
+    path: String,
+}
+
+#[tauri::command]
+fn hidden_tracks(app: tauri::AppHandle) -> Vec<HiddenTrack> {
+    let overrides = overrides_of(&app);
+    let data = app.state::<AppData>();
+    let data = data.0.lock().unwrap();
+    data.tracks
+        .iter()
+        .filter(|t| overrides.get(&t.id).is_some_and(|o| o.hidden))
+        .map(|t| {
+            let t = with_override(t, &overrides);
+            HiddenTrack { id: t.id, title: t.title, artist: t.artist, path: t.path }
+        })
+        .collect()
+}
+
+/// Masque (ou réaffiche) des morceaux de la bibliothèque. Les fichiers ne sont jamais
+/// touchés. Renvoie la bibliothèque à jour.
+#[tauri::command]
+async fn set_hidden(app: tauri::AppHandle, ids: Vec<String>, hidden: bool) -> Snapshot {
+    offload(move || {
+        {
+            let state = app.state::<AppOverrides>();
+            let mut map = state.0.lock().unwrap();
+            for id in &ids {
+                let entry = map.entry(id.clone()).or_default();
+                entry.hidden = hidden;
+                if entry.is_empty() {
+                    map.remove(id);
+                }
+            }
+            store::save_overrides(&config_dir(&app), &map);
+        }
+        let cfg = app.state::<AppSettings>().0.lock().unwrap().clone();
+        let overrides = overrides_of(&app);
+        let data = app.state::<AppData>();
+        let data = data.0.lock().unwrap();
+        snapshot(&cfg, &data, &overrides)
+    })
+    .await
+}
+
+/// Écrit une playlist au format M3U (UTF-8).
+#[tauri::command]
+async fn export_playlist(app: tauri::AppHandle, name: String, ids: Vec<String>, path: String) -> Result<usize, String> {
+    offload(move || {
+        let tracks = shown_tracks(&app);
+        let by_id: HashMap<&str, &Track> = tracks.iter().map(|t| (t.id.as_str(), t)).collect();
+        let list: Vec<&Track> = ids.iter().filter_map(|id| by_id.get(id.as_str()).copied()).collect();
+        let mut path = PathBuf::from(path);
+        if path.extension().is_none() {
+            path.set_extension("m3u8");
+        }
+        store::write_atomic(&path, collection::to_m3u(&name, &list).as_bytes())
+            .map_err(|e| format!("Impossible d'écrire ce fichier : {e}"))?;
+        Ok(list.len())
+    })
+    .await
+}
+
+#[derive(Serialize)]
+struct Imported {
+    playlists: Vec<store::Playlist>,
+    /// Une ligne par fichier : nom, morceaux trouvés, morceaux absents de la bibliothèque.
+    report: Vec<(String, usize, usize)>,
+}
+
+/// Importe des fichiers M3U / M3U8 comme nouvelles playlists.
+#[tauri::command]
+async fn import_playlists(app: tauri::AppHandle, paths: Vec<String>) -> Result<Imported, String> {
+    offload(move || {
+        let tracks = shown_tracks(&app);
+        let mut playlists = store::load_playlists(&config_dir(&app));
+        let mut report = Vec::new();
+        for path in paths {
+            let path = PathBuf::from(path);
+            let bytes = std::fs::read(&path).map_err(|e| format!("Fichier illisible : {e}"))?;
+            if bytes.len() > 8 * 1024 * 1024 {
+                return Err("Ce fichier est trop gros pour une playlist.".into());
+            }
+            // Les vieux .m3u sont souvent en Latin-1 : chaque octet devient son caractère.
+            let text = String::from_utf8(bytes.clone()).unwrap_or_else(|_| bytes.iter().map(|&b| b as char).collect());
+            let base = path.parent().unwrap_or(Path::new("/"));
+            let (name, entries) = collection::parse_m3u(&text, base);
+            let (ids, missing) = collection::match_entries(&entries, &tracks);
+            let name = name.unwrap_or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
+            report.push((name.clone(), ids.len(), missing));
+            if ids.is_empty() {
+                continue;
+            }
+            playlists.push(store::Playlist {
+                id: format!("pl-{:x}-{}", library::stable_hash(path.to_string_lossy().as_bytes()), now_secs()),
+                name,
+                tracks: ids,
+            });
+        }
+        let clean = store::sanitize_playlists(playlists);
+        store::save_playlists(&config_dir(&app), &clean);
+        Ok(Imported { playlists: clean, report })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1700,6 +1997,7 @@ fn main() {
         .manage(AppData(Mutex::new(Data::default())))
         .manage(AppSettings(Mutex::new(store::Settings::default())))
         .manage(AppOverrides(Mutex::new(store::Overrides::new())))
+        .manage(AppStats(Mutex::new(store::Stats::default())))
         .manage(ScanLock(Mutex::new(())))
         .setup(|app| {
             let handle = app.handle().clone();
@@ -1710,6 +2008,7 @@ fn main() {
             let settings = store::load_settings(&config_dir(&handle));
             let overrides = store::load_overrides(&config_dir(&handle));
             *handle.state::<AppOverrides>().0.lock().unwrap() = overrides.clone();
+            *handle.state::<AppStats>().0.lock().unwrap() = store::load_stats(&config_dir(&handle));
 
             app.manage(Services {
                 watch: Mutex::new(None),
@@ -1818,11 +2117,20 @@ fn main() {
             player::player_step,
             player::player_seek,
             player::player_volume,
+            player::player_visual,
             player::player_snapshot,
             bootstrap,
             get_state,
             cover_candidates,
             use_online_cover,
+            clip_poster,
+            get_stats,
+            set_favorite,
+            find_duplicates,
+            hidden_tracks,
+            set_hidden,
+            export_playlist,
+            import_playlists,
             set_settings,
             add_folder,
             remove_folder,
@@ -1899,6 +2207,8 @@ mod tests {
             video: false,
             no_frame: false,
             parsed: titles::VERSION,
+            artists: Vec::new(),
+            featured: Vec::new(),
         }
     }
 

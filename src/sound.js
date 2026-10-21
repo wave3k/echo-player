@@ -36,6 +36,7 @@ const Sound = (() => {
   let level = null; // correction du volume égal
   let master = null; // volume général
   let analyser = null;
+  let freq = null; // mesures du spectre (visualiseur)
   let levelTimer = null;
 
   let volume = 0.9;
@@ -188,6 +189,28 @@ const Sound = (() => {
       return native ? native.media : players[1 - active];
     },
     players,
+
+    /// Spectre du son pour le visualiseur : `out` reçoit des bandes de 0 à 1, de 40 Hz
+    /// à 16 kHz (échelle logarithmique, comme celles du lecteur du cœur). Faux sans
+    /// chaîne Web Audio.
+    spectrum(out) {
+      if (native || !graph() || !analyser) return false;
+      if (!freq || freq.length !== analyser.frequencyBinCount) freq = new Float32Array(analyser.frequencyBinCount);
+      analyser.getFloatFrequencyData(freq);
+      const hz = ctx.sampleRate / 2 / freq.length;
+      const n = out.length;
+      const ratio = Math.pow(16000 / 40, 1 / n);
+      const floor = -75;
+      for (let i = 0; i < n; i++) {
+        const f0 = 40 * Math.pow(ratio, i);
+        const a = Math.min(freq.length - 1, Math.floor(f0 / hz));
+        const b = Math.min(freq.length, Math.max(a + 1, Math.ceil((f0 * ratio) / hz)));
+        let db = floor;
+        for (let k = a; k < b; k++) db = Math.max(db, freq[k]);
+        out[i] = Math.min(1, Math.max(0, (db + (6 * i) / n - floor) / -floor));
+      }
+      return true;
+    },
 
     /// La musique passe par le cœur : plus de chaîne Web Audio, plus de lecteurs ici.
     useNative(bridge) {

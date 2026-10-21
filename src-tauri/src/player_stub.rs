@@ -48,6 +48,9 @@ pub fn player_seek(_ms: u64) {}
 pub fn player_volume(_volume: f64, _muted: bool) {}
 
 #[tauri::command]
+pub fn player_visual(_on: bool) {}
+
+#[tauri::command]
 pub fn player_snapshot() -> Option<Snapshot> {
     None
 }

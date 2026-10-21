@@ -257,9 +257,94 @@ fn tidy(text: &str) -> String {
         .to_string()
 }
 
+/* ---------------- crédits : artistes principaux et invités ---------------- */
+
+/// Coupe une liste de noms (« A, B & C », « A x B », « A et B »). `&`, « , » et « et »
+/// ne coupent que si `solo` reconnaît un des morceaux comme artiste à part entière :
+/// « Mumford & Sons » ou « Tyler, The Creator » restent entiers.
+fn split_names(text: &str, solo: &dyn Fn(&str) -> bool) -> Vec<String> {
+    // « x » entre deux espaces : la convention des collaborations, toujours coupée.
+    let mut parts: Vec<String> = vec![text.to_string()];
+    for sep in [" x ", ";", " / ", " vs. ", " vs "] {
+        parts = parts
+            .iter()
+            .flat_map(|p| split_ci(p, sep))
+            .collect();
+    }
+    let mut out = Vec::new();
+    for part in parts {
+        out.extend(split_soft(&part, solo));
+    }
+    out.into_iter().map(|n| tidy(&n)).filter(|n| !n.is_empty()).collect()
+}
+
+/// Coupe sur `&`, « , » et « et » seulement si un des morceaux est un artiste connu.
+fn split_soft(text: &str, solo: &dyn Fn(&str) -> bool) -> Vec<String> {
+    let mut pieces: Vec<String> = vec![text.to_string()];
+    for sep in [", ", " & ", " et ", " and "] {
+        pieces = pieces.iter().flat_map(|p| split_ci(p, sep)).collect();
+    }
+    if pieces.len() > 1 && pieces.iter().any(|p| solo(p.trim())) {
+        pieces
+    } else {
+        vec![text.to_string()]
+    }
+}
+
+/// Découpe sans tenir compte de la casse (« X » comme « x »).
+fn split_ci(text: &str, sep: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some((start, end)) = find_ci(rest, sep) {
+        out.push(rest[..start].to_string());
+        rest = &rest[end..];
+    }
+    out.push(rest.to_string());
+    out.into_iter().filter(|p| !p.trim().is_empty()).collect()
+}
+
+/// Artistes principaux et invités d'un morceau, d'après son artiste (« Tiakola x Dave »,
+/// « Ninho feat. Niska ») et son titre (« Meridian (feat. Dave) »). Les invités déjà
+/// cités comme artistes principaux ne sont pas répétés.
+pub fn credits(artist: &str, title: &str, solo: &dyn Fn(&str) -> bool) -> (Vec<String>, Vec<String>) {
+    let (main_part, mut guests_raw) = take_feat(artist);
+    let (_, title_guests) = take_feat(title);
+    guests_raw.extend(title_guests);
+    let main = split_names(&main_part, solo);
+    let key = |n: &str| n.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut featured: Vec<String> = Vec::new();
+    for raw in guests_raw {
+        // Les invités se séparent librement : une liste d'invités n'est jamais un nom de groupe.
+        for name in split_names(&raw, &|_| true) {
+            if !main.iter().chain(featured.iter()).any(|m| key(m) == key(&name)) {
+                featured.push(name);
+            }
+        }
+    }
+    (main, featured)
+}
+
 #[cfg(test)]
 mod tests {
     use super::guess;
+
+    #[test]
+    fn les_featurings_sont_detectes() {
+        let solo = |n: &str| ["Dave", "Niska", "Ninho", "SZA"].contains(&n);
+        let c = |a: &str, t: &str| super::credits(a, t, &solo);
+        assert_eq!(c("Tiakola x Dave", "Meridian"), (vec!["Tiakola".into(), "Dave".into()], vec![]));
+        assert_eq!(c("Tiakola", "Meridian (feat. Dave)"), (vec!["Tiakola".into()], vec!["Dave".into()]));
+        assert_eq!(c("Ninho feat. Niska", "Goutte"), (vec!["Ninho".into()], vec!["Niska".into()]));
+        assert_eq!(c("21 Savage", "a lot (feat. J. Cole)"), (vec!["21 Savage".into()], vec!["J. Cole".into()]));
+        assert_eq!(c("Kendrick Lamar", "luther (feat. SZA & Kid Cudi)").1, vec!["SZA".to_string(), "Kid Cudi".to_string()]);
+        // « & » et « , » sans artiste connu de part et d'autre : un seul nom.
+        assert_eq!(c("Mumford & Sons", "The Cave").0, vec!["Mumford & Sons".to_string()]);
+        assert_eq!(c("Tyler, The Creator", "EARFQUAKE").0, vec!["Tyler, The Creator".to_string()]);
+        assert_eq!(c("Ninho & Niska", "Goutte").0, vec!["Ninho".to_string(), "Niska".to_string()]);
+        // Un invité déjà artiste principal n'est pas répété.
+        assert_eq!(c("Tiakola x Dave", "Meridian (feat. Dave)").1, Vec::<String>::new());
+        assert_eq!(c("Malcolm X", "Speech").0, vec!["Malcolm X".to_string()]);
+    }
 
     /// Les vrais noms de fichiers de la bibliothèque de l'utilisateur.
     #[test]

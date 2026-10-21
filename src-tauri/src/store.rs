@@ -65,6 +65,8 @@ pub struct Settings {
     pub covers_online: bool,
     /// Pochette voulue : "auto" (album s'il est dans les tags, sinon single), "album" ou "single".
     pub covers_prefer: String,
+    /// Visualiseur : "bars" (barres), "wave" (onde) ou "off".
+    pub visualizer: String,
 
     pub volume: u32,
     pub last_track: Option<String>,
@@ -111,6 +113,7 @@ impl Default for Settings {
             lyrics_online: false,
             covers_online: false,
             covers_prefer: "auto".into(),
+            visualizer: "bars".into(),
             volume: 90,
             last_track: None,
             last_position_ms: 0,
@@ -148,6 +151,7 @@ impl Settings {
         pick(&mut self.eq, &["flat", "bass", "vocal", "treble", "rap", "acoustic"], "flat");
         pick(&mut self.updates, &["auto", "notify", "off"], "auto");
         pick(&mut self.covers_prefer, &["auto", "album", "single"], "auto");
+        pick(&mut self.visualizer, &["bars", "wave", "off"], "bars");
         if !matches!(self.crossfade, 0 | 3 | 6 | 10) {
             self.crossfade = 0;
         }
@@ -338,12 +342,15 @@ pub struct TrackOverride {
     /// La pochette trouvée en ligne a été retirée : on n'en cherche plus pour ce morceau.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub no_online: bool,
+    /// Morceau masqué de la bibliothèque (doublon) : le fichier reste sur le disque.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 impl TrackOverride {
     /// Rien à garder : l'entrée peut disparaître.
     pub fn is_empty(&self) -> bool {
-        self.title.is_none() && self.artist.is_none() && self.album.is_none() && self.cover.is_none() && !self.no_online
+        self.title.is_none() && self.artist.is_none() && self.album.is_none() && self.cover.is_none() && !self.no_online && !self.hidden
     }
 }
 
@@ -526,6 +533,34 @@ mod tests {
         save_overrides(&tmp.0, &map);
         assert_eq!(load_overrides(&tmp.0)["/m/a.mp3"].title.as_deref(), Some("Nouveau"));
     }
+}
+
+/// Écoutes d'un morceau.
+#[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Debug)]
+#[serde(default)]
+pub struct Plays {
+    pub count: u32,
+    /// Dernière écoute (secondes depuis 1970).
+    pub last: u64,
+}
+
+/// Statistiques d'écoute et favoris (stats.json), pour les playlists automatiques.
+/// Rien ne quitte l'ordinateur.
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
+#[serde(default)]
+pub struct Stats {
+    pub plays: HashMap<String, Plays>,
+    /// Morceaux aimés, le plus récent en premier.
+    pub favorites: Vec<String>,
+}
+
+pub fn load_stats(dir: &Path) -> Stats {
+    load_json(&dir.join("stats.json")).unwrap_or_default()
+}
+
+pub fn save_stats(dir: &Path, stats: &Stats) -> std::io::Result<()> {
+    let json = serde_json::to_vec(stats).map_err(std::io::Error::other)?;
+    write_atomic(&dir.join("stats.json"), &json)
 }
 
 /// Une liste de lecture : un nom et des morceaux (par identifiant), dans l'ordre.

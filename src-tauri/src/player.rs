@@ -16,7 +16,7 @@ use gstreamer::prelude::*;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -54,6 +54,13 @@ const SEEK_HOLD: Duration = Duration::from_millis(300);
 /// Un saut demandé avant l'ouverture qui n'a toujours pas pu se faire est abandonné.
 const SEEK_GIVE_UP: Duration = Duration::from_secs(8);
 
+/// Un visualiseur est à l'écran : le spectre est calculé et envoyé à la page.
+static VISUAL: AtomicBool = AtomicBool::new(false);
+/// Bandes envoyées à la page, de 40 Hz à 16 kHz (échelle logarithmique, comme l'oreille).
+const VISUAL_BANDS: usize = 32;
+/// Plancher du spectre, en dB : en dessous, une bande est éteinte.
+const VISUAL_FLOOR: f32 = -75.0;
+
 /// Numéro des statuts : la page ignore ceux qui arrivent après un plus récent.
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -67,6 +74,7 @@ struct Deck {
     pipe: gst::Pipeline,
     eq: gst::Element,
     meter: gst::Element,
+    spec: gst::Element,
     master: gst::Element,
     norm: gst::Element,
     fade: gst::Element,
@@ -111,6 +119,7 @@ impl Deck {
             "audioconvert ! audioresample ! audio/x-raw,format=F32LE \
              ! equalizer-nbands name=eq num-bands=5 \
              ! level name=meter interval=250000000 post-messages=false \
+             ! spectrum name=spec bands=512 threshold=-75 interval=50000000 post-messages=false \
              ! volume name=norm ! volume name=fade ! volume name=master \
              ! audiodynamic name=limiter characteristics=hard-knee mode=compressor threshold=0.84 \
              ! audioconvert ! autoaudiosink",
@@ -129,6 +138,7 @@ impl Deck {
         let deck = Deck {
             eq: get("eq")?,
             meter: get("meter")?,
+            spec: get("spec")?,
             master: get("master")?,
             norm: get("norm")?,
             fade: get("fade")?,
@@ -144,6 +154,7 @@ impl Deck {
             broken: false,
             opened: Instant::now(),
         };
+        deck.spec.set_property("post-messages", VISUAL.load(Ordering::Relaxed));
         if let Some(proxy) = deck.eq.dynamic_cast_ref::<gst::ChildProxy>() {
             for (i, freq) in BANDS.iter().enumerate() {
                 if let Some(band) = proxy.child_by_index(i as u32) {
@@ -361,6 +372,8 @@ enum Effect {
     Save { id: String, position_ms: u64, playing: bool, force: bool },
     Gains(HashMap<String, f64>),
     Emit(Status),
+    /// Spectre du son (visualiseur), de 0 à 255 par bande.
+    Spectrum(Vec<u8>),
     Error(String),
 }
 
@@ -379,6 +392,8 @@ enum Order {
     Skip(i64),
     Volume(f64, bool),
     Configure(Box<crate::store::Settings>),
+    /// Visualiseur affiché ou non.
+    Visual(bool),
 }
 
 struct Request {
@@ -578,6 +593,12 @@ impl Engine {
                 self.apply_sound();
             }
             Order::Configure(settings) => self.configure(&settings),
+            Order::Visual(on) => {
+                VISUAL.store(on, Ordering::Relaxed);
+                for d in self.deck.iter().chain(self.outgoing.iter()) {
+                    d.spec.set_property("post-messages", on);
+                }
+            }
         }
     }
 
@@ -1012,6 +1033,7 @@ impl Engine {
         let mut async_done = false;
         let mut duration_changed = false;
         let mut levels = Vec::new();
+        let mut spectrum: Option<gst::Structure> = None;
         if let Some(d) = &self.deck {
             if d.broken {
                 d.drain();
@@ -1022,11 +1044,11 @@ impl Engine {
                         gst::MessageView::Error(e) => failed = Some(e.error().to_string()),
                         gst::MessageView::AsyncDone(_) => async_done = true,
                         gst::MessageView::DurationChanged(_) => duration_changed = true,
-                        gst::MessageView::Element(e) => {
-                            if let Some(s) = e.structure().filter(|s| s.name() == "level") {
-                                levels.push(s.to_owned());
-                            }
-                        }
+                        gst::MessageView::Element(e) => match e.structure() {
+                            Some(s) if s.name() == "level" => levels.push(s.to_owned()),
+                            Some(s) if s.name() == "spectrum" => spectrum = Some(s.to_owned()),
+                            _ => {}
+                        },
                         _ => {}
                     }
                 }
@@ -1038,6 +1060,20 @@ impl Engine {
         }
         for s in &levels {
             self.on_level(s);
+        }
+        // Seul le dernier spectre compte : la page n'affiche que le plus récent.
+        if let Some(s) = spectrum.filter(|_| VISUAL.load(Ordering::Relaxed)) {
+            // Fréquence d'échantillonnage du fichier (44,1 ou 48 kHz) : elle place les bandes.
+            let rate = self
+                .deck
+                .as_ref()
+                .and_then(|d| d.spec.static_pad("sink"))
+                .and_then(|p| p.current_caps())
+                .and_then(|c| c.structure(0).and_then(|st| st.get::<i32>("rate").ok()))
+                .unwrap_or(48_000);
+            if let Some(bands) = visual_bands(&s, rate as f32) {
+                fx.push(Effect::Spectrum(bands));
+            }
         }
         // Un fichier qui s'ouvre bien remet le compte des erreurs à zéro.
         if async_done {
@@ -1188,6 +1224,9 @@ fn run_effects(app: &AppHandle, fx: Vec<Effect>) {
             Effect::Error(msg) => {
                 let _ = app.emit("player-error", msg);
             }
+            Effect::Spectrum(bands) => {
+                let _ = app.emit("spectrum", bands);
+            }
         }
     }
 }
@@ -1307,6 +1346,41 @@ pub fn player_seek(app: AppHandle, ms: u64) {
     send(&app, Order::Seek(ms));
 }
 
+/// Le visualiseur s'affiche (ou disparaît) : le spectre n'est calculé que s'il est vu.
+#[tauri::command]
+pub fn player_visual(app: AppHandle, on: bool) {
+    send(&app, Order::Visual(on));
+}
+
+/// Regroupe les 512 bandes linéaires de GStreamer en bandes logarithmiques (de 0 à 255).
+fn visual_bands(s: &gst::StructureRef, rate: f32) -> Option<Vec<u8>> {
+    let list = s.get::<gst::List>("magnitude").ok()?;
+    let mags: Vec<f32> = list.iter().filter_map(|v| v.get::<f32>().ok()).collect();
+    if mags.is_empty() {
+        return None;
+    }
+    Some(group_bands(&mags, rate))
+}
+
+fn group_bands(mags: &[f32], rate: f32) -> Vec<u8> {
+    let hz_per_bin = rate / 2.0 / mags.len() as f32;
+    let (lo, hi) = (40.0f32, 16_000.0f32);
+    let ratio = (hi / lo).powf(1.0 / VISUAL_BANDS as f32);
+    (0..VISUAL_BANDS)
+        .map(|i| {
+            let f0 = lo * ratio.powi(i as i32);
+            let f1 = f0 * ratio;
+            let a = ((f0 / hz_per_bin) as usize).min(mags.len() - 1);
+            let b = ((f1 / hz_per_bin).ceil() as usize).clamp(a + 1, mags.len());
+            let db = mags[a..b].iter().copied().fold(VISUAL_FLOOR, f32::max);
+            // Les aigus portent moins d'énergie : un léger relevé équilibre l'affichage.
+            let tilt = 6.0 * i as f32 / VISUAL_BANDS as f32;
+            let v = ((db + tilt - VISUAL_FLOOR) / -VISUAL_FLOOR).clamp(0.0, 1.0);
+            (v * 255.0).round() as u8
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub fn player_volume(app: AppHandle, volume: f64, muted: bool) {
     send(&app, Order::Volume(volume, muted));
@@ -1330,6 +1404,18 @@ pub fn player_snapshot(app: AppHandle) -> Option<Snapshot> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn le_spectre_est_regroupe_en_bandes() {
+        // 512 bandes linéaires : du silence, sauf une basse vers 100 Hz.
+        let mut mags = vec![-80.0f32; 512];
+        mags[2] = -10.0;
+        let bands = super::group_bands(&mags, 48_000.0);
+        assert_eq!(bands.len(), super::VISUAL_BANDS);
+        let loud = bands.iter().enumerate().max_by_key(|(_, v)| **v).map(|(i, _)| i).unwrap();
+        assert!(loud < 8, "la basse est à gauche : {bands:?}");
+        assert!(bands[super::VISUAL_BANDS - 1] < 30, "les aigus restent éteints");
+    }
+
     use super::*;
 
     fn plan(n: usize, index: usize, shuffle: bool, repeat: &str) -> Plan {
