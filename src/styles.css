@@ -1214,20 +1214,30 @@ body[data-anim="off"] .lyr-line { transition: none; }
 .sheet .clips-panel .view-title { display: none; }
 .sheet .clips-panel .view-head { justify-content: flex-end; }
 
-.clip-stage { margin-bottom: 22px; }
+.clip-stage { flex: none; margin-bottom: 18px; }
 .clip-stage[hidden] { display: none; }
+/* Emplacement de la scène : le lecteur vidéo vient se poser dessus. */
 .clip-frame {
-  position: relative; width: min(100%, calc((100vh - 280px) * 16 / 9)); aspect-ratio: 16 / 9;
+  position: relative; width: min(100%, calc((100vh - 400px) * 16 / 9)); aspect-ratio: 16 / 9;
   min-width: 240px; margin: 0 auto; border-radius: var(--radius-md); overflow: hidden;
   background: #000; box-shadow: var(--glow);
 }
 .clip-frame video, .clip-mini-frame video {
   position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000;
 }
-.clip-frame:fullscreen { width: 100vw; height: 100vh; border-radius: 0; aspect-ratio: auto; }
+/* Le lecteur posé sur la scène : mêmes coins, ni barre ni animation, au-dessus des
+   feuilles (la scène peut être dans une feuille) mais sous menus et dialogues. */
+.clip-mini.on-stage {
+  right: auto; bottom: auto; z-index: 41; border: 0; box-shadow: none; animation: none;
+}
+.clip-mini.on-stage .clip-mini-bar { display: none; }
+.clip-mini.on-stage .clip-mini-frame { width: 100%; height: 100%; aspect-ratio: auto; cursor: default; }
+.clip-mini:fullscreen { inset: 0; width: 100vw !important; height: 100vh !important; border-radius: 0; }
+.clip-mini:fullscreen .clip-mini-frame { width: 100%; height: 100%; aspect-ratio: auto; }
+.clip-mini:fullscreen .clip-mini-bar { display: none; }
 .clip-info {
   display: flex; align-items: center; gap: 12px;
-  width: min(100%, calc((100vh - 280px) * 16 / 9)); min-width: 240px; margin: 12px auto 0;
+  width: min(100%, calc((100vh - 400px) * 16 / 9)); min-width: 240px; margin: 12px auto 0;
 }
 .clip-text { flex: 1; min-width: 0; }
 .clip-title { font-size: 1.05rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1259,7 +1269,8 @@ body[data-anim="off"] .lyr-line { transition: none; }
 
 /* Mini-fenêtre : au-dessus de la barre de lecture, à droite. */
 .clip-mini {
-  position: fixed; right: 18px; bottom: 96px; z-index: 45; width: 300px;
+  /* Sous les feuilles (40), menus et fenêtres de dialogue : elle ne cache jamais un réglage. */
+  position: fixed; right: 18px; bottom: 96px; z-index: 36; width: 300px;
   border-radius: var(--radius-md); overflow: hidden; background: #000;
   border: 1px solid var(--line2); box-shadow: 0 18px 44px rgba(0, 0, 0, .45);
 }

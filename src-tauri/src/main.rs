@@ -2014,7 +2014,8 @@ fn queue_thumbs(app: &tauri::AppHandle, items: Vec<(String, PathBuf)>) {
 /// Réglages du moteur d'affichage à poser avant d'ouvrir la fenêtre.
 fn prepare_webview_env() {
     // Pilote NVIDIA propriétaire : le rendu DMA-BUF de WebKitGTK donne souvent une
-    // fenêtre vide. Le rendu classique marche partout ; un réglage déjà posé est respecté.
+    // fenêtre vide. Ailleurs il est gardé : sans lui, une vidéo 4K coûte presque un cœur
+    // de plus (mesuré sur un i5 de 7e génération). Un réglage déjà posé est respecté.
     #[cfg(target_os = "linux")]
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
         && Path::new("/proc/driver/nvidia/version").exists()

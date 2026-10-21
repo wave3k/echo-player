@@ -2709,6 +2709,7 @@ function clipPlace() {
 
 function updateClipVideo() {
   const video = el("clip-video");
+  const layer = el("clip-mini");
   const track = currentTrack();
   const place = clipPlace();
   el("clip-stage").hidden = !isClip(track);
@@ -2716,11 +2717,11 @@ function updateClipVideo() {
     setText(el("clip-title"), track.title);
     setText(el("clip-artist"), track.artist || "—");
   }
-  el("clip-mini").hidden = place !== "mini";
   // La vidéo quitte la scène : le plein écran (qui ne montrerait plus que du noir) aussi.
   if (place !== "stage" && document.fullscreenElement) document.exitFullscreen().catch(() => {});
   renderClips();
   if (!place) {
+    layer.hidden = true;
     stopClipSync();
     if (clipShownId) {
       clipShownId = null;
@@ -2729,28 +2730,72 @@ function updateClipVideo() {
       video.removeAttribute("poster");
       video.load();
     }
-    video.hidden = true;
     return;
   }
   if (place === "parked") {
+    layer.hidden = true;
     stopClipSync();
     video.pause();
-    video.hidden = true;
     return;
   }
-  const host = place === "stage" ? el("clip-frame") : el("clip-mini-frame");
-  if (video.parentElement !== host) host.appendChild(video);
-  video.hidden = false;
+  // Le lecteur ne change jamais de place dans la page : seule sa position change.
+  layer.classList.toggle("on-stage", place === "stage");
+  if (place === "stage") followStage(450);
+  else clearStageGeometry();
+  layer.hidden = false;
   if (clipShownId !== track.id) {
     clipShownId = track.id;
+    clipSync.lastFix = 0;
+    // Pendant le chargement, l'affiche (ou la pochette) plutôt qu'un cadre noir.
     const poster = clipPosters.get(track.id);
     if (poster) video.poster = poster;
-    else video.removeAttribute("poster");
-    clipSync.lastFix = 0;
+    else {
+      video.removeAttribute("poster");
+      if (track.cover) {
+        const id = track.id;
+        coverSrc(track.cover).then((url) => {
+          if (url && clipShownId === id && !video.getAttribute("poster")) video.poster = url;
+        });
+      }
+    }
     video.src = mediaSrc(track.path);
   }
   startClipSync();
   syncClip();
+}
+
+/// Pose le lecteur exactement sur l'emplacement de la scène.
+function placeOnStage() {
+  const layer = el("clip-mini");
+  if (!layer.classList.contains("on-stage") || document.fullscreenElement) return;
+  const r = el("clip-frame").getBoundingClientRect();
+  if (!r.width || !r.height) {
+    layer.style.visibility = "hidden";
+    return;
+  }
+  layer.style.visibility = "";
+  layer.style.left = `${r.left}px`;
+  layer.style.top = `${r.top}px`;
+  layer.style.width = `${r.width}px`;
+  layer.style.height = `${r.height}px`;
+}
+
+/// Suit l'emplacement pendant une transition (feuille qui glisse, vue qui apparaît).
+let stageFollow = 0;
+function followStage(ms) {
+  const until = performance.now() + ms;
+  cancelAnimationFrame(stageFollow);
+  const tick = () => {
+    placeOnStage();
+    if (performance.now() < until) stageFollow = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function clearStageGeometry() {
+  cancelAnimationFrame(stageFollow);
+  const layer = el("clip-mini");
+  for (const k of ["left", "top", "width", "height", "visibility"]) layer.style[k] = "";
 }
 
 /// Cale la vidéo sur le son. La vidéo défile librement : changer sa vitesse ou la
@@ -2809,9 +2854,8 @@ function stopClipSync() {
 }
 
 function toggleClipFullscreen() {
-  const frame = el("clip-frame");
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-  else if (!el("clip-stage").hidden && clipsPanelShown()) frame.requestFullscreen().catch(() => toast("Plein écran indisponible."));
+  else if (!el("clip-stage").hidden && clipsPanelShown()) el("clip-mini").requestFullscreen().catch(() => toast("Plein écran indisponible."));
 }
 
 function openClips() {
@@ -2822,7 +2866,6 @@ function openClips() {
   } else {
     openSheet(el("clips-panel"), "Clips");
   }
-  clipsShown = "";
   updateClipVideo();
 }
 
@@ -2860,7 +2903,17 @@ function bindClips() {
     updateClipVideo();
   });
   const mini = el("clip-mini-frame");
-  mini.addEventListener("click", openClips);
+  // Un clic sur la mini-fenêtre ouvre les clips (posée sur la scène, il ne fait rien).
+  mini.addEventListener("click", () => {
+    if (!el("clip-mini").classList.contains("on-stage")) openClips();
+  });
+  // L'emplacement de la scène bouge (fenêtre redimensionnée, sortie du plein écran) :
+  // le lecteur suit.
+  new ResizeObserver(() => placeOnStage()).observe(el("clip-frame"));
+  window.addEventListener("resize", () => placeOnStage());
+  document.addEventListener("fullscreenchange", () => {
+    if (!document.fullscreenElement) followStage(300);
+  });
   mini.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
