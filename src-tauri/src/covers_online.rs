@@ -677,6 +677,68 @@ fn store_image(covers: &Path, bytes: &[u8], ext: &str) -> Option<String> {
     Some(name)
 }
 
+/* ---------------- photos d'artistes ---------------- */
+
+#[derive(Deserialize)]
+struct DzArtistPicture {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    picture_big: Option<String>,
+}
+
+/// Dossier des photos d'artistes, dans le cache des pochettes.
+pub fn artists_dir(covers: &Path) -> PathBuf {
+    let dir = covers.join("artists");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// Photo d'un artiste, cherchée sur Deezer une seule fois puis gardée. Seul un artiste
+/// au nom identique (sans accents ni majuscules) est retenu : mieux vaut pas de photo
+/// que celle d'un homonyme. Un artiste introuvable n'est recherché qu'au bout de 30 jours.
+pub async fn artist_photo(dir: &Path, name: &str) -> Result<Option<PathBuf>, String> {
+    let key = fold(name);
+    if key.trim().is_empty() {
+        return Ok(None);
+    }
+    let base = format!("{:016x}", crate::library::stable_hash(key.as_bytes()));
+    for ext in ["jpg", "png", "webp"] {
+        let path = dir.join(format!("{base}.{ext}"));
+        if path.is_file() {
+            return Ok(Some(path));
+        }
+    }
+    let none = dir.join(format!("{base}.none"));
+    let recent = std::fs::metadata(&none)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < std::time::Duration::from_secs(30 * 86_400));
+    if recent {
+        return Ok(None);
+    }
+    let client = crate::lyrics::client()?;
+    let list: Vec<DzArtistPicture> = dz_get(&client, "search/artist", name).await?;
+    let picture = list
+        .into_iter()
+        .find(|a| fold(&a.name) == key)
+        .and_then(|a| a.picture_big)
+        // Artiste sans photo : Deezer donne une silhouette grise (« /artist// »).
+        .filter(|url| !url.contains("/artist//"));
+    let found = match picture {
+        Some(url) => fetch_image(&client, &url).await?,
+        None => None,
+    };
+    let Some((bytes, ext)) = found else {
+        let _ = crate::store::write_atomic(&none, b"");
+        return Ok(None);
+    };
+    let path = dir.join(format!("{base}.{ext}"));
+    crate::store::write_atomic(&path, &bytes).map_err(|e| e.to_string())?;
+    Ok(Some(path))
+}
+
 /* ---------------- cache des réponses ---------------- */
 
 #[derive(Serialize, Deserialize)]

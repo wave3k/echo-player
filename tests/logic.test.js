@@ -99,3 +99,64 @@ test("paroles : recaler près d'un calage le remplace", () => {
   assert.equal(addAnchor(godsPlan, 90000, 50000).length, 3);
 });
 
+
+/* ---------------- recherche avancée ---------------- */
+const { parseQuery, matchQuery } = require("../src/logic.js");
+
+const NOW = Date.UTC(2026, 9, 21);
+const lib = [
+  { id: "1", path: "/m/Ninho - Lettre.flac", title: "Lettre à une femme", artist: "Ninho", album: "Destin", year: 2019, duration_ms: 214000, mtime: NOW / 1000 - 3 * 86400, genre: "Rap" },
+  { id: "2", path: "/m/Tiakola x Dave - Meridian.webm", title: "Meridian", artist: "Tiakola x Dave", artists: ["Tiakola", "Dave"], album: "", year: 0, duration_ms: 255000, mtime: NOW / 1000 - 400 * 86400, video: true },
+  { id: "3", path: "/m/Niska - Réseaux (Live).mp3", title: "Réseaux (Live)", artist: "Niska", featured: ["Ninho"], album: "Commando", year: 2017, duration_ms: 170000, mtime: NOW / 1000 - 40 * 86400 },
+];
+const searchCtx = {
+  key: (t) => `${t.title}\u0001${t.artist}\u0001${t.album}`.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, ""),
+  plays: { 1: { count: 12 }, 3: { count: 1 } },
+  favorites: new Set(["2"]),
+  now: NOW,
+};
+const find = (text) => lib.filter((t) => matchQuery(parseQuery(text), t, searchCtx)).map((t) => t.id);
+
+test("recherche : mots libres sans accents, et mots exclus", () => {
+  assert.deepEqual(find("reseaux"), ["3"]);
+  assert.deepEqual(find("-live"), ["1", "2"]);
+  assert.equal(parseQuery("ninho").advanced, false);
+  assert.equal(parseQuery("-live").advanced, true);
+});
+
+test("recherche : champs de texte, featurings compris, et guillemets", () => {
+  assert.deepEqual(find("artiste:ninho"), ["1", "3"]);
+  assert.deepEqual(find("artiste=ninho"), ["1", "3"]);
+  assert.deepEqual(find("artiste:dave"), ["2"]);
+  assert.deepEqual(find('titre:"lettre à"'), ["1"]);
+  assert.deepEqual(find("album:commando"), ["3"]);
+  assert.deepEqual(find("genre:rap"), ["1"]);
+  assert.deepEqual(find("-artiste:ninho"), ["2"]);
+});
+
+test("recherche : années, durées, écoutes, formats", () => {
+  assert.deepEqual(find("année>2018"), ["1"]);
+  assert.deepEqual(find("annee:2015-2018"), ["3"]);
+  assert.deepEqual(find("durée<3:00"), ["3"]);
+  assert.deepEqual(find("duree>4m"), ["2"]);
+  assert.deepEqual(find("durée:3:34"), ["1"]);
+  assert.deepEqual(find("écoutes>=1"), ["1", "3"]);
+  assert.deepEqual(find("ecoutes>10"), ["1"]);
+  assert.deepEqual(find("format:flac"), ["1"]);
+});
+
+test("recherche : ajoutés récemment et drapeaux", () => {
+  assert.deepEqual(find("ajouté<30j"), ["1"]);
+  assert.deepEqual(find("ajoute:2mois"), ["1", "3"]);
+  assert.deepEqual(find("ajouté>1an"), ["2"]);
+  assert.deepEqual(find("est:favori"), ["2"]);
+  assert.deepEqual(find("est:clip"), ["2"]);
+  assert.deepEqual(find("est:jamais"), ["2"]);
+  assert.deepEqual(find("-est:clip artiste:ninho"), ["1", "3"]);
+});
+
+test("recherche : un filtre incompris reste un mot libre", () => {
+  const q = parseQuery("foo:bar année>abc");
+  assert.equal(q.terms.length, 0);
+  assert.deepEqual(q.words, ["foo:bar", "annee>abc"]);
+});

@@ -4,7 +4,7 @@
 
 /// Version des règles de lecture des fichiers (titres, pistes) : quand elle change,
 /// les morceaux déjà connus sont relus une fois.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// Mots qui signalent un ajout de la plateforme vidéo, pas une partie du titre.
 const NOISE: &[&str] = &[

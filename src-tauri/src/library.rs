@@ -40,6 +40,29 @@ pub struct Track {
     pub artists: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub featured: Vec<String>,
+    /// Année, numéro de piste et de disque, artiste de l'album et genre (tags du fichier ;
+    /// 0 ou vide quand ils n'y sont pas). Servent aux vues Albums et à la recherche.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub year: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub track_no: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub disc_no: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub album_artist: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub genre: String,
+    /// Volume propre au morceau, en dB (réglé dans Écho, jamais gardé dans le cache).
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub gain_db: f32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+fn is_zero_f32(n: &f32) -> bool {
+    *n == 0.0
 }
 
 fn yes() -> bool {
@@ -212,6 +235,12 @@ pub fn scan(
                 parsed: crate::titles::VERSION,
                 artists: Vec::new(),
                 featured: Vec::new(),
+                year: 0,
+                track_no: 0,
+                disc_no: 0,
+                album_artist: String::new(),
+                genre: String::new(),
+                gain_db: 0.0,
             };
 
             let meta = match ext.as_str() {
@@ -233,6 +262,11 @@ pub fn scan(
                 if let Some(video) = meta.has_video {
                     track.video = video;
                 }
+                track.year = meta.extra.year;
+                track.track_no = meta.extra.track_no;
+                track.disc_no = meta.extra.disc_no;
+                track.album_artist = meta.extra.album_artist;
+                track.genre = meta.extra.genre;
             }
 
             // Pas d'artiste dans les tags : on le cherche dans le titre (« Artiste - Titre »).
@@ -279,6 +313,17 @@ struct Meta {
     has_audio: bool,
     /// `None` : on ne sait pas (on s'en tient à l'extension).
     has_video: Option<bool>,
+    extra: Extra,
+}
+
+/// Tags secondaires, lus seulement quand le fichier en a.
+#[derive(Default)]
+struct Extra {
+    year: u32,
+    track_no: u32,
+    disc_no: u32,
+    album_artist: String,
+    genre: String,
 }
 
 /// Enregistre une pochette (octets d'image) dans le cache et renvoie son nom.
@@ -312,6 +357,7 @@ fn read_mp4(path: &Path) -> Option<Meta> {
         cover: None,
         has_audio: info.has_audio,
         has_video: Some(info.has_video),
+        extra: Extra::default(),
     })
 }
 
@@ -326,6 +372,7 @@ fn read_ogg(path: &Path) -> Option<Meta> {
         cover: None,
         has_audio: info.has_audio,
         has_video: Some(info.has_video),
+        extra: Extra::default(),
     })
 }
 
@@ -339,6 +386,7 @@ fn read_matroska(path: &Path, covers_dir: &Path, covers: &mut HashMap<String, Pa
         cover: info.cover.map(|(mime, data)| save_cover(&data, &mime, covers_dir, covers)),
         has_audio: info.has_audio.unwrap_or(true),
         has_video: info.has_audio.map(|_| info.has_video),
+        extra: Extra::default(),
     })
 }
 
@@ -360,7 +408,7 @@ fn read_metadata(
 ) -> Option<Meta> {
     use lofty::file::{AudioFile, TaggedFileExt};
     use lofty::probe::Probe;
-    use lofty::tag::ItemKey;
+    use lofty::tag::{Accessor, ItemKey};
 
     let tagged = Probe::open(path).ok()?.read().ok()?;
 
@@ -377,6 +425,7 @@ fn read_metadata(
         has_audio: properties.channels().is_some() || properties.sample_rate().is_some(),
         // lofty ne dit rien de l'image : pour un mp4, on regarde ses pistes.
         has_video: is_video(path).then(|| crate::mp4::read(path).map(|i| i.has_video)).flatten(),
+        extra: Extra::default(),
     };
 
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
@@ -389,6 +438,18 @@ fn read_metadata(
             .unwrap_or("")
             .to_string();
         meta.album = tag.get_string(&ItemKey::AlbumTitle).unwrap_or("").to_string();
+        // Année : « 2019 » ou une date complète « 2019-05-03 », selon le format.
+        let year = tag
+            .year()
+            .or_else(|| tag.get_string(&ItemKey::RecordingDate).and_then(|d| d.get(..4)?.parse().ok()))
+            .unwrap_or(0);
+        meta.extra = Extra {
+            year: if (1000..=2999).contains(&year) { year } else { 0 },
+            track_no: tag.track().unwrap_or(0).min(999),
+            disc_no: tag.disk().unwrap_or(0).min(99),
+            album_artist: tag.get_string(&ItemKey::AlbumArtist).unwrap_or("").trim().to_string(),
+            genre: tag.genre().map(|g| g.trim().to_string()).unwrap_or_default(),
+        };
 
         if let Some(pic) = tag.pictures().first() {
             let data = pic.data();
@@ -428,6 +489,12 @@ pub(crate) mod tests {
             parsed: crate::titles::VERSION,
             artists: Vec::new(),
             featured: Vec::new(),
+            year: 0,
+            track_no: 0,
+            disc_no: 0,
+            album_artist: String::new(),
+            genre: String::new(),
+            gain_db: 0.0,
         }
     }
 

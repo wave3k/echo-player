@@ -9,7 +9,16 @@
 //! l'ordre : ouvrir un fichier ou écrire sur le disque ne bloque jamais la fenêtre.
 //!
 //! Deux lecteurs servent au fondu enchaîné. Chacun passe par la même chaîne :
-//! égaliseur 5 bandes → mesure du niveau → volume égal → fondu → limiteur.
+//! vitesse → égaliseur 5 bandes → mesure du niveau → volume égal → volume du
+//! morceau → fondu → réverbération → limiteur.
+//!
+//! Vitesse : un saut sur place donne le débit voulu à toute la chaîne. Pour garder
+//! la voix, `scaletempo` étire le son. Pour une tonalité liée à la vitesse (comme un
+//! disque, « slowed »), le son est rééchantillonné puis relu à 48 kHz : n secondes
+//! de musique deviennent n / vitesse secondes, exactement ce que la sortie attend à
+//! ce débit. Les deux chaînes diffèrent : passer de l'une à l'autre rouvre le
+//! fichier à la même position. (L'élément `speed`, qui aurait permis une tonalité
+//! seule, plante sur certains fichiers : il n'est pas utilisé.)
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
@@ -56,6 +65,48 @@ const SEEK_GIVE_UP: Duration = Duration::from_secs(8);
 
 /// Un visualiseur est à l'écran : le spectre est calculé et envoyé à la page.
 static VISUAL: AtomicBool = AtomicBool::new(false);
+
+/// Éléments facultatifs de la chaîne : sans eux, la vitesse ou la réverbération ne
+/// sont simplement pas proposées. `scaletempo` et `capssetter` viennent des greffons
+/// « good », `freeverb` des greffons « bad », pas toujours installés.
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct Caps {
+    /// Vitesse sans changer la voix.
+    pub tempo: bool,
+    /// Vitesse et tonalité liées, comme un disque.
+    pub vinyl: bool,
+    pub reverb: bool,
+}
+
+fn caps() -> Caps {
+    let has = |f: &str| gst::ElementFactory::find(f).is_some();
+    Caps { tempo: has("scaletempo"), vinyl: has("capssetter"), reverb: has("freeverb") }
+}
+
+/// Fréquence à laquelle la chaîne « disque » travaille, avant d'être relue plus vite
+/// ou plus lentement.
+const VINYL_RATE: f64 = 48_000.0;
+
+/// Ce que la chaîne doit faire pour une vitesse : le débit des sauts, et si la tonalité
+/// suit (chaîne « disque »). Ce que les éléments présents ne permettent pas est laissé
+/// de côté.
+fn rate_plan(speed: f64, linked: bool, caps: Caps) -> (f64, bool) {
+    let speed = if speed.is_finite() { speed.clamp(0.5, 2.0) } else { 1.0 };
+    // Tonalité liée : la chaîne « disque » reste en place même à 1×, pour qu'un curseur
+    // qui passe par 1× ne rouvre pas le fichier à chaque fois.
+    match (linked && caps.vinyl, caps.tempo) {
+        (true, _) => (speed, true),
+        (false, true) => (speed, false),
+        (false, false) => (1.0, false),
+    }
+}
+
+/// Caps de la chaîne « disque » pour un débit : rééchantillonnée à 48 kHz / débit.
+fn vinyl_caps(rate: f64) -> gst::Caps {
+    let hz = (VINYL_RATE / rate.clamp(0.5, 2.0)).round() as i32;
+    gst::Caps::builder("audio/x-raw").field("format", "F32LE").field("layout", "interleaved").field("rate", hz).build()
+}
+
 /// Bandes envoyées à la page, de 40 Hz à 16 kHz (échelle logarithmique, comme l'oreille).
 const VISUAL_BANDS: usize = 32;
 /// Plancher du spectre, en dB : en dessous, une bande est éteinte.
@@ -79,6 +130,13 @@ struct Deck {
     norm: gst::Element,
     fade: gst::Element,
     limiter: gst::Element,
+    /// Volume propre au morceau.
+    trim: gst::Element,
+    verb: Option<gst::Element>,
+    /// Chaîne « disque » (tonalité liée à la vitesse) : son filtre de fréquence.
+    vinyl: Option<gst::Element>,
+    /// Débit des sauts (la vitesse), 1 au départ.
+    rate: f64,
     id: String,
     track: Track,
     /// Durée donnée par GStreamer (0 : pas encore connue).
@@ -103,7 +161,7 @@ impl Drop for Deck {
 }
 
 impl Deck {
-    fn open(track: &Track) -> Result<Deck, String> {
+    fn open(track: &Track, caps: Caps, vinyl: bool) -> Result<Deck, String> {
         let uri = gst::glib::filename_to_uri(Path::new(&track.path), None).map_err(|e| e.to_string())?;
         // Le son seul : les autres pistes d'un clip (image, sous-titres) ne sont pas
         // décodées du tout. (playbin, lui, décode l'image même sans l'afficher.)
@@ -120,20 +178,13 @@ impl Deck {
         // « echo-player » : le serveur de son retient « coupé » par nom d'application et
         // l'appliquait à la musique. Avec sa propre clé de mémorisation, la musique n'en
         // dépend plus ; et elle part toujours non coupée.
-        let sink = if gst::ElementFactory::find("pulsesink").is_some() { "pulsesink name=out" } else { "autoaudiosink name=out" };
-        let chain = gst::parse::bin_from_description(
-            &format!(
-                "audioconvert ! audioresample ! audio/x-raw,format=F32LE \
-                 ! equalizer-nbands name=eq num-bands=5 \
-                 ! level name=meter interval=250000000 post-messages=false \
-                 ! spectrum name=spec bands=512 threshold=-75 interval=50000000 post-messages=false \
-                 ! volume name=norm ! volume name=fade ! volume name=master \
-                 ! audiodynamic name=limiter characteristics=hard-knee mode=compressor threshold=0.84 \
-                 ! audioconvert ! {sink}"
-            ),
-            true,
-        )
-        .map_err(|e| e.to_string())?;
+        let sink = match std::env::var("ECHO_SINK") {
+            // Essais : une sortie muette, réglée par l'essai lui-même.
+            Ok(custom) if cfg!(test) => custom,
+            _ if gst::ElementFactory::find("pulsesink").is_some() => "pulsesink name=out".into(),
+            _ => "autoaudiosink name=out".into(),
+        };
+        let chain = gst::parse::bin_from_description(&chain_description(caps, vinyl && caps.vinyl, &sink), true).map_err(|e| e.to_string())?;
         if let Some(out) = chain.by_name("out").filter(|o| o.find_property("stream-properties").is_some()) {
             let props = gst::Structure::builder("props")
                 .field("application.name", "Écho")
@@ -162,6 +213,10 @@ impl Deck {
             norm: get("norm")?,
             fade: get("fade")?,
             limiter: get("limiter")?,
+            trim: get("trim")?,
+            verb: chain.by_name("verb"),
+            vinyl: chain.by_name("vinyl"),
+            rate: 1.0,
             pipe,
             id: track.id.clone(),
             track: track.clone(),
@@ -174,6 +229,7 @@ impl Deck {
             opened: Instant::now(),
         };
         deck.spec.set_property("post-messages", VISUAL.load(Ordering::Relaxed));
+        set_volume(&deck.trim, db_to_gain(track.gain_db));
         if let Some(proxy) = deck.eq.dynamic_cast_ref::<gst::ChildProxy>() {
             for (i, freq) in BANDS.iter().enumerate() {
                 if let Some(band) = proxy.child_by_index(i as u32) {
@@ -221,9 +277,17 @@ impl Deck {
     }
 
     fn seek(&mut self, ms: u64) {
+        // Le débit voulu accompagne chaque saut : sans lui, la vitesse reviendrait à 1.
         let ok = self
             .pipe
-            .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE, gst::ClockTime::from_mseconds(ms))
+            .seek(
+                self.rate,
+                gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
+                gst::SeekType::Set,
+                gst::ClockTime::from_mseconds(ms),
+                gst::SeekType::None,
+                gst::ClockTime::NONE,
+            )
             .is_ok();
         // Pas encore prêt : le saut sera fait dès que le fichier sera ouvert.
         self.pending_seek = if ok { None } else { Some(ms) };
@@ -236,6 +300,24 @@ impl Deck {
         self.resume = on && self.pending_seek.is_some();
         let state = if on && !self.resume { gst::State::Playing } else { gst::State::Paused };
         let _ = self.pipe.set_state(state);
+    }
+
+    /// Nouvelle vitesse, par un saut sur place (dans la chaîne « disque », la
+    /// fréquence suit d'abord). Un fichier pas encore prêt la prendra à son premier
+    /// saut (voir `start_deck`).
+    fn set_rate(&mut self, rate: f64) {
+        if (self.rate - rate).abs() < 1e-4 {
+            return;
+        }
+        if let Some(filter) = &self.vinyl {
+            filter.set_property("caps", vinyl_caps(rate));
+        }
+        self.rate = rate;
+        if self.pending_seek.is_some() {
+            return;
+        }
+        let ms = self.position_ms();
+        self.seek(ms);
     }
 
     fn learn_duration(&mut self) -> bool {
@@ -256,6 +338,47 @@ impl Deck {
         if let Some(bus) = self.pipe.bus() {
             while bus.pop().is_some() {}
         }
+    }
+}
+
+/// La chaîne d'un lecteur, de la sortie du décodeur jusqu'à `sink`. Calcul en flottant
+/// jusqu'au limiteur : l'égaliseur et le volume égal peuvent dépasser 0 dB sans
+/// écrêter, le limiteur ramène ensuite le tout.
+fn chain_description(caps: Caps, vinyl: bool, sink: &str) -> String {
+    let speed = if vinyl {
+        // 48 kHz, puis 48 kHz / vitesse, relu à 48 kHz : la tonalité suit la vitesse.
+        let hz = VINYL_RATE as i32;
+        format!(
+            ",rate={hz} ! audioresample ! capsfilter name=vinyl caps=audio/x-raw,format=F32LE,layout=interleaved,rate={hz} \
+             ! capssetter caps=audio/x-raw,rate={hz} "
+        )
+    } else if caps.tempo {
+        " ! scaletempo name=tempo ".into()
+    } else {
+        " ".into()
+    };
+    // Réverbération toujours en place (niveau 0 : son d'origine) pour la régler pendant
+    // l'écoute ; elle rend du stéréo, comme la sortie.
+    let verb = if caps.reverb { "! freeverb name=verb level=0 room-size=0.75 damping=0.35 " } else { "" };
+    // Entrelacé : certains décodeurs (AAC) rendent des canaux séparés, que `capssetter`
+    // et `freeverb` refusent.
+    format!(
+        "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved{speed}\
+         ! equalizer-nbands name=eq num-bands=5 \
+         ! level name=meter interval=250000000 post-messages=false \
+         ! spectrum name=spec bands=512 threshold=-75 interval=50000000 post-messages=false \
+         ! volume name=norm ! volume name=trim ! volume name=fade ! volume name=master {verb}\
+         ! audiodynamic name=limiter characteristics=hard-knee mode=compressor threshold=0.84 \
+         ! audioconvert ! {sink}"
+    )
+}
+
+/// dB → facteur de volume (0 dB : 1). Une valeur absurde ne change rien.
+fn db_to_gain(db: f32) -> f64 {
+    if db.is_finite() {
+        10f64.powf(db.clamp(-24.0, 24.0) as f64 / 20.0)
+    } else {
+        1.0
     }
 }
 
@@ -371,6 +494,8 @@ pub struct Status {
     pub duration_ms: u64,
     /// Vrai quand le morceau vient de changer (fin, fondu, touche média…).
     pub changed: bool,
+    /// Vitesse à laquelle la position avance (1 : normale).
+    pub rate: f64,
 }
 
 #[derive(Serialize)]
@@ -385,7 +510,7 @@ pub struct Snapshot {
 
 /// Ce qu'un changement d'état entraîne hors du lecteur (fait sans tenir son verrou).
 enum Effect {
-    Started(Track),
+    Started(Box<Track>),
     Playback(bool, u64),
     /// Progression à garder ; `force` : écrite tout de suite (pause, sortie).
     Save { id: String, position_ms: u64, playing: bool, force: bool },
@@ -413,6 +538,8 @@ enum Order {
     Configure(Box<crate::store::Settings>),
     /// Visualiseur affiché ou non.
     Visual(bool),
+    /// Volume propre à un morceau, en dB.
+    TrackGain(String, f32),
 }
 
 struct Request {
@@ -452,6 +579,12 @@ pub struct Engine {
     crossfade_s: u32,
     next_on_error: bool,
     skip_s: u32,
+    caps: Caps,
+    /// Vitesse : débit des sauts, et chaîne « disque » (tonalité liée) ou non.
+    rate: f64,
+    vinyl: bool,
+    /// Réverbération, de 0 à 1.
+    reverb: f64,
 
     fade: Option<(Instant, u64)>,
     /// Le lecteur actif monte pendant le fondu (faux s'il a été remplacé entre-temps).
@@ -529,6 +662,10 @@ impl Player {
                 crossfade_s: 0,
                 next_on_error: true,
                 skip_s: 10,
+                caps: caps(),
+                rate: 1.0,
+                vinyl: false,
+                reverb: 0.0,
                 fade: None,
                 fade_in: false,
                 crossfade_tried: false,
@@ -556,10 +693,16 @@ fn gains_file(app: &AppHandle) -> std::path::PathBuf {
     crate::config_dir(app).join("gains.json")
 }
 
+/// Le morceau tel que le lecteur le joue : avec son volume propre, réglé dans Écho.
 fn track_of(app: &AppHandle, id: &str) -> Option<Track> {
-    let state = app.state::<crate::AppData>();
-    let data = state.0.lock().unwrap();
-    data.tracks.iter().find(|t| t.id == id).cloned()
+    let mut track = {
+        let state = app.state::<crate::AppData>();
+        let data = state.0.lock().unwrap();
+        data.tracks.iter().find(|t| t.id == id).cloned()?
+    };
+    let overrides = app.state::<crate::AppOverrides>();
+    track.gain_db = overrides.0.lock().unwrap().get(id).and_then(|o| o.gain_db).unwrap_or(0.0);
+    Some(track)
 }
 
 impl Engine {
@@ -613,11 +756,22 @@ impl Engine {
                 self.muted = muted;
                 self.apply_sound();
             }
-            Order::Configure(settings) => self.configure(&settings),
+            Order::Configure(settings) => {
+                self.configure(&settings);
+                self.reopen_for_speed(app, fx);
+            }
             Order::Visual(on) => {
                 VISUAL.store(on, Ordering::Relaxed);
                 for d in self.deck.iter().chain(self.outgoing.iter()) {
                     d.spec.set_property("post-messages", on);
+                }
+            }
+            Order::TrackGain(id, db) => {
+                for d in [&mut self.deck, &mut self.outgoing].into_iter().flatten() {
+                    if d.id == id {
+                        d.track.gain_db = db;
+                        set_volume(&d.trim, db_to_gain(db));
+                    }
                 }
             }
         }
@@ -631,6 +785,13 @@ impl Engine {
         self.crossfade_s = s.crossfade;
         self.next_on_error = s.next_on_error;
         self.skip_s = s.skip_seconds.max(1);
+        let before = self.rate;
+        (self.rate, self.vinyl) = rate_plan(s.speed, s.pitch_linked, self.caps);
+        self.reverb = s.reverb.min(100) as f64 / 100.0;
+        if (before - self.rate).abs() > 1e-4 {
+            // La position avance à une autre vitesse : la page doit le savoir tout de suite.
+            self.last_second = u64::MAX;
+        }
         if was != self.loudness {
             let id = self.deck.as_ref().map(|d| d.id.clone());
             self.begin_level(id.as_deref());
@@ -651,14 +812,23 @@ impl Engine {
         10f64.powf(-boost / 20.0 / 1.5)
     }
 
-    fn apply_sound(&self) {
-        let limit = self.loudness || self.eq.iter().any(|g| *g != 0.0);
-        for deck in [&self.deck, &self.outgoing].into_iter().flatten() {
+    fn apply_sound(&mut self) {
+        let limit = self.loudness || self.eq.iter().any(|g| *g != 0.0) || self.reverb > 0.0;
+        let (rate, vinyl, reverb) = (self.rate, self.vinyl, self.reverb);
+        for deck in [&mut self.deck, &mut self.outgoing].into_iter().flatten() {
             deck.set_eq(&self.eq, limit);
             set_volume(&deck.master, self.volume);
             deck.master.set_property("mute", self.muted);
             // La mesure du niveau ne sert qu'au volume égal.
             deck.meter.set_property("post-messages", self.loudness);
+            if let Some(verb) = &deck.verb {
+                // Mélange plafonné : au-delà, la voix se noie.
+                verb.set_property("level", (reverb * 0.45) as f32);
+            }
+            // Chaîne de l'autre sorte : elle sera rouverte (voir `reopen_for_speed`).
+            if !deck.broken && deck.vinyl.is_some() == vinyl {
+                deck.set_rate(rate);
+            }
         }
     }
 
@@ -687,6 +857,7 @@ impl Engine {
             position_ms: pos.or_else(|| deck.map(|d| d.position_ms())).unwrap_or(0),
             duration_ms: deck.map(|d| d.duration()).unwrap_or(0),
             changed,
+            rate: self.rate,
         }
     }
 
@@ -767,7 +938,7 @@ impl Engine {
             let Some(id) = self.plan.ids.get(index).cloned() else { break };
             self.plan.index = index;
             let opened = match track_of(app, &id) {
-                Some(t) if t.has_audio => Deck::open(&t),
+                Some(t) if t.has_audio => Deck::open(&t, self.caps, self.vinyl),
                 Some(t) if is_partial_download(&t.path) => Err(format!(
                     "« {} » est sauté : téléchargement incomplet, ce fichier n'est que l'image du clip. Retélécharge-le.",
                     t.title
@@ -805,6 +976,7 @@ impl Engine {
         if let Some(ms) = start_ms.filter(|ms| *ms > 0) {
             deck.pending_seek = Some(ms);
         }
+        self.prepare_rate(&mut deck);
         let id = deck.id.clone();
         self.deck = Some(deck);
         if self.fade.is_none() {
@@ -826,9 +998,47 @@ impl Engine {
             }
         }
         if let Some(t) = started {
-            fx.push(Effect::Started(t));
+            fx.push(Effect::Started(Box::new(t)));
         }
         self.report(fx, true);
+    }
+
+    /// Tonalité liée activée ou coupée : la chaîne n'est plus la bonne. Le morceau est
+    /// rouvert à la même position, dans le même état, sans être annoncé de nouveau.
+    fn reopen_for_speed(&mut self, app: &AppHandle, fx: &mut Vec<Effect>) {
+        let Some(d) = &self.deck else { return };
+        if d.broken || d.vinyl.is_some() == (self.vinyl && self.caps.vinyl) {
+            return;
+        }
+        let at = d.position_ms();
+        let index = self.plan.index;
+        let playing = self.playing;
+        let before = fx.len();
+        self.load(app, index, playing, Some(at), Way::User, fx);
+        // Même morceau : pas de notification ni d'écoute de plus.
+        let mut i = before;
+        while i < fx.len() {
+            if matches!(fx[i], Effect::Started(_)) {
+                fx.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        if let Some(d) = self.deck.as_mut() {
+            d.announced = true;
+        }
+    }
+
+    /// Un lecteur neuf prend la vitesse en cours à son premier saut (le débit ne se
+    /// donne qu'avec un saut, impossible avant l'ouverture du fichier).
+    fn prepare_rate(&self, deck: &mut Deck) {
+        if let Some(filter) = &deck.vinyl {
+            filter.set_property("caps", vinyl_caps(self.rate));
+        }
+        deck.rate = self.rate;
+        if (self.rate - 1.0).abs() > 1e-4 && deck.pending_seek.is_none() {
+            deck.pending_seek = Some(0);
+        }
     }
 
     /// Fichier en erreur : il reste affiché mais ne joue plus.
@@ -867,7 +1077,7 @@ impl Engine {
             }
         }
         if let Some(t) = started {
-            fx.push(Effect::Started(t));
+            fx.push(Effect::Started(Box::new(t)));
         }
         self.report_with(fx, false, !playing, None);
     }
@@ -985,7 +1195,9 @@ impl Engine {
         }
         let Some(d) = &self.deck else { return };
         let dur = d.duration();
-        if dur < seconds * 3000 || dur.saturating_sub(pos) > seconds * 1000 {
+        // Le fondu se compte en vraies secondes : à 1,5×, la fin arrive plus tôt.
+        let left = (dur.saturating_sub(pos) as f64 / self.rate.max(0.1)) as u64;
+        if dur < seconds * 3000 || left > seconds * 1000 {
             return;
         }
         // Une seule tentative : si le suivant ne s'ouvre pas, la fin du morceau s'en charge.
@@ -994,12 +1206,13 @@ impl Engine {
         let Some(i) = self.pick_next(true).filter(|i| *i != current) else { return };
         let Some(id) = self.plan.ids.get(i).cloned() else { return };
         let Some(track) = track_of(app, &id).filter(|t| t.has_audio) else { return };
-        let Ok(mut deck) = Deck::open(&track) else { return };
+        let Ok(mut deck) = Deck::open(&track, self.caps, self.vinyl) else { return };
         if self.plan.shuffle {
             self.plan.history.push(current);
         }
         self.flush_gains(fx);
         self.plan.index = i;
+        self.prepare_rate(&mut deck);
         set_volume(&deck.fade, 0.0f64);
         deck.announced = true;
         self.outgoing = self.deck.take();
@@ -1015,7 +1228,7 @@ impl Engine {
         self.fade = Some((Instant::now(), (seconds * 1000).max(500)));
         self.fade_in = true;
         self.last_second = u64::MAX;
-        fx.push(Effect::Started(track));
+        fx.push(Effect::Started(Box::new(track)));
         self.report(fx, true);
     }
 
@@ -1467,6 +1680,21 @@ fn group_bands(mags: &[f32], rate: f32) -> Vec<u8> {
         .collect()
 }
 
+/// Ce que la chaîne sait faire ici : vitesse, tonalité, réverbération.
+#[tauri::command]
+pub fn player_caps(app: AppHandle) -> Caps {
+    if available(&app) {
+        caps()
+    } else {
+        Caps::default()
+    }
+}
+
+/// Volume d'un morceau changé : appliqué tout de suite s'il joue.
+pub fn track_gain(app: &AppHandle, id: String, db: f32) {
+    send(app, Order::TrackGain(id, db));
+}
+
 #[tauri::command]
 pub fn player_volume(app: AppHandle, volume: f64, muted: bool) {
     send(&app, Order::Volume(volume, muted));
@@ -1618,4 +1846,157 @@ fn essai_sortie() {
         }
     }
     pipe.set_state(gst::State::Null).unwrap();
+}
+
+/// Fichier de test : un la (440 Hz) de `secs` secondes, en WAV.
+#[cfg(test)]
+fn la_wav(dir: &Path, secs: u32) -> std::path::PathBuf {
+    let wav = dir.join("la.wav");
+    let gen = gst::parse::launch(&format!(
+        "audiotestsrc freq=440 num-buffers={} samplesperbuffer=4410 ! audio/x-raw,rate=44100,channels=2 ! wavenc ! filesink location={}",
+        secs * 10,
+        wav.display()
+    ))
+    .unwrap();
+    gen.set_state(gst::State::Playing).unwrap();
+    gen.bus().unwrap().timed_pop_filtered(gst::ClockTime::from_seconds(20), &[gst::MessageType::Eos]).unwrap();
+    gen.set_state(gst::State::Null).unwrap();
+    wav
+}
+
+/// Bus d'un lecteur d'essai : fait les sauts en attente, note la note entendue.
+#[cfg(test)]
+fn pump(deck: &mut Deck, ms: u64, peaks: &mut Vec<f32>) {
+    let bus = deck.pipe.bus().unwrap();
+    let end = Instant::now() + Duration::from_millis(ms);
+    while Instant::now() < end {
+        while let Some(msg) = bus.pop() {
+            match msg.view() {
+                gst::MessageView::AsyncDone(_) => {
+                    if let Some(at) = deck.pending_seek.take() {
+                        deck.seek(at);
+                        deck.resume = false;
+                        let _ = deck.pipe.set_state(gst::State::Playing);
+                    }
+                }
+                gst::MessageView::Element(e) if e.structure().is_some_and(|s| s.name() == "spectrum") => {
+                    let s = e.structure().unwrap();
+                    let mags: Vec<f32> = s.get::<gst::List>("magnitude").unwrap().iter().filter_map(|v| v.get::<f32>().ok()).collect();
+                    let rate = deck
+                        .spec
+                        .static_pad("sink")
+                        .and_then(|p| p.current_caps())
+                        .and_then(|c| c.structure(0).and_then(|st| st.get::<i32>("rate").ok()))
+                        .unwrap_or(44_100) as f32;
+                    let (i, _) = mags.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap();
+                    peaks.push((i as f32 + 0.5) * rate / 2.0 / mags.len() as f32);
+                }
+                gst::MessageView::Error(e) => panic!("{}", e.error()),
+                _ => {}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+}
+
+/// Vitesse sur un vrai son, sortie muette : la position avance à la vitesse voulue
+/// (avant et après un saut), et la note suit la vitesse seulement si la tonalité est
+/// liée. Lancer : cargo test essai_vitesse -- --ignored --nocapture
+#[cfg(test)]
+#[test]
+#[ignore]
+fn essai_vitesse() {
+    gst::init().unwrap();
+    let dir = std::env::temp_dir().join(format!("echo-vitesse-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = la_wav(&dir, 70);
+    std::env::set_var("ECHO_SINK", "fakesink name=out sync=true");
+    VISUAL.store(true, Ordering::Relaxed);
+    let caps = caps();
+    println!("éléments : {caps:?}");
+    let mut track = crate::library::tests::track(wav.to_str().unwrap(), "la");
+    track.duration_ms = 70_000;
+    for (speed, linked) in [(1.0, false), (0.8, false), (0.8, true), (1.25, true), (1.5, false)] {
+        let (rate, vinyl) = rate_plan(speed, linked, caps);
+        let mut deck = Deck::open(&track, caps, vinyl).unwrap();
+        if let Some(filter) = &deck.vinyl {
+            filter.set_property("caps", vinyl_caps(rate));
+        }
+        deck.rate = rate;
+        deck.pending_seek = Some(0);
+        deck.play(true);
+        let mut peaks = Vec::new();
+        pump(&mut deck, 1500, &mut peaks);
+        let m0 = (Instant::now(), deck.position_ms());
+        pump(&mut deck, 1500, &mut peaks);
+        let m1 = (Instant::now(), deck.position_ms());
+        deck.seek(30_000);
+        pump(&mut deck, 1500, &mut peaks);
+        let m2 = (Instant::now(), deck.position_ms());
+        pump(&mut deck, 1500, &mut peaks);
+        let m3 = (Instant::now(), deck.position_ms());
+        let pace = |a: (Instant, u64), b: (Instant, u64)| (b.1 as f64 - a.1 as f64) / b.0.duration_since(a.0).as_millis() as f64;
+        let (before, after) = (pace(m0, m1), pace(m2, m3));
+        peaks.sort_by(|a, b| a.total_cmp(b));
+        let note = peaks.get(peaks.len() / 2).copied().unwrap_or(0.0) as f64;
+        let want = if vinyl { 440.0 * speed } else { 440.0 };
+        println!("vitesse {speed} liée {linked} → débit {rate} disque {vinyl} : ×{before:.3} puis ×{after:.3} (après le saut : {} ms), note {note:.0} Hz (voulue {want:.0})", m2.1);
+        assert!((before - speed).abs() < 0.06 && (after - speed).abs() < 0.06, "la position n'avance pas à ×{speed}");
+        assert!(m2.1 >= 30_000 && m2.1 < 33_000, "après le saut, position {}", m2.1);
+        // Bandes de 43 à 47 Hz : la note est juste à une bande près.
+        assert!((note - want).abs() < 50.0, "note {note} au lieu de {want}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Vitesse changée plusieurs fois pendant la lecture (curseur, touches), sur un MP3
+/// et un M4A comme ceux de la bibliothèque : rien ne doit planter.
+/// Lancer : cargo test essai_changements -- --ignored --nocapture
+#[cfg(test)]
+#[test]
+#[ignore]
+fn essai_changements() {
+    gst::init().unwrap();
+    let dir = std::env::temp_dir().join(format!("echo-changements-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = la_wav(&dir, 40);
+    std::env::set_var("ECHO_SINK", "fakesink name=out sync=true");
+    let caps = caps();
+    let mut files = vec![wav.clone()];
+    for (ext, enc) in [("mp3", "lamemp3enc ! id3v2mux"), ("m4a", "avenc_aac ! mp4mux"), ("ogg", "vorbisenc ! oggmux")] {
+        let out = dir.join(format!("la.{ext}"));
+        let ok = gst::parse::launch(&format!("filesrc location={} ! wavparse ! audioconvert ! {enc} ! filesink location={}", wav.display(), out.display()))
+            .ok()
+            .map(|p| {
+                p.set_state(gst::State::Playing).unwrap();
+                let done = p.bus().unwrap().timed_pop_filtered(gst::ClockTime::from_seconds(30), &[gst::MessageType::Eos, gst::MessageType::Error]);
+                p.set_state(gst::State::Null).unwrap();
+                done.is_some_and(|m| m.type_() == gst::MessageType::Eos)
+            })
+            .unwrap_or(false);
+        if ok {
+            files.push(out);
+        } else {
+            println!("pas d'encodeur pour {ext}");
+        }
+    }
+    for file in files {
+        let track = crate::library::tests::track(file.to_str().unwrap(), "la");
+        for linked in [false, true] {
+            let mut peaks = Vec::new();
+            let (_, vinyl) = rate_plan(1.2, linked, caps);
+            let mut deck = Deck::open(&track, caps, vinyl).unwrap();
+            deck.play(true);
+            pump(&mut deck, 1000, &mut peaks);
+            for speed in [1.05, 1.1, 1.15, 1.2, 0.85, 1.5, 0.7] {
+                let (rate, v) = rate_plan(speed, linked, caps);
+                assert_eq!(v, vinyl);
+                deck.set_rate(rate);
+                pump(&mut deck, 250, &mut peaks);
+            }
+            pump(&mut deck, 800, &mut peaks);
+            println!("{} disque {vinyl} : position {} ms, aucun plantage", file.file_name().unwrap().to_string_lossy(), deck.position_ms());
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

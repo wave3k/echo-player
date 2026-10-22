@@ -318,6 +318,7 @@ fn with_override(track: &Track, overrides: &store::Overrides) -> Track {
         if let Some(v) = &o.cover {
             out.cover = Some(v.clone());
         }
+        out.gain_db = o.gain_db.unwrap_or(0.0);
     }
     let solo = SOLO_ARTISTS.lock().unwrap();
     let known = |name: &str| solo.contains(&artist_key(name));
@@ -665,6 +666,8 @@ async fn clear_cover_cache(app: tauri::AppHandle) -> Cleared {
         let _ = std::fs::remove_dir_all(thumbs::dir(&dir));
         // Aperçus de la fenêtre des pochettes en ligne : à refaire au besoin.
         let _ = std::fs::remove_dir_all(dir.join("candidates"));
+        // Photos d'artistes : recherchées de nouveau au besoin.
+        let _ = std::fs::remove_dir_all(dir.join("artists"));
         // Les pochettes choisies à la main restent : elles ne sont pas une copie à reconstruire.
         let keep: std::collections::HashSet<String> =
             overrides_of(&app).values().filter_map(|o| o.cover.clone()).collect();
@@ -1047,6 +1050,17 @@ async fn cover_candidates(app: tauri::AppHandle, id: String, prefer: Option<Stri
         .await
         .map_err(|_| "Recherche impossible : vérifie ta connexion.".to_string())?;
     Ok(CoverChoices { query: format!("{} — {}", track.artist, track.title), candidates })
+}
+
+/// Photo d'un artiste (vue Artistes), si les photos en ligne sont activées.
+/// `None` : pas de photo (coupé, introuvable, ou pas de connexion).
+#[tauri::command]
+async fn artist_photo(app: tauri::AppHandle, name: String) -> Option<String> {
+    if !app.state::<AppSettings>().0.lock().unwrap().artist_photos {
+        return None;
+    }
+    let dir = covers_online::artists_dir(&store::covers_dir(&cache_dir(&app)));
+    covers_online::artist_photo(&dir, &name).await.ok().flatten().map(|p| p.to_string_lossy().into_owned())
 }
 
 /// Pose la pochette choisie dans la fenêtre (adresse d'une des propositions).
@@ -1696,6 +1710,28 @@ async fn set_hidden(app: tauri::AppHandle, ids: Vec<String>, hidden: bool) -> Sn
     .await
 }
 
+/// Volume propre à un morceau (−12 à +12 dB, par demi-dB ; 0 l'efface). Gardé dans
+/// overrides.json : le fichier n'est pas touché.
+#[tauri::command]
+async fn set_track_gain(app: tauri::AppHandle, id: String, db: f32) -> f32 {
+    let db = if db.is_finite() { (db.clamp(-12.0, 12.0) * 2.0).round() / 2.0 } else { 0.0 };
+    offload(move || {
+        {
+            let state = app.state::<AppOverrides>();
+            let mut map = state.0.lock().unwrap();
+            let entry = map.entry(id.clone()).or_default();
+            entry.gain_db = (db != 0.0).then_some(db);
+            if entry.is_empty() {
+                map.remove(&id);
+            }
+            store::save_overrides(&config_dir(&app), &map);
+        }
+        player::track_gain(&app, id, db);
+        db
+    })
+    .await
+}
+
 /// Écrit une playlist au format M3U (UTF-8).
 #[tauri::command]
 async fn export_playlist(app: tauri::AppHandle, name: String, ids: Vec<String>, path: String) -> Result<usize, String> {
@@ -1749,6 +1785,7 @@ async fn import_playlists(app: tauri::AppHandle, paths: Vec<String>) -> Result<I
                 id: format!("pl-{:x}-{}", library::stable_hash(path.to_string_lossy().as_bytes()), now_secs()),
                 name,
                 tracks: ids,
+                query: None,
             });
         }
         let clean = store::sanitize_playlists(playlists);
@@ -2235,6 +2272,9 @@ fn main() {
             player::player_volume,
             player::player_visual,
             player::player_snapshot,
+            player::player_caps,
+            set_track_gain,
+            artist_photo,
             bootstrap,
             get_state,
             cover_candidates,
@@ -2325,6 +2365,12 @@ mod tests {
             parsed: titles::VERSION,
             artists: Vec::new(),
             featured: Vec::new(),
+            year: 0,
+            track_no: 0,
+            disc_no: 0,
+            album_artist: String::new(),
+            genre: String::new(),
+            gain_db: 0.0,
         }
     }
 

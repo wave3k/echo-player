@@ -67,6 +67,15 @@ pub struct Settings {
     pub covers_prefer: String,
     /// Visualiseur : "bars" (barres), "wave" (onde) ou "off".
     pub visualizer: String,
+    /// Photos des artistes cherchées en ligne (Deezer) pour la vue Artistes.
+    pub artist_photos: bool,
+
+    /// Vitesse de lecture (0,5 à 2).
+    pub speed: f64,
+    /// Tonalité liée à la vitesse (« slowed », « sped up ») : comme un disque plus lent.
+    pub pitch_linked: bool,
+    /// Réverbération, de 0 (aucune) à 100.
+    pub reverb: u32,
 
     pub volume: u32,
     pub last_track: Option<String>,
@@ -114,6 +123,10 @@ impl Default for Settings {
             covers_online: false,
             covers_prefer: "auto".into(),
             visualizer: "bars".into(),
+            artist_photos: false,
+            speed: 1.0,
+            pitch_linked: false,
+            reverb: 0,
             volume: 90,
             last_track: None,
             last_position_ms: 0,
@@ -162,6 +175,9 @@ impl Settings {
             self.skip_seconds = 10;
         }
         self.radius = self.radius.min(20);
+        // Vitesse : arrondie au centième, une valeur absurde revient à la normale.
+        self.speed = if self.speed.is_finite() { (self.speed.clamp(0.5, 2.0) * 100.0).round() / 100.0 } else { 1.0 };
+        self.reverb = self.reverb.min(100);
         self.volume = self.volume.min(100);
         if self.formats_version < FORMATS_VERSION {
             // Réglages d'avant l'arrivée d'opus, aac… : ces formats n'existaient pas, on les coche.
@@ -353,12 +369,21 @@ pub struct TrackOverride {
     /// Morceau masqué de la bibliothèque (doublon) : le fichier reste sur le disque.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
+    /// Volume propre au morceau, en dB (−12 à +12), en plus du volume égal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gain_db: Option<f32>,
 }
 
 impl TrackOverride {
     /// Rien à garder : l'entrée peut disparaître.
     pub fn is_empty(&self) -> bool {
-        self.title.is_none() && self.artist.is_none() && self.album.is_none() && self.cover.is_none() && !self.no_online && !self.hidden
+        self.title.is_none()
+            && self.artist.is_none()
+            && self.album.is_none()
+            && self.cover.is_none()
+            && !self.no_online
+            && !self.hidden
+            && self.gain_db.is_none()
     }
 }
 
@@ -504,10 +529,10 @@ mod tests {
     fn les_playlists_sont_gardees_propres() {
         let tmp = TempDir::new("playlists");
         let dirty = vec![
-            Playlist { id: "a".into(), name: "  Rap FR  ".into(), tracks: vec!["/m/1".into(), "/m/1".into(), "/m/2".into()] },
-            Playlist { id: "a".into(), name: "doublon".into(), tracks: vec![] },
-            Playlist { id: " ".into(), name: "sans id".into(), tracks: vec![] },
-            Playlist { id: "b".into(), name: "".into(), tracks: vec![] },
+            Playlist { id: "a".into(), name: "  Rap FR  ".into(), tracks: vec!["/m/1".into(), "/m/1".into(), "/m/2".into()], query: None },
+            Playlist { id: "a".into(), name: "doublon".into(), tracks: vec![], query: None },
+            Playlist { id: " ".into(), name: "sans id".into(), tracks: vec![], query: None },
+            Playlist { id: "b".into(), name: "".into(), tracks: vec![], query: None },
         ];
         let clean = sanitize_playlists(dirty);
         assert_eq!(clean.len(), 2);
@@ -578,6 +603,10 @@ pub struct Playlist {
     pub id: String,
     pub name: String,
     pub tracks: Vec<String>,
+    /// Playlist intelligente : la recherche qui la remplit (ses morceaux sont calculés
+    /// par l'interface, `tracks` reste vide).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
 }
 
 pub fn load_playlists(dir: &Path) -> Vec<Playlist> {
@@ -602,6 +631,10 @@ pub fn sanitize_playlists(list: Vec<Playlist>) -> Vec<Playlist> {
             }
             let mut ids = std::collections::HashSet::new();
             p.tracks.retain(|t| ids.insert(t.clone()));
+            p.query = p.query.map(|q| q.trim().chars().take(300).collect::<String>()).filter(|q| !q.is_empty());
+            if p.query.is_some() {
+                p.tracks.clear();
+            }
             p
         })
         .collect()

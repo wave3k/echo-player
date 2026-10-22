@@ -31,6 +31,21 @@ pub fn save_now(_app: &AppHandle) {}
 
 pub fn visual_off(_app: &AppHandle) {}
 
+pub fn track_gain(_app: &AppHandle, _id: String, _db: f32) {}
+
+/// Rien côté cœur : la page fait elle-même vitesse et réverbération.
+#[derive(Serialize, Default)]
+pub struct Caps {
+    tempo: bool,
+    pitch: bool,
+    reverb: bool,
+}
+
+#[tauri::command]
+pub fn player_caps() -> Caps {
+    Caps::default()
+}
+
 #[tauri::command]
 pub fn player_play(_ids: Vec<String>, _index: usize, _autoplay: bool, _start_ms: Option<u64>, _shuffle: bool, _repeat: String) {}
 
