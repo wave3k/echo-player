@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Écho : un lecteur de musique local</title>
+  <meta name="description" content="Écho est un lecteur de musique local pour Linux et Windows : léger, sans publicité, sans compte. Tu lui montres un dossier, il joue tout ce qu'il contient.">
+  <meta name="color-scheme" content="dark light">
+  <meta property="og:title" content="Écho : un lecteur de musique local">
+  <meta property="og:description" content="Léger, sans publicité, sans compte. Tu lui montres un dossier, il joue tout ce qu'il contient.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="img/favicon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="index.html"><img src="img/icon.png" alt="" width="30" height="30">Écho</a>
+      <nav class="nav" aria-label="Navigation principale">
+        <a href="fonctionnalites.html">Fonctionnalités</a>
+        <a href="telecharger.html">Télécharger</a>
+        <a href="aide.html">Aide</a>
+        <a href="confidentialite.html">Vie privée</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="wrap hero">
+      <span class="eyebrow">Lecteur de musique local · Linux et Windows</span>
+      <h1>Ta musique, <span class="grad">tes fichiers</span>.<br>Rien d'autre.</h1>
+      <p class="lead">Écho est léger, sans publicité, sans compte et sans connexion obligatoire. Tu lui montres un dossier, il joue tout ce qu'il contient.</p>
+      <div class="actions">
+        <a class="btn" href="telecharger.html">Télécharger Écho</a>
+        <a class="btn ghost" href="fonctionnalites.html">Voir les fonctionnalités</a>
+      </div>
+      <figure class="video">
+        <video controls preload="metadata" playsinline poster="img/poster.jpg" aria-label="Présentation d'Écho">
+          <source src="media/echo-promo-fr.mp4" type="video/mp4">
+          Ton navigateur ne peut pas lire cette vidéo.
+        </video>
+      </figure>
+    </div>
+
+    <section class="wrap block" aria-labelledby="pourquoi">
+      <h2 id="pourquoi">Pourquoi Écho</h2>
+      <div class="cards">
+        <article class="card"><div class="ico">📁</div><h3>Ta bibliothèque, pas la nôtre</h3><p>Un ou plusieurs dossiers analysés en profondeur. Les nouveaux fichiers apparaissent tout seuls.</p></article>
+        <article class="card"><div class="ico">🔒</div><h3>Sans compte, sans pub</h3><p>Aucun compte à créer, aucune statistique envoyée. Tes réglages restent sur ta machine.</p></article>
+        <article class="card"><div class="ico">🎞️</div><h3>Tes clips aussi</h3><p>Webm, mp4 ou mkv : la vidéo est calée sur le son, en plein écran ou en mini-fenêtre.</p></article>
+        <article class="card"><div class="ico">🎤</div><h3>Paroles synchronisées</h3><p>La ligne chantée s'illumine. Un clic sur une ligne y saute.</p></article>
+        <article class="card"><div class="ico">🎛️</div><h3>Vitesse et effets</h3><p>De 0,5× à 2×, réverbération, volume propre à chaque morceau, égaliseur.</p></article>
+        <article class="card"><div class="ico">🔄</div><h3>Mises à jour signées</h3><p>Chaque version est signée. Écho refuse un fichier qui ne vient pas de lui.</p></article>
+      </div>
+    </section>
+
+    <section class="wrap block" aria-labelledby="demarrer">
+      <h2 id="demarrer">Prêt en trois étapes</h2>
+      <ol class="steps">
+        <li><div><h3>Installe Écho</h3><p>Un installateur pour Windows, un paquet <code>.deb</code> ou un AppImage pour Linux.</p></div></li>
+        <li><div><h3>Choisis ton dossier</h3><p>Clique sur « Ajouter un dossier » et désigne celui qui contient ta musique.</p></div></li>
+        <li><div><h3>Écoute</h3><p>Clique sur un morceau : les suivants s'enchaînent tout seuls.</p></div></li>
+      </ol>
+    </section>
+
+    <section class="wrap block">
+      <div class="cta">
+        <h2>Essaie-le sur ta musique</h2>
+        <p>Gratuit, sous licence MIT, ouvert et sans abonnement.</p>
+        <div class="actions" style="justify-content:center">
+          <a class="btn" href="telecharger.html">Télécharger</a>
+          <a class="btn ghost" href="https://github.com/wave3k/echo-player">Code source sur GitHub</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>Écho · licence MIT</span>
+      <nav aria-label="Pied de page">
+        <a href="fonctionnalites.html">Fonctionnalités</a>
+        <a href="telecharger.html">Télécharger</a>
+        <a href="aide.html">Aide</a>
+        <a href="confidentialite.html">Vie privée</a>
+        <a href="https://github.com/wave3k/echo-player">GitHub</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

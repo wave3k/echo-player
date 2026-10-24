@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aide · Écho</title>
+  <meta name="description" content="Premiers pas, raccourcis clavier, formats acceptés et réponses aux questions fréquentes sur Écho.">
+  <meta name="color-scheme" content="dark light">
+  <link rel="icon" href="img/favicon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="index.html"><img src="img/icon.png" alt="" width="30" height="30">Écho</a>
+      <nav class="nav" aria-label="Navigation principale">
+        <a href="fonctionnalites.html">Fonctionnalités</a>
+        <a href="telecharger.html">Télécharger</a>
+        <a href="aide.html" aria-current="page">Aide</a>
+        <a href="confidentialite.html">Vie privée</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap page prose">
+    <span class="eyebrow">Aide</span>
+    <h1>Aide d'Écho</h1>
+    <p class="lead">Les premiers pas, les raccourcis et les réponses aux questions qu'on se pose le plus souvent.</p>
+
+    <h2>Premiers pas</h2>
+    <ol>
+      <li>Au premier lancement, clique sur <strong>Ajouter un dossier</strong> et choisis celui qui contient ta musique.</li>
+      <li>Clique sur un morceau : les suivants s'enchaînent tout seuls.</li>
+      <li>Tu as ajouté des fichiers ? Clique sur <strong>Actualiser</strong>. Tu peux aussi activer l'actualisation au démarrage.</li>
+      <li>Dans <strong>Réglages</strong>, choisis la disposition, les couleurs et la police.</li>
+    </ol>
+
+    <h2>Raccourcis clavier</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Touche</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>Espace</kbd></td><td>Lecture ou pause</td></tr>
+        <tr><td><kbd>Maj</kbd> + <kbd>→</kbd> / <kbd>←</kbd></td><td>Morceau suivant ou précédent</td></tr>
+        <tr><td><kbd>→</kbd> / <kbd>←</kbd></td><td>Avancer ou reculer de quelques secondes</td></tr>
+        <tr><td><kbd>L</kbd></td><td>Paroles en plein écran</td></tr>
+        <tr><td><kbd>^</kbd> / <kbd>$</kbd> (AZERTY) ou <kbd>[</kbd> / <kbd>]</kbd> (QWERTY)</td><td>Ralentir ou accélérer la lecture</td></tr>
+        <tr><td><kbd>Alt</kbd> + <kbd>↑</kbd> / <kbd>↓</kbd></td><td>Déplacer le morceau choisi dans la file (<kbd>Suppr</kbd> le retire)</td></tr>
+        <tr><td><kbd>F</kbd></td><td>Clip en plein écran (section Clips)</td></tr>
+        <tr><td><kbd>Échap</kbd></td><td>Fermer une fenêtre ou un panneau</td></tr>
+        <tr><td><kbd>Tab</kbd></td><td>Déplacer le focus. Les barres de progression se règlent avec <kbd>←</kbd> / <kbd>→</kbd>.</td></tr>
+        <tr><td>Touches média</td><td>Lecture, pause, suivant, précédent</td></tr>
+      </tbody>
+    </table></div>
+
+    <h2>Formats acceptés</h2>
+    <p>mp3, flac, m4a, aac, ogg, opus, wav, aiff, wma, ainsi que d'autres formats moins courants (wv, ape, mpc…). Les conteneurs vidéo (mp4, webm, mkv, mov) sont lus pour leur son, et leur image s'affiche dans la section Clips.</p>
+    <p>Tu peux choisir les formats dans <strong>Réglages → Formats acceptés</strong>.</p>
+
+    <h2>Questions fréquentes</h2>
+
+    <h3>Un format ne se lit pas, ou le son est absent.</h3>
+    <p>Le décodage passe par GStreamer. Un format peu courant peut demander un greffon : sous Linux, installe <code>gstreamer1.0-plugins-good</code>, <code>-bad</code> et <code>gstreamer1.0-libav</code>.</p>
+
+    <h3>Où sont mes réglages et mes données ?</h3>
+    <p>Dans <code>~/.config/com.echo.player/</code> pour les réglages, le cache de la bibliothèque et les corrections des morceaux. Les pochettes sont dans <code>~/.cache/com.echo.player/covers/</code>. Les fichiers audio ne sont jamais modifiés.</p>
+
+    <h3>Peut-on n'utiliser que la tonalité avec la vitesse ?</h3>
+    <p>Non, pour l'instant. L'élément qui le permettait faisait planter Écho sur certains fichiers : la tonalité ne suit donc que la vitesse, comme sur un disque.</p>
+
+    <h3>Le statut Discord ne s'affiche pas.</h3>
+    <p>Active <strong>Réglages → Système → Statut Discord</strong>, avec l'application Discord ouverte sur le même ordinateur.</p>
+
+    <h3>Une pochette est fausse, ou manque.</h3>
+    <p>Clic droit sur le morceau, puis <strong>Chercher une pochette en ligne…</strong> pour choisir parmi plusieurs propositions. Une pochette choisie à la main n'est jamais remplacée automatiquement.</p>
+
+    <h3>Un morceau a un mauvais titre ou un mauvais artiste.</h3>
+    <p>Clic droit, puis <strong>Modifier</strong>. La correction est gardée à part : ton fichier reste intact, et tu peux revenir à l'original à tout moment.</p>
+
+    <div class="note" style="margin-top:32px">Tu ne trouves pas ta réponse ? Ouvre une demande sur <a href="https://github.com/wave3k/echo-player/issues">GitHub</a>.</div>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>Écho · licence MIT</span>
+      <nav aria-label="Pied de page">
+        <a href="index.html">Accueil</a>
+        <a href="fonctionnalites.html">Fonctionnalités</a>
+        <a href="telecharger.html">Télécharger</a>
+        <a href="confidentialite.html">Vie privée</a>
+        <a href="https://github.com/wave3k/echo-player">GitHub</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

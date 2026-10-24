@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Télécharger · Écho</title>
+  <meta name="description" content="Télécharge Écho pour Windows ou Linux : installateur, paquet .deb, AppImage, ou compilation depuis les sources.">
+  <meta name="color-scheme" content="dark light">
+  <link rel="icon" href="img/favicon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="index.html"><img src="img/icon.png" alt="" width="30" height="30">Écho</a>
+      <nav class="nav" aria-label="Navigation principale">
+        <a href="fonctionnalites.html">Fonctionnalités</a>
+        <a href="telecharger.html" aria-current="page">Télécharger</a>
+        <a href="aide.html">Aide</a>
+        <a href="confidentialite.html">Vie privée</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap page prose">
+    <span class="eyebrow">Télécharger</span>
+    <h1>Installer Écho</h1>
+    <p class="lead">Les fichiers de la dernière version sont sur la page des publications GitHub. Écho te signale ensuite les nouvelles versions.</p>
+    <div class="actions">
+      <a class="btn" href="https://github.com/wave3k/echo-player/releases/latest">Voir la dernière version</a>
+    </div>
+
+    <h2>Choisir le fichier</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Système</th><th>Fichier</th><th>Comment l'installer</th></tr></thead>
+      <tbody>
+        <tr><td>Windows 10 / 11</td><td><code>Echo_x.y.z_x64-setup.exe</code><br>ou <code>.msi</code></td><td>Double-clic, puis suis l'installateur.</td></tr>
+        <tr><td>Debian, Ubuntu, Mint…</td><td><code>Echo_x.y.z_amd64.deb</code></td><td><code>sudo apt install ./Echo_*.deb</code></td></tr>
+        <tr><td>Autres distributions Linux</td><td><code>Echo_x.y.z_amd64.AppImage</code></td><td><code>chmod +x</code> puis double-clic.</td></tr>
+      </tbody>
+    </table></div>
+
+    <h2>Installer depuis les sources (Linux)</h2>
+    <p>Il faut <a href="https://rustup.rs">Rust</a> et les dépendances système de Tauri 2 (WebKitGTK), voir le <a href="https://v2.tauri.app/start/prerequisites/#linux">guide Tauri</a>.</p>
+    <pre><code>git clone https://github.com/wave3k/echo-player.git
+cd echo-player
+./packaging/build.sh
+./packaging/install.sh</code></pre>
+    <p>Aucun droit administrateur n'est nécessaire : tout est installé dans <code>~/.local</code>. Écho s'ouvre ensuite depuis le menu des applications, ou avec la commande <code>echo-player</code>.</p>
+
+    <h2>Mises à jour</h2>
+    <p>Écho vérifie les nouvelles versions toutes les six heures. Tu peux les installer automatiquement, ou seulement être prévenu, au choix dans les réglages. Chaque version est signée : Écho refuse un fichier qui ne vient pas de lui.</p>
+    <div class="note">Le paquet <code>.deb</code> ne se met pas à jour seul : il faut repasser par la page des publications.</div>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>Écho · licence MIT</span>
+      <nav aria-label="Pied de page">
+        <a href="index.html">Accueil</a>
+        <a href="fonctionnalites.html">Fonctionnalités</a>
+        <a href="aide.html">Aide</a>
+        <a href="confidentialite.html">Vie privée</a>
+        <a href="https://github.com/wave3k/echo-player">GitHub</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

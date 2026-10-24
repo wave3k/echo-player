@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fonctionnalités · Écho</title>
+  <meta name="description" content="Bibliothèque, clips, paroles, albums et artistes, playlists, file d'attente, vitesse et effets, recherche avancée : tout ce qu'Écho sait faire.">
+  <meta name="color-scheme" content="dark light">
+  <link rel="icon" href="img/favicon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="index.html"><img src="img/icon.png" alt="" width="30" height="30">Écho</a>
+      <nav class="nav" aria-label="Navigation principale">
+        <a href="fonctionnalites.html" aria-current="page">Fonctionnalités</a>
+        <a href="telecharger.html">Télécharger</a>
+        <a href="aide.html">Aide</a>
+        <a href="confidentialite.html">Vie privée</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap page prose">
+    <span class="eyebrow">Fonctionnalités</span>
+    <h1>Tout ce qu'Écho sait faire</h1>
+    <p class="lead">Une bibliothèque qui reste rapide avec des dizaines de milliers de morceaux, et des outils pour l'écouter comme tu l'aimes.</p>
+
+    <h2>Bibliothèque</h2>
+    <div class="feature-row"><h3>Dossiers et analyse</h3><p>Ajoute un ou plusieurs dossiers : titre, artiste, album, durée et pochette sont lus dans les tags. Les nouveaux fichiers apparaissent tout seuls, et les analyses suivantes ne relisent que les fichiers modifiés.</p></div>
+    <div class="feature-row"><h3>Albums et artistes</h3><p>Des onglets pour parcourir par album ou par artiste. Une page d'album donne les pistes dans l'ordre du disque ; une page d'artiste rassemble ses plus écoutés, ses albums, ses morceaux, ses featurings et ses clips.</p></div>
+    <div class="feature-row"><h3>Recherche avancée</h3><p>Une recherche sans tenir compte des accents, et des filtres à combiner : <code>artiste:ninho</code>, <code>année&gt;2018</code>, <code>durée&lt;3:00</code>, <code>écoutes&gt;10</code>, <code>ajouté&lt;30j</code>, <code>est:favori</code>, <code>-live</code>. Une recherche se garde en playlist intelligente qui se remplit seule.</p></div>
+    <div class="feature-row"><h3>Doublons</h3><p>Repère le même morceau en plusieurs fichiers (MP3 et FLAC, clip téléchargé deux fois…) et signale le fichier de meilleure qualité. Un doublon se masque d'un clic : le fichier n'est jamais supprimé.</p></div>
+    <div class="feature-row"><h3>Modifier un morceau</h3><p>Titre, artiste, album et pochette se corrigent par clic droit. Tes fichiers ne sont jamais modifiés, et tu peux toujours revenir à l'original.</p></div>
+
+    <h2>Clips et featurings</h2>
+    <div class="feature-row"><h3>Clips vidéo</h3><p>Une section pour regarder tes clips (webm, mp4, mkv). La vidéo est calée sur le son, qui garde le fondu enchaîné, l'égaliseur et les touches média. Plein écran avec <kbd>F</kbd>, ou mini-fenêtre qui reste à l'écran quand tu changes de section.</p></div>
+    <div class="feature-row"><h3>Featurings</h3><p>Les invités sont reconnus dans l'artiste (« Tiakola x Dave », « Ninho feat. Niska ») et dans le titre (« feat. Dave »). Chaque artiste a sa liste, featurings compris.</p></div>
+
+    <h2>Écoute</h2>
+    <div class="feature-row"><h3>Paroles synchronisées</h3><p>En plein écran avec <kbd>L</kbd>, la ligne chantée s'illumine et un clic sur une ligne y saute. Les paroles viennent d'un fichier <code>.lrc</code>, des tags, ou, si tu l'actives, de LRCLIB.</p></div>
+    <div class="feature-row"><h3>Vitesse et effets</h3><p>Vitesse de 0,5× à 2×, en gardant la voix ou avec une tonalité qui suit, comme un disque (« slowed », « sped up »). Réverbération, et un volume propre à chaque morceau. Les touches <kbd>^</kbd> / <kbd>$</kbd> ou <kbd>[</kbd> / <kbd>]</kbd> règlent la vitesse.</p></div>
+    <div class="feature-row"><h3>Son</h3><p>Volume égal entre les morceaux, sans les saturer. Égaliseur à six préréglages (Neutre, Basses, Rap, Voix, Aigus, Acoustique) et fondu enchaîné de 3, 6 ou 10 secondes.</p></div>
+    <div class="feature-row"><h3>Visualiseur</h3><p>Le son mis en image, en barres ou en onde, dans « Écouter » et derrière les paroles. Il n'est calculé que lorsqu'il est à l'écran.</p></div>
+
+    <h2>Listes</h2>
+    <div class="feature-row"><h3>Playlists</h3><p>Crée tes playlists, ajoute un morceau par clic droit, lis-les dans l'ordre ou en aléatoire. Import et export au format M3U, compatible avec VLC, foobar2000 ou Winamp.</p></div>
+    <div class="feature-row"><h3>File d'attente</h3><p>Glisse un morceau pour le déplacer, ou utilise <kbd>Alt</kbd> + <kbd>↑</kbd> / <kbd>↓</kbd>. Retire-le d'un clic, vide la file en gardant le morceau en cours, ou enregistre-la comme playlist.</p></div>
+    <div class="feature-row"><h3>Favoris et listes automatiques</h3><p>Un cœur pour aimer un morceau, et des listes qui se remplissent seules : favoris, ajoutés récemment, les plus écoutés, jamais écoutés, une liste par artiste. Les statistiques restent sur ta machine.</p></div>
+
+    <h2>Bureau et apparence</h2>
+    <div class="feature-row"><h3>Trois dispositions</h3><p>Normale, compacte (pochettes en carrousel) ou minimaliste (un album ouvert). Elles s'adaptent aux fenêtres étroites des gestionnaires en mosaïque comme Hyprland ou Sway.</p></div>
+    <div class="feature-row"><h3>Thèmes</h3><p>Clair, sombre ou celui du système. Quatre palettes, trois polices, et une taille de texte et des arrondis réglables. Les animations peuvent être désactivées.</p></div>
+    <div class="feature-row"><h3>Intégration au système</h3><p>Touches média, widget du bureau (MPRIS), icône dans la barre, notification à chaque morceau, statut Discord « Écoute… » si tu l'actives, et démarrage avec la session.</p></div>
+
+    <div class="note" style="margin-top:32px">Prochainement : un <strong>studio de transitions</strong>, pour enchaîner les morceaux façon DJ, avec tempo et temps analysés.</div>
+
+    <p style="margin-top:40px"><a class="btn" href="telecharger.html">Télécharger Écho</a></p>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>Écho · licence MIT</span>
+      <nav aria-label="Pied de page">
+        <a href="index.html">Accueil</a>
+        <a href="telecharger.html">Télécharger</a>
+        <a href="aide.html">Aide</a>
+        <a href="confidentialite.html">Vie privée</a>
+        <a href="https://github.com/wave3k/echo-player">GitHub</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

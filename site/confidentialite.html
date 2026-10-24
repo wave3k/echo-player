@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vie privée · Écho</title>
+  <meta name="description" content="Écho ne collecte rien : ta musique et tes réglages restent sur ta machine. Voici les seuls services auxquels il se connecte.">
+  <meta name="color-scheme" content="dark light">
+  <link rel="icon" href="img/favicon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="index.html"><img src="img/icon.png" alt="" width="30" height="30">Écho</a>
+      <nav class="nav" aria-label="Navigation principale">
+        <a href="fonctionnalites.html">Fonctionnalités</a>
+        <a href="telecharger.html">Télécharger</a>
+        <a href="aide.html">Aide</a>
+        <a href="confidentialite.html" aria-current="page">Vie privée</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap page prose">
+    <span class="eyebrow">Vie privée</span>
+    <h1>Ta musique reste chez toi</h1>
+    <p class="lead">Écho n'a pas de compte, pas de publicité et n'envoie aucune statistique. Ta bibliothèque, tes réglages et tes playlists restent sur ton ordinateur.</p>
+
+    <h2>Les seules connexions</h2>
+    <p>Écho ne se connecte qu'à ces services, et seulement dans les cas indiqués :</p>
+    <div class="scroll"><table>
+      <thead><tr><th>Service</th><th>Quand</th><th>Ce qui est envoyé</th></tr></thead>
+      <tbody>
+        <tr><td>GitHub</td><td>Vérification des mises à jour (désactivable)</td><td>Rien de personnel.</td></tr>
+        <tr><td><a href="https://lrclib.net">LRCLIB</a> et lyrics.ovh</td><td>Paroles en ligne, si tu les actives</td><td>Seuls l'artiste, le titre et la durée.</td></tr>
+        <tr><td><a href="https://musicbrainz.org">MusicBrainz</a>, <a href="https://coverartarchive.org">Cover Art Archive</a> et Deezer</td><td>Pochettes en ligne, si tu les actives ou si tu en cherches une</td><td>Seuls l'artiste, le titre et l'album.</td></tr>
+        <tr><td>Deezer</td><td>Photos des artistes, si tu les actives</td><td>Seul le nom de l'artiste.</td></tr>
+      </tbody>
+    </table></div>
+    <p>Sans ces réglages, seule la vérification des mises à jour touche le réseau.</p>
+
+    <h2>Ce qui est stocké sur ta machine</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Emplacement</th><th>Contenu</th></tr></thead>
+      <tbody>
+        <tr><td><code>~/.config/com.echo.player/</code></td><td>Réglages, cache de la bibliothèque, corrections des morceaux</td></tr>
+        <tr><td><code>~/.cache/com.echo.player/covers/</code></td><td>Pochettes extraites des fichiers ou trouvées en ligne. Tu peux les vider depuis les réglages.</td></tr>
+      </tbody>
+    </table></div>
+    <p>Si un fichier de réglages est abîmé, il est mis de côté sous le nom <code>settings.json.bad</code> plutôt qu'effacé.</p>
+
+    <h2>Ce qu'Écho ne fait pas</h2>
+    <ul>
+      <li>Il ne demande aucun compte et n'a pas de connexion obligatoire.</li>
+      <li>Il n'affiche aucune publicité et ne vend aucune donnée.</li>
+      <li>Il ne modifie jamais tes fichiers audio : les corrections restent à part.</li>
+      <li>Il n'envoie pas d'écoutes. Les statistiques (les plus écoutés, jamais écoutés…) restent sur ta machine.</li>
+    </ul>
+
+    <h2>Le code est public</h2>
+    <p>Écho est distribué sous licence MIT. Tu peux lire le code source sur <a href="https://github.com/wave3k/echo-player">GitHub</a> et vérifier ces affirmations toi-même.</p>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>Écho · licence MIT</span>
+      <nav aria-label="Pied de page">
+        <a href="index.html">Accueil</a>
+        <a href="fonctionnalites.html">Fonctionnalités</a>
+        <a href="telecharger.html">Télécharger</a>
+        <a href="aide.html">Aide</a>
+        <a href="https://github.com/wave3k/echo-player">GitHub</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
