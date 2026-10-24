@@ -25,22 +25,36 @@
   <main class="wrap page prose">
     <span class="eyebrow">Télécharger</span>
     <h1>Installer Écho</h1>
-    <p class="lead">Les fichiers de la dernière version sont sur la page des publications GitHub. Écho te signale ensuite les nouvelles versions.</p>
-    <div class="actions">
-      <a class="btn" href="https://github.com/wave3k/echo-player/releases/latest">Voir la dernière version</a>
+    <p class="lead">Choisis ton système : le lien télécharge directement le fichier de la dernière version. Aucun compte n'est demandé.</p>
+    <p class="dl-version" id="dl-version">Dernière version : <strong id="dl-num">1.4.0</strong> · <a href="https://github.com/wave3k/echo-player/releases">toutes les versions et leurs notes</a></p>
+
+    <div class="dl-grid one-col">
+      <article class="dl" data-os="windows">
+        <span class="dl-tag">Windows 10 et 11</span>
+        <h3>Installateur Windows (.exe)</h3>
+        <p>Le format recommandé pour un usage personnel. Écho apparaît dans le menu Démarrer, et les mises à jour se font ensuite depuis l'application.</p>
+        <a class="btn" href="https://github.com/wave3k/echo-player/releases/download/v1.4.0/Echo_1.4.0_x64-setup.exe" data-asset="exe">Télécharger le .exe</a>
+        <p class="alt">Format entreprise : <a href="https://github.com/wave3k/echo-player/releases/download/v1.4.0/Echo_1.4.0_x64_en-US.msi" data-asset="msi">.msi</a></p>
+      </article>
+
+      <article class="dl" data-os="linux">
+        <span class="dl-tag">Debian, Ubuntu, Linux Mint, Pop!_OS…</span>
+        <h3>Paquet .deb</h3>
+        <p>Installe-le avec le gestionnaire de paquets. Les dépendances sont tirées automatiquement et l'entrée de menu est ajoutée.</p>
+        <a class="btn" href="https://github.com/wave3k/echo-player/releases/download/v1.4.0/Echo_1.4.0_amd64.deb" data-asset="deb">Télécharger le .deb</a>
+        <p class="alt">Dans un terminal : <code>sudo apt install ./Echo_*.deb</code></p>
+      </article>
+
+      <article class="dl" data-os="linux">
+        <span class="dl-tag">Toutes les autres distributions</span>
+        <h3>AppImage</h3>
+        <p>Un seul fichier, aucune installation. Rends-le exécutable, puis lance-le.</p>
+        <a class="btn ghost" href="https://github.com/wave3k/echo-player/releases/download/v1.4.0/Echo_1.4.0_amd64.AppImage" data-asset="appimage">Télécharger l'AppImage</a>
+        <p class="alt">Dans un terminal : <code>chmod +x Echo_*.AppImage</code></p>
+      </article>
     </div>
 
-    <h2>Choisir le fichier</h2>
-    <div class="scroll"><table>
-      <thead><tr><th>Système</th><th>Fichier</th><th>Comment l'installer</th></tr></thead>
-      <tbody>
-        <tr><td>Windows 10 / 11</td><td><code>Echo_x.y.z_x64-setup.exe</code><br>ou <code>.msi</code></td><td>Double-clic, puis suis l'installateur.</td></tr>
-        <tr><td>Debian, Ubuntu, Mint…</td><td><code>Echo_x.y.z_amd64.deb</code></td><td><code>sudo apt install ./Echo_*.deb</code></td></tr>
-        <tr><td>Autres distributions Linux</td><td><code>Echo_x.y.z_amd64.AppImage</code></td><td><code>chmod +x</code> puis double-clic.</td></tr>
-      </tbody>
-    </table></div>
-
-    <h2>Installer depuis les sources (Linux)</h2>
+    <h2 id="sources">Compiler depuis les sources (Linux)</h2>
     <p>Il faut <a href="https://rustup.rs">Rust</a> et les dépendances système de Tauri 2 (WebKitGTK), voir le <a href="https://v2.tauri.app/start/prerequisites/#linux">guide Tauri</a>.</p>
     <pre><code>git clone https://github.com/wave3k/echo-player.git
 cd echo-player
@@ -50,7 +64,7 @@ cd echo-player
 
     <h2>Mises à jour</h2>
     <p>Écho vérifie les nouvelles versions toutes les six heures. Tu peux les installer automatiquement, ou seulement être prévenu, au choix dans les réglages. Chaque version est signée : Écho refuse un fichier qui ne vient pas de lui.</p>
-    <div class="note">Le paquet <code>.deb</code> ne se met pas à jour seul : il faut repasser par la page des publications.</div>
+    <div class="note">Le paquet <code>.deb</code> ne se met pas à jour depuis l'application : repasse par cette page pour installer la version suivante.</div>
   </main>
 
   <footer>
@@ -65,5 +79,7 @@ cd echo-player
       </nav>
     </div>
   </footer>
+
+  <script src="script.js" defer></script>
 </body>
 </html>

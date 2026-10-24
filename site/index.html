@@ -3,12 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Écho : un lecteur de musique local</title>
-  <meta name="description" content="Écho est un lecteur de musique local pour Linux et Windows : léger, sans publicité, sans compte. Tu lui montres un dossier, il joue tout ce qu'il contient.">
+  <title>Écho · Ta musique, tes fichiers</title>
+  <meta name="description" content="Écho est un lecteur de musique local pour Linux et Windows. Sans compte, sans publicité, sans abonnement et sans connexion : tu lui montres un dossier, il joue tout ce qu'il contient.">
   <meta name="color-scheme" content="dark light">
-  <meta property="og:title" content="Écho : un lecteur de musique local">
-  <meta property="og:description" content="Léger, sans publicité, sans compte. Tu lui montres un dossier, il joue tout ce qu'il contient.">
+  <meta property="og:title" content="Écho · Ta musique, tes fichiers">
+  <meta property="og:description" content="Un lecteur de musique local pour Linux et Windows. Sans compte, sans publicité, sans abonnement.">
   <meta property="og:type" content="website">
+  <meta property="og:image" content="img/shots/01-ecouter.png">
   <link rel="icon" href="img/favicon.png">
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -18,7 +19,7 @@
       <a class="brand" href="index.html"><img src="img/icon.png" alt="" width="30" height="30">Écho</a>
       <nav class="nav" aria-label="Navigation principale">
         <a href="fonctionnalites.html">Fonctionnalités</a>
-        <a href="telecharger.html">Télécharger</a>
+        <a href="#telecharger">Télécharger</a>
         <a href="aide.html">Aide</a>
         <a href="confidentialite.html">Vie privée</a>
       </nav>
@@ -26,50 +27,269 @@
   </header>
 
   <main>
-    <div class="wrap hero">
-      <span class="eyebrow">Lecteur de musique local · Linux et Windows</span>
-      <h1>Ta musique, <span class="grad">tes fichiers</span>.<br>Rien d'autre.</h1>
-      <p class="lead">Écho est léger, sans publicité, sans compte et sans connexion obligatoire. Tu lui montres un dossier, il joue tout ce qu'il contient.</p>
-      <div class="actions">
-        <a class="btn" href="telecharger.html">Télécharger Écho</a>
-        <a class="btn ghost" href="fonctionnalites.html">Voir les fonctionnalités</a>
+    <!-- Accroche -->
+    <section class="wrap hero">
+      <div class="hero-copy">
+        <span class="eyebrow">Lecteur de musique local · Linux et Windows</span>
+        <h1>Ta musique, sur ton ordinateur.<br><span class="grad">Rien d'autre.</span></h1>
+        <p class="lead">Écho joue les fichiers que tu possèdes déjà. Pas de compte, pas de publicité, pas d'abonnement, pas de connexion obligatoire. Tu lui montres un dossier, il trouve chaque morceau, sa pochette et ses paroles, et te laisse écouter.</p>
+        <div class="actions">
+          <a class="btn big" id="cta-main" href="#telecharger">Télécharger Écho</a>
+          <a class="btn ghost big" href="fonctionnalites.html">Découvrir les fonctionnalités</a>
+        </div>
+        <div class="hero-meta">
+          <span>Gratuit à vie</span>
+          <span>Sans compte</span>
+          <span>Sans publicité</span>
+          <span>Fonctionne hors ligne</span>
+          <span>Licence MIT, code ouvert</span>
+        </div>
       </div>
-      <figure class="video">
-        <video controls preload="metadata" playsinline poster="img/poster.jpg" aria-label="Présentation d'Écho">
-          <source src="media/echo-promo-fr.mp4" type="video/mp4">
-          Ton navigateur ne peut pas lire cette vidéo.
-        </video>
+
+      <figure class="shot hero-shot">
+        <img src="img/shots/01-ecouter.png" width="1280" height="800" alt="La fenêtre d'Écho : la liste des morceaux à gauche, la pochette et les contrôles en bas" fetchpriority="high">
+        <figcaption>Écho en disposition normale, thème sombre.</figcaption>
       </figure>
-    </div>
+    </section>
 
-    <section class="wrap block" aria-labelledby="pourquoi">
-      <h2 id="pourquoi">Pourquoi Écho</h2>
-      <div class="cards">
-        <article class="card"><div class="ico">📁</div><h3>Ta bibliothèque, pas la nôtre</h3><p>Un ou plusieurs dossiers analysés en profondeur. Les nouveaux fichiers apparaissent tout seuls.</p></article>
-        <article class="card"><div class="ico">🔒</div><h3>Sans compte, sans pub</h3><p>Aucun compte à créer, aucune statistique envoyée. Tes réglages restent sur ta machine.</p></article>
-        <article class="card"><div class="ico">🎞️</div><h3>Tes clips aussi</h3><p>Webm, mp4 ou mkv : la vidéo est calée sur le son, en plein écran ou en mini-fenêtre.</p></article>
-        <article class="card"><div class="ico">🎤</div><h3>Paroles synchronisées</h3><p>La ligne chantée s'illumine. Un clic sur une ligne y saute.</p></article>
-        <article class="card"><div class="ico">🎛️</div><h3>Vitesse et effets</h3><p>De 0,5× à 2×, réverbération, volume propre à chaque morceau, égaliseur.</p></article>
-        <article class="card"><div class="ico">🔄</div><h3>Mises à jour signées</h3><p>Chaque version est signée. Écho refuse un fichier qui ne vient pas de lui.</p></article>
+    <!-- Manifeste -->
+    <section class="wrap block">
+      <p class="quote">Tes fichiers t'appartiennent. Ton lecteur devrait fonctionner comme eux : sur ta machine, à ta façon, sans rien te demander en échange.</p>
+      <div class="pillars">
+        <article class="pillar">
+          <h3>Tu gardes la main sur tes fichiers</h3>
+          <p>Écho lit ta musique là où elle se trouve. Il ne la copie pas, ne la déplace pas et ne la modifie jamais. Même tes corrections de titre ou de pochette restent à part, et tu peux revenir à l'original à tout moment.</p>
+        </article>
+        <article class="pillar">
+          <h3>Aucun compte, aucune statistique</h3>
+          <p>Tu l'ouvres, tu écoutes. Tes playlists, tes réglages et tes écoutes restent sur ta machine. Rien n'est envoyé à qui que ce soit, sauf les services en ligne que tu actives toi-même.</p>
+        </article>
+        <article class="pillar">
+          <h3>Léger, rapide, bien intégré</h3>
+          <p>Écrit en Rust avec Tauri : une application native qui s'ouvre vite et reste légère. Touches média, widget du bureau, icône dans la barre, notification à chaque morceau : Écho se comporte comme une vraie application de bureau.</p>
+        </article>
       </div>
     </section>
 
-    <section class="wrap block" aria-labelledby="demarrer">
-      <h2 id="demarrer">Prêt en trois étapes</h2>
-      <ol class="steps">
-        <li><div><h3>Installe Écho</h3><p>Un installateur pour Windows, un paquet <code>.deb</code> ou un AppImage pour Linux.</p></div></li>
-        <li><div><h3>Choisis ton dossier</h3><p>Clique sur « Ajouter un dossier » et désigne celui qui contient ta musique.</p></div></li>
-        <li><div><h3>Écoute</h3><p>Clique sur un morceau : les suivants s'enchaînent tout seuls.</p></div></li>
-      </ol>
+    <!-- Fonctionnalités mises en scène -->
+    <section class="wrap block" aria-labelledby="fonctions">
+      <span class="eyebrow">Ce qu'il fait</span>
+      <h2 id="fonctions">Tout ce qu'il faut. Rien de trop.</h2>
+      <p class="lead">Une bibliothèque sérieuse, des outils pour écouter comme tu l'aimes, et une interface qui s'efface devant la musique.</p>
+
+      <div class="showcase">
+        <div class="showcase-row">
+          <div class="txt">
+            <span class="tag">Bibliothèque</span>
+            <h3>Ajoute tes dossiers une fois</h3>
+            <p>Les nouveaux fichiers apparaissent tout seuls. Les analyses suivantes ne relisent que ce qui a changé, donc la bibliothèque reste rapide même avec des dizaines de milliers de morceaux.</p>
+            <ul>
+              <li>Titre, artiste, album, année et pochette lus dans les tags</li>
+              <li>Recherche instantanée, sans tenir compte des accents</li>
+              <li>Les doublons repérés, le meilleur fichier signalé, rien supprimé</li>
+            </ul>
+          </div>
+          <figure class="shot">
+            <img src="img/shots/02-bibliotheque.png" width="1280" height="800" loading="lazy" alt="La bibliothèque d'Écho avec la liste des morceaux, triée par artiste">
+            <figcaption>La bibliothèque, triée par artiste.</figcaption>
+          </figure>
+        </div>
+
+        <div class="showcase-row flip">
+          <figure class="shot">
+            <img src="img/shots/03-album.png" width="1280" height="800" loading="lazy" alt="La page d'un album dans Écho, avec ses pistes dans l'ordre du disque">
+            <figcaption>Une page d'album, pistes dans l'ordre du disque.</figcaption>
+          </figure>
+          <div class="txt">
+            <span class="tag">Albums et artistes</span>
+            <h3>Comme un vrai disque</h3>
+            <p>Une grille de pochettes, puis la page d'un album avec ses pistes dans l'ordre du disque. La page d'un artiste rassemble ses morceaux les plus écoutés, ses albums, ses featurings et ses clips.</p>
+            <ul>
+              <li>Les pistes dans l'ordre, même quand les fichiers sont mal nommés</li>
+              <li>Les featurings reconnus dans l'artiste et dans le titre</li>
+              <li>Photos d'artistes depuis Deezer, si tu les actives</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="showcase-row">
+          <div class="txt">
+            <span class="tag">Paroles</span>
+            <h3>Chanter avec la bonne ligne</h3>
+            <p>En plein écran, avec <kbd>L</kbd>, la ligne chantée s'illumine. Un clic sur une ligne y saute. Les paroles viennent d'un fichier <code>.lrc</code>, des tags ou, si tu l'actives, d'une base libre de paroles synchronisées.</p>
+          </div>
+          <figure class="shot">
+            <img src="img/shots/05-paroles.png" width="1280" height="800" loading="lazy" alt="Les paroles en plein écran, la ligne en cours est mise en avant">
+            <figcaption>Les paroles en plein écran.</figcaption>
+          </figure>
+        </div>
+
+        <div class="showcase-row flip">
+          <figure class="shot">
+            <img src="img/shots/06-vitesse.png" width="1280" height="800" loading="lazy" alt="Le panneau Vitesse et effets, avec le curseur de vitesse, la tonalité liée et la réverbération">
+            <figcaption>Vitesse, tonalité et réverbération.</figcaption>
+          </figure>
+          <div class="txt">
+            <span class="tag">Vitesse et effets</span>
+            <h3>Ralentis, accélère, rends-le lourd</h3>
+            <p>De 0,5× à 2×. Tu gardes la voix naturelle, ou tu laisses la tonalité suivre la vitesse, comme sur un disque. Les préréglages <em>Slowed + reverb</em> et <em>Sped up</em> sont là pour démarrer.</p>
+            <ul>
+              <li>Réverbération et égaliseur à six préréglages</li>
+              <li>Un volume propre à chaque morceau, gardé pour lui</li>
+              <li>Les touches <kbd>^</kbd> <kbd>$</kbd> (ou <kbd>[</kbd> <kbd>]</kbd>) règlent la vitesse à la volée</li>
+            </ul>
+          </div>
+        </div>
+
+
+        <div class="showcase-row">
+          <div class="txt">
+            <span class="tag">Recherche avancée</span>
+            <h3>Cherche comme tu penses</h3>
+            <p>Combine les filtres dans la même recherche : <code>artiste:ninho</code>, <code>année&gt;2018</code>, <code>durée&lt;3:00</code>, <code>est:favori</code>, <code>-live</code>. Une recherche se garde en playlist intelligente, qui se remplit seule au fil de tes ajouts.</p>
+          </div>
+          <figure class="shot">
+            <img src="img/shots/08-recherche.png" width="1280" height="800" loading="lazy" alt="La recherche avancée d'Écho : artiste:kevin, sans les morceaux live, moins de 4 minutes">
+            <figcaption>Une recherche avec plusieurs filtres.</figcaption>
+          </figure>
+        </div>
+      </div>
+
+      <div class="cards more-features">
+        <article class="card">
+          <div class="ico">🎞️</div>
+          <h3>Clips vidéo</h3>
+          <p>Webm, mp4 ou mkv : la vidéo suit le son, qui garde le fondu enchaîné et l'égaliseur. Plein écran avec <kbd>F</kbd>, ou mini-fenêtre qui reste à l'écran pendant que tu parcours ta bibliothèque.</p>
+        </article>
+        <article class="card">
+          <div class="ico">📃</div>
+          <h3>File et playlists</h3>
+          <p>Glisse un morceau pour le déplacer, ou utilise <kbd>Alt</kbd> + <kbd>↑</kbd> <kbd>↓</kbd>. Enregistre la file comme playlist, et importe ou exporte au format M3U pour VLC, foobar2000 ou Winamp.</p>
+        </article>
+        <article class="card">
+          <div class="ico">❤️</div>
+          <h3>Favoris et listes qui se remplissent seules</h3>
+          <p>Favoris, ajoutés récemment, les plus écoutés, jamais écoutés, une liste par artiste. Les statistiques restent sur ta machine.</p>
+        </article>
+        <article class="card">
+          <div class="ico">🧹</div>
+          <h3>Doublons repérés</h3>
+          <p>Le même morceau en MP3 et en FLAC ? Écho signale le meilleur fichier. Un doublon se masque d'un clic, et le fichier n'est jamais supprimé.</p>
+        </article>
+      </div>
     </section>
 
+    <!-- Dispositions -->
+    <section class="wrap block" aria-labelledby="dispositions">
+      <span class="eyebrow">Ton écran, ta façon</span>
+      <h2 id="dispositions">Trois dispositions, deux thèmes</h2>
+      <p class="lead">Une fenêtre large, une fenêtre étroite posée dans un gestionnaire de fenêtres en mosaïque, ou un album plein écran : Écho s'adapte à la place que tu lui laisses.</p>
+      <div class="gallery">
+        <figure class="shot wide">
+          <img src="img/shots/11-compacte.png" width="1280" height="800" loading="lazy" alt="Disposition compacte d'Écho, avec le lecteur réduit à l'essentiel">
+          <figcaption>Compacte : l'essentiel, et une barre d'icônes discrète.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="img/shots/12-minimaliste.png" width="1280" height="800" loading="lazy" alt="Disposition minimaliste d'Écho : un album ouvert, entouré de ses pochettes">
+          <figcaption>Minimaliste : un album ouvert, entouré de ses pochettes.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="img/shots/13-clair.png" width="1280" height="800" loading="lazy" alt="Écho en thème clair, la bibliothèque en détail">
+          <figcaption>Thème clair, quatre palettes au choix.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <!-- Ce qu'il ne fera jamais -->
+    <section class="wrap block" aria-labelledby="jamais">
+      <span class="eyebrow">Ce qu'Écho ne fera pas</span>
+      <h2 id="jamais">Pas de compte, pas de pub, pas de piège</h2>
+      <p class="lead">Un lecteur doit s'effacer. Voilà ce que tu n'auras jamais à subir.</p>
+      <ul class="never">
+        <li><b>Te demander un compte</b><span>Ni inscription, ni mot de passe, ni adresse e-mail.</span></li>
+        <li><b>Diffuser de la publicité</b><span>Pas une seule, dans aucune version.</span></li>
+        <li><b>Envoyer tes écoutes</b><span>Tes statistiques restent dans ton dossier de configuration.</span></li>
+        <li><b>Modifier tes fichiers</b><span>Les corrections de titre et de pochette sont gardées à part.</span></li>
+        <li><b>Te bloquer hors ligne</b><span>La musique joue sans réseau. Seuls les services que tu actives se connectent.</span></li>
+      </ul>
+    </section>
+
+    <!-- Téléchargement -->
+    <section class="wrap block" id="telecharger" aria-labelledby="installer">
+      <span class="eyebrow">Télécharger</span>
+      <h2 id="installer">Installer Écho en une minute</h2>
+      <p class="lead">Choisis ton système. Le bouton télécharge directement le fichier de la dernière version, sans passer par une autre page.</p>
+      <p class="dl-version" id="dl-version">Dernière version : <strong id="dl-num">1.4.0</strong> · <a href="https://github.com/wave3k/echo-player/releases">toutes les versions</a></p>
+
+      <div class="dl-grid">
+        <article class="dl" id="dl-windows" data-os="windows">
+          <span class="dl-tag">Windows 10 et 11</span>
+          <h3>Installateur Windows</h3>
+          <p>Double-clique sur le fichier, suis les étapes, et Écho apparaît dans le menu Démarrer. Les mises à jour se font ensuite depuis l'application.</p>
+          <a class="btn" href="https://github.com/wave3k/echo-player/releases/download/v1.4.0/Echo_1.4.0_x64-setup.exe" data-asset="exe">Télécharger le .exe</a>
+          <p class="alt">Préfères le format .msi ? <a href="https://github.com/wave3k/echo-player/releases/download/v1.4.0/Echo_1.4.0_x64_en-US.msi" data-asset="msi">Télécharger le .msi</a></p>
+        </article>
+
+        <article class="dl" id="dl-deb" data-os="linux">
+          <span class="dl-tag">Debian, Ubuntu, Linux Mint</span>
+          <h3>Paquet .deb</h3>
+          <p>Installe-le avec le gestionnaire de paquets. Il ajoute l'entrée de menu et les dépendances.</p>
+          <a class="btn" href="https://github.com/wave3k/echo-player/releases/download/v1.4.0/Echo_1.4.0_amd64.deb" data-asset="deb">Télécharger le .deb</a>
+          <p class="alt">Dans un terminal : <code>sudo apt install ./Echo_*.deb</code></p>
+        </article>
+
+        <article class="dl" id="dl-appimage" data-os="linux">
+          <span class="dl-tag">Toutes les autres distributions</span>
+          <h3>AppImage</h3>
+          <p>Un seul fichier, aucune installation. Rends-le exécutable, puis double-clique dessus.</p>
+          <a class="btn ghost" href="https://github.com/wave3k/echo-player/releases/download/v1.4.0/Echo_1.4.0_amd64.AppImage" data-asset="appimage">Télécharger l'AppImage</a>
+          <p class="alt">Puis <code>chmod +x Echo_*.AppImage</code></p>
+        </article>
+      </div>
+
+      <p class="notice" style="margin-top:20px">Chaque fichier est signé par Écho : l'application refuse une mise à jour qui ne vient pas de l'équipe. Pour compiler toi-même, la marche à suivre est dans <a href="telecharger.html#sources">la page Télécharger</a>.</p>
+    </section>
+
+    <!-- FAQ -->
+    <section class="wrap block" aria-labelledby="faq">
+      <span class="eyebrow">Questions fréquentes</span>
+      <h2 id="faq">On te répond tout de suite</h2>
+      <div class="faq">
+        <details>
+          <summary>Écho est-il vraiment gratuit ?</summary>
+          <p>Oui, à vie. Écho est distribué sous licence MIT : gratuit, libre, et son code source est public sur GitHub.</p>
+        </details>
+        <details>
+          <summary>Faut-il un compte ou une connexion Internet ?</summary>
+          <p>Non. Écho fonctionne hors ligne. Les seules connexions sont la vérification des mises à jour (désactivable) et, si tu les actives, les paroles et pochettes en ligne ainsi que les photos d'artistes.</p>
+        </details>
+        <details>
+          <summary>Quels formats sont acceptés ?</summary>
+          <p>mp3, flac, m4a, aac, ogg, opus, wav, aiff, wma et d'autres formats moins courants. Les vidéos (mp4, webm, mkv, mov) se lisent pour leur son, et leur image s'affiche dans la section Clips.</p>
+        </details>
+        <details>
+          <summary>Mes fichiers sont-ils modifiés ?</summary>
+          <p>Jamais. Les corrections de titre, d'artiste ou de pochette sont enregistrées à côté, dans les données d'Écho, et tu peux les annuler.</p>
+        </details>
+        <details>
+          <summary>Et sur macOS ou Android ?</summary>
+          <p>Pas pour l'instant : Écho vise Linux et Windows. Le code étant ouvert, rien n'empêche de le compiler ailleurs, mais ce n'est pas testé.</p>
+        </details>
+        <details>
+          <summary>Comment se passent les mises à jour ?</summary>
+          <p>Écho vérifie les nouvelles versions toutes les six heures. Il peut les installer seul, ou simplement te prévenir, au choix dans les réglages.</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- Appel final -->
     <section class="wrap block">
-      <div class="cta">
-        <h2>Essaie-le sur ta musique</h2>
-        <p>Gratuit, sous licence MIT, ouvert et sans abonnement.</p>
+      <div class="final">
+        <h2>Ta musique t'attend</h2>
+        <p>Télécharge Écho, ajoute ton dossier de musique, et lance le premier morceau. Il ne te demandera rien d'autre.</p>
         <div class="actions" style="justify-content:center">
-          <a class="btn" href="telecharger.html">Télécharger</a>
-          <a class="btn ghost" href="https://github.com/wave3k/echo-player">Code source sur GitHub</a>
+          <a class="btn big" href="#telecharger">Télécharger Écho</a>
+          <a class="btn ghost big" href="https://github.com/wave3k/echo-player">Voir le code sur GitHub</a>
         </div>
       </div>
     </section>
@@ -77,15 +297,17 @@
 
   <footer>
     <div class="wrap">
-      <span>Écho · licence MIT</span>
+      <span>Écho · licence MIT · fait pour écouter ses propres fichiers</span>
       <nav aria-label="Pied de page">
         <a href="fonctionnalites.html">Fonctionnalités</a>
-        <a href="telecharger.html">Télécharger</a>
+        <a href="#telecharger">Télécharger</a>
         <a href="aide.html">Aide</a>
         <a href="confidentialite.html">Vie privée</a>
         <a href="https://github.com/wave3k/echo-player">GitHub</a>
       </nav>
     </div>
   </footer>
+
+  <script src="script.js" defer></script>
 </body>
 </html>
