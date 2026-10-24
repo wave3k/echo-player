@@ -26,6 +26,16 @@ const state = {
   resuming: null,
   shuffle: false,
   repeat: "off",
+  listOrder: [],
+  /// Écoutes et favoris (playlists automatiques), gardés par le cœur.
+  stats: { plays: {}, favorites: [] },
+  playlists: [],
+  playlistOpen: null,
+  /// Bibliothèque : onglet (morceaux, albums, artistes), page ouverte et tris.
+  libTab: "songs",
+  libOpen: null,
+  albumSort: "name",
+  artistSort: "name",
 };
 
 const el = (id) => document.getElementById(id);
@@ -78,6 +88,41 @@ function currentId() {
 function currentTrack() {
   return trackById(currentId());
 }
+/// Fichier sans son : vidéo seule. Les noms en « .f616.webm » sont des morceaux
+/// intermédiaires de yt-dlp (image et son téléchargés à part, jamais assemblés).
+function silentReason(track) {
+  return /\.f\d+\.[a-z0-9]+$/i.test(track.path || "")
+    ? "Téléchargement incomplet : ce fichier n'est que l'image du clip, le son n'a jamais été ajouté. Retélécharge-le."
+    : "Vidéo sans piste son : le fichier ne contient que l'image.";
+}
+
+function muteBadge(track, cls = "badge mute-badge") {
+  return `<span class="${cls}" title="${escapeHtml(silentReason(track))}">${/\.f\d+\./i.test(track.path || "") ? "incomplet" : "muet"}</span>`;
+}
+
+/// Monte ou baisse le volume (en points de pourcentage) et le montre brièvement.
+function nudgeVolume(delta) {
+  const v = Math.min(100, Math.max(0, Math.round((state.settings.volume + delta) / 5) * 5));
+  if (Sound.muted && delta > 0) Sound.setMuted(false);
+  Sound.setVolume(v / 100);
+  saveSettings({ volume: v }, { refresh: false });
+  const slider = el("volume");
+  if (slider) {
+    slider.value = String(v);
+    slider.style.setProperty("--p", `${v}%`);
+  }
+  refreshToggles();
+  toast(`Volume : ${v} %`);
+}
+
+/// Déplace la lecture, bornée au morceau. Durée encore inconnue (MP3 sans durée dans
+/// ses tags) : seul le début borne, sinon la lecture repartirait de 0:00.
+function seekTo(seconds) {
+  const media = mediaEl();
+  const end = isFinite(media.duration) && media.duration > 0 ? media.duration : Infinity;
+  media.currentTime = Math.min(end, Math.max(0, seconds));
+}
+
 function audioTracks() {
   return state.tracks;
 }
@@ -299,6 +344,7 @@ function applySettings() {
   body.dataset.font = s.font;
   body.dataset.mode = s.mode;
   body.dataset.anim = s.animations ? "on" : "off";
+  body.dataset.visual = s.visualizer === "off" ? "off" : "on";
   syncSettingsNav();
   document.documentElement.dataset.text = s.text_size;
   body.style.setProperty("--radius", `${s.radius}px`);
@@ -306,10 +352,17 @@ function applySettings() {
   body.style.setProperty("--radius-md", `${(s.radius * 1.17).toFixed(1)}px`);
   body.style.setProperty("--radius-lg", `${(s.radius * 1.5).toFixed(1)}px`);
   Sound.configure(s);
+  updateSoundBadge();
   const volume = el("volume");
   if (volume) {
     volume.value = String(s.volume);
     volume.style.setProperty("--p", `${s.volume}%`);
+  }
+  // Disposition ou visualiseur changés : la vidéo et le spectre suivent.
+  if (typeof updateVisual === "function" && state.tracks) {
+    visual.colors = null;
+    updateVisual();
+    updateClipVideo();
   }
 }
 
@@ -456,6 +509,12 @@ function sectionLecture() {
     <h4 style="margin-top:18px">Son</h4>
     <div class="card">
       ${rowSwitch("Volume égal", "Rattrape les différences de niveau entre les morceaux, sans jamais saturer", "loudness", s.loudness)}
+      ${rowButton("Vitesse et effets", "Vitesse, tonalité, « slowed + reverb », et le volume propre à un morceau. Aussi sur le bouton à côté des paroles.", `<button class="ghost-btn" data-action="sound">${icon("gauge", 15)} Régler</button>`)}
+      ${rowSeg("Visualiseur", "Le son mis en image sous le morceau en cours (dans chaque disposition) et sous les paroles", "visualizer", [
+        { value: "bars", label: "Barres" },
+        { value: "wave", label: "Onde" },
+        { value: "off", label: "Aucun" },
+      ], s.visualizer)}
       <div class="set-row eq-row">
         <div class="left"><div class="lab">Égaliseur</div><div class="desc">Couleur du son, appliquée à tous les morceaux</div></div>
         <div class="set-ctl eq-ctl">${EQ_CHOICES.map(
@@ -463,10 +522,11 @@ function sectionLecture() {
         ).join("")}</div>
       </div>
     </div>
-    <h4 style="margin-top:18px">Paroles et pochettes</h4>
+    <h4 style="margin-top:18px">Paroles, pochettes et photos</h4>
     <div class="card">
       ${rowSwitch("Chercher les paroles en ligne", "Sur LRCLIB, une base libre, quand le fichier n'en a pas. Seuls l'artiste, le titre et la durée sont envoyés.", "lyrics_online", s.lyrics_online)}
       ${rowSwitch("Chercher les pochettes en ligne", "Pour les morceaux sans pochette ou avec une image de clip : MusicBrainz et Cover Art Archive (bases libres), Deezer en secours. Seuls l'artiste, le titre et l'album sont envoyés. Une pochette choisie à la main n'est jamais remplacée.", "covers_online", s.covers_online)}
+      ${rowSwitch("Photos des artistes en ligne", "Pour la vue Artistes : la photo de l'artiste sur Deezer, seulement si son nom correspond exactement. Seul le nom de l'artiste est envoyé.", "artist_photos", s.artist_photos)}
       ${rowSeg("Pochette préférée", "Auto : celle de l'album s'il est dans les tags du fichier, sinon celle du single", "covers_prefer", [
         { value: "auto", label: "Auto" },
         { value: "album", label: "Album" },
@@ -514,6 +574,10 @@ function sectionBiblio() {
       </div>
       ${rowSwitch("Actualiser au démarrage", "Vérifie la bibliothèque à chaque ouverture", "refresh_on_start", s.refresh_on_start)}
       ${rowSwitch("Ajouter les nouveaux morceaux automatiquement", "Un fichier ajouté, déplacé ou supprimé dans tes dossiers est pris en compte tout seul", "watch", s.watch)}
+    </div>
+    <h4 style="margin-top:18px">Doublons</h4>
+    <div class="card">
+      ${rowButton("Trouver les doublons", "Le même morceau en plusieurs fichiers (MP3 et FLAC, clip téléchargé deux fois…) : choisis lesquels masquer", `<button class="ghost-btn" data-action="duplicates">${icon("search", 15)} Chercher</button>`)}
     </div>
     <h4 style="margin-top:18px">Pochettes en cache</h4>
     <div class="card">
@@ -609,7 +673,7 @@ function buildSettingsPanel() {
         ["Données", "history"],
         ["À propos", "dashboard"],
       ]
-        .map(([name, ic], i) => `<button data-goto="${i}" class="${i === 0 ? "on" : ""}">${icon(ic, 15)}<span>${name}</span></button>`)
+        .map(([name, ic], i) => `<button data-goto="${i}" class="${i === 0 ? "on" : ""}" aria-label="${name}" title="${name}">${icon(ic, 15)}<span>${name}</span></button>`)
         .join("")}
     </div>
     <div class="settings-body" id="settings-body">
@@ -828,6 +892,13 @@ function bindSettings(panel) {
         await rescan();
         refreshSettingsPanel();
         break;
+      case "duplicates":
+        openDuplicates();
+        break;
+      case "sound":
+        e.stopPropagation();
+        openSoundPop(action);
+        break;
       case "clear-cache": {
         toast("Pochettes vidées, relecture des fichiers…");
         const cleared = await invoke("clear_cover_cache");
@@ -871,7 +942,7 @@ function bindSettings(panel) {
         const path = typeof picked === "string" ? picked : picked.path;
         try {
           const boot = await invoke("import_settings", { path });
-          await applyBootstrap(boot);
+          await applyBootstrap(boot, { resume: false });
           toast("Réglages importés.");
         } catch (err) {
           toast(String(err));
@@ -885,7 +956,7 @@ function bindSettings(panel) {
         ]);
         if (!ok) return;
         const boot = await invoke("reset_settings");
-        await applyBootstrap(boot);
+        await applyBootstrap(boot, { resume: false });
         toast("Réglages remis à zéro.");
         break;
       }
@@ -906,22 +977,43 @@ function visibleTracks() {
   if (
     visibleMemo.version !== libraryVersion ||
     visibleMemo.search !== state.search ||
-    visibleMemo.sort !== state.sort
+    visibleMemo.sort !== state.sort ||
+    // Écoutes et favoris comptent dans une recherche avancée (« est:favori »).
+    (visibleMemo.stats !== statsVersion && EchoLogic.parseQuery(state.search).advanced)
   ) {
     visibleMemo = {
       version: libraryVersion,
       search: state.search,
       sort: state.sort,
+      stats: statsVersion,
       list: computeVisibleTracks(),
     };
   }
   return visibleMemo.list;
 }
 
+/// Ce qu'une recherche avancée sait des morceaux, en plus de leurs tags.
+function searchContext() {
+  return {
+    key: searchKey,
+    plays: state.stats.plays || {},
+    favorites: new Set(state.stats.favorites || []),
+    now: Date.now(),
+  };
+}
+
+/// Morceaux qui répondent à une recherche, simple (« ninho ») ou avancée
+/// (« artiste:ninho année>2018 -live »), dans l'ordre de `list`.
+function searchTracks(list, text) {
+  const q = EchoLogic.parseQuery(text);
+  if (!q.words.length && !q.advanced) return list;
+  if (!q.advanced) return list.filter((t) => q.words.every((w) => searchKey(t).includes(w)));
+  const ctx = searchContext();
+  return list.filter((t) => EchoLogic.matchQuery(q, t, ctx));
+}
+
 function computeVisibleTracks() {
-  const q = normalize(state.search);
-  let list = audioTracks();
-  if (q) list = list.filter((t) => searchKey(t).includes(q));
+  const list = searchTracks(audioTracks(), state.search);
   const key = state.sort;
   const dir = key === "duration" ? -1 : 1;
   return [...list].sort((a, b) => {
@@ -941,7 +1033,7 @@ function rowHtml(track, index, current, playing) {
       </div>
     </div>
     <div class="row-album">${escapeHtml(track.album || "—")}</div>
-    <div class="row-time">${track.has_audio === false ? '<span class="badge mute-badge" title="Vidéo sans piste son">muet</span>' : track.duration_ms ? formatTime(track.duration_ms) : "—"}</div>`;
+    <div class="row-time">${track.has_audio === false ? muteBadge(track) : track.duration_ms ? formatTime(track.duration_ms) : "—"}</div>`;
 }
 
 /// Liste virtuelle : seules les lignes visibles existent, et une ligne déjà dessinée
@@ -998,6 +1090,7 @@ let libShown = null;
 function renderLibrary() {
   const listEl = el("list");
   if (!listEl) return;
+  renderBrowse();
   const all = visibleTracks();
   state.listOrder = all.map((t) => t.id);
   // Liste vide : on dit pourquoi (recherche sans résultat, ou rien encore).
@@ -1012,6 +1105,7 @@ function renderLibrary() {
     if (empty) listEl.dataset.empty = empty;
     else delete listEl.dataset.empty;
   }
+  paintSearchBar(all);
   // Même liste qu'avant (lecture, pause, changement de vue) : on ne met à jour que l'état.
   if (all === libShown && listEl.querySelector(":scope > .list-spacer")) {
     if (listEl.vlDraw) listEl.vlDraw();
@@ -1030,6 +1124,94 @@ function renderLibrary() {
     paintRowState(row, i);
     return row;
   });
+}
+
+/// Sous la recherche : combien de morceaux, et de quoi les lire ou les garder.
+function paintSearchBar(all) {
+  const bar = el("search-bar");
+  if (!bar) return;
+  const text = state.search.trim();
+  bar.hidden = !text;
+  if (!text) return;
+  const advanced = EchoLogic.parseQuery(text).advanced;
+  setText(el("search-count"), `${countLabel(all.length)}${advanced ? " · recherche avancée" : ""}`);
+  el("search-play").disabled = !all.length;
+}
+
+/* ---------------- aide de la recherche avancée ---------------- */
+
+const SEARCH_HELP = [
+  ["artiste:ninho", "l'artiste, featurings compris"],
+  ['titre:"lettre à"', "guillemets pour garder les espaces"],
+  ["album:destin", "ou genre:rap"],
+  ["année>2018", "ou année:2010-2015"],
+  ["durée<3:00", "ou durée>5m"],
+  ["écoutes>10", "les plus écoutés"],
+  ["ajouté<30j", "arrivés ce mois-ci (sem, mois, an)"],
+  ["est:favori", "ou est:clip, est:jamais"],
+  ["-live", "exclut un mot (ou -artiste:x)"],
+];
+
+/// Place une fenêtre flottante près de son bouton, sans jamais sortir de la fenêtre.
+function placePop(pop, anchor, below) {
+  const a = anchor.getBoundingClientRect();
+  const w = pop.offsetWidth;
+  const h = pop.offsetHeight;
+  const under = a.bottom + 8;
+  const over = a.top - h - 8;
+  const top = below ? (under + h <= innerHeight - 8 || over < 8 ? under : over) : over >= 8 ? over : under;
+  pop.style.left = `${Math.max(8, Math.min(a.right - w, innerWidth - w - 8))}px`;
+  pop.style.top = `${Math.max(8, Math.min(top, innerHeight - h - 8))}px`;
+}
+
+function openSearchHelp(anchor) {
+  const pop = el("search-pop");
+  if (!pop.hidden) return closeSearchHelp();
+  closeSoundPop();
+  pop.innerHTML = `
+    <div class="snd-head">
+      <div class="snd-title">Recherche avancée</div>
+      <button type="button" class="icon-btn" data-help="close" title="Fermer" aria-label="Fermer">${icon("close", 16)}</button>
+    </div>
+    <p class="snd-hint">Combine des filtres séparés par des espaces : tous doivent correspondre. Touche un exemple pour l'ajouter.</p>
+    <div class="help-list">${SEARCH_HELP.map(
+      ([code, desc]) => `<button type="button" class="help-item" data-example="${escapeHtml(code)}"><code>${escapeHtml(code)}</code><span>${escapeHtml(desc)}</span></button>`
+    ).join("")}</div>
+    <p class="snd-hint">Une recherche se garde en <b>playlist intelligente</b> : elle se remplit seule, même avec les morceaux ajoutés plus tard.</p>`;
+  pop.hidden = false;
+  pop.dataset.for = anchor.id;
+  placePop(pop, anchor, true);
+  playAnim(pop, "menu-in");
+}
+
+function closeSearchHelp() {
+  el("search-pop").hidden = true;
+}
+
+function bindSearch() {
+  el("search-help").addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openSearchHelp(e.currentTarget);
+  });
+  el("search-pop").addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (e.target.closest('[data-help="close"]')) return closeSearchHelp();
+    const item = e.target.closest("[data-example]");
+    if (!item) return;
+    const input = el("search");
+    const code = item.dataset.example;
+    input.value = input.value.trim() ? `${input.value.trim()} ${code}` : code;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus();
+  });
+  document.addEventListener("click", (e) => {
+    if (!el("search-pop").hidden && !e.target.closest("#search-pop")) closeSearchHelp();
+  });
+  el("search-play").addEventListener("click", () => {
+    if (state.listOrder.length) playFromList(0);
+  });
+  el("search-save").addEventListener("click", () => createSmartPlaylist(state.search));
 }
 
 /// État « en cours » / « en lecture » d'une ligne, sans la redessiner.
@@ -1060,6 +1242,8 @@ function renderQueue() {
   const ids = state.queue;
   const count = el("queue-count");
   if (count) setText(count, ids.length ? countLabel(ids.length) : "");
+  el("queue-clear").disabled = ids.length <= 1;
+  el("queue-save").disabled = !ids.length;
 
   if (ids.length === 0) {
     queueShown = "";
@@ -1076,7 +1260,7 @@ function renderQueue() {
   const key = `${libraryVersion}\n${ids.join("\n")}`;
   if (key === queueShown && queue.querySelector(":scope > .list-spacer")) {
     if (queue.vlDraw) queue.vlDraw();
-    for (const [, item] of queueRows) item.classList.toggle("is-current", item.dataset.trackId === currentId());
+    for (const [i, item] of queueRows) item.classList.toggle("is-current", i === state.queueIndex);
     return;
   }
   queueShown = key;
@@ -1087,17 +1271,823 @@ function renderQueue() {
     const id = ids[i];
     const track = byId.get(id);
     if (!track) return null;
-    const item = document.createElement("button");
-    item.className = "queue-item" + (id === currentId() ? " is-current" : "");
+    // Une ligne, pas un bouton : elle contient le bouton « retirer ».
+    const item = document.createElement("div");
+    item.className = "queue-item" + (i === state.queueIndex ? " is-current" : "");
     item.dataset.trackId = id;
-    item.innerHTML = `<span class="queue-num">${i + 1}</span>
+    item.dataset.queueIndex = String(i);
+    item.tabIndex = 0;
+    item.setAttribute("role", "listitem");
+    item.title = "Glisser pour déplacer · Alt + ↑ ↓ au clavier";
+    item.innerHTML = `<span class="queue-grip" aria-hidden="true">${icon("grip", 14)}</span>
+        <span class="queue-num">${i + 1}</span>
         <span class="queue-name">${escapeHtml(track.title)}${track.artist ? " — " + escapeHtml(track.artist) : ""}</span>
-        <span class="queue-time">${track.duration_ms ? formatTime(track.duration_ms) : "—"}</span>`;
-    item.addEventListener("click", () => {
+        <span class="queue-time">${track.duration_ms ? formatTime(track.duration_ms) : "—"}</span>
+        <button type="button" class="queue-x" title="Retirer de la file" aria-label="Retirer de la file">${icon("close", 13)}</button>`;
+    return item;
+  });
+}
+
+/* ---------------- file d'attente : déplacer, retirer, vider ---------------- */
+
+/// Après un changement de la file : écran, carrousel et lecteur du cœur suivent.
+function queueChanged() {
+  renderQueue();
+  renderCarousel();
+  syncNativeQueue();
+}
+
+/// Déplace le morceau `from` à la place `to` (indices de la file d'après le retrait).
+/// Le morceau en cours reste le même, même s'il est présent deux fois dans la file.
+function moveQueue(from, to) {
+  const n = state.queue.length;
+  if (from < 0 || from >= n) return;
+  to = Math.max(0, Math.min(n - 1, to));
+  if (from === to) return;
+  const queue = [...state.queue];
+  const [id] = queue.splice(from, 1);
+  queue.splice(to, 0, id);
+  let cur = state.queueIndex;
+  if (cur === from) cur = to;
+  else if (from < cur && to >= cur) cur -= 1;
+  else if (from > cur && to <= cur) cur += 1;
+  state.queue = queue;
+  state.queueIndex = cur;
+  queueChanged();
+}
+
+function removeFromQueue(i) {
+  // Le morceau en cours reste : on le change avec Suivant.
+  if (i < 0 || i >= state.queue.length || i === state.queueIndex) return;
+  const queue = [...state.queue];
+  queue.splice(i, 1);
+  state.queue = queue;
+  if (i < state.queueIndex) state.queueIndex -= 1;
+  queueChanged();
+}
+
+/// Ne garde que le morceau en cours.
+async function clearQueue() {
+  const n = state.queue.length;
+  if (n <= 1) return;
+  if (n > 10) {
+    const choice = await ask("Vider la file ?", `${countLabel(n - 1)} en seront retirés. Le morceau en cours continue.`, [
+      { label: "Annuler", value: false },
+      { label: "Vider", value: true, primary: true },
+    ]);
+    if (!choice) return;
+  }
+  const id = currentId();
+  state.queue = id ? [id] : [];
+  state.queueIndex = id ? 0 : -1;
+  queueChanged();
+  toast("File vidée.");
+}
+
+async function saveQueue() {
+  const ids = [...new Set(state.queue)].filter((id) => trackById(id));
+  if (!ids.length) return;
+  const created = await createPlaylist(ids);
+  if (created) toast(`File enregistrée dans « ${created.name} ».`);
+}
+
+/// Glisser une ligne de la file pour la déplacer. Les lignes ne bougent pas pendant le
+/// geste (la liste est virtuelle) : une ligne d'insertion montre où elle ira.
+function bindQueue() {
+  const queue = el("queue");
+  let drag = null;
+  // Le clic qui suit un glisser ne lance pas le morceau (il n'arrive pas toujours :
+  // seul celui des 300 ms suivantes est ignoré).
+  let ignoreClickUntil = 0;
+  const QUEUE_EDGE = 36;
+
+  const slotAt = (clientY) => {
+    const rect = queue.getBoundingClientRect();
+    const y = clientY - rect.top + queue.scrollTop;
+    return Math.max(0, Math.min(state.queue.length, Math.round(y / QUEUE_ROW)));
+  };
+  const paint = () => {
+    if (!drag) return;
+    const rect = queue.getBoundingClientRect();
+    // Près d'un bord : la liste défile toute seule.
+    if (drag.y < rect.top + QUEUE_EDGE) queue.scrollTop -= 10;
+    else if (drag.y > rect.bottom - QUEUE_EDGE) queue.scrollTop += 10;
+    drag.slot = slotAt(drag.y);
+    drag.line.style.top = `${drag.slot * QUEUE_ROW - 1}px`;
+    drag.ghost.style.transform = `translateY(${drag.y - drag.startY + queue.scrollTop - drag.startScroll}px)`;
+    drag.frame = requestAnimationFrame(paint);
+  };
+  const stop = (commit) => {
+    if (!drag) return;
+    cancelAnimationFrame(drag.frame);
+    const { from, slot, active } = drag;
+    drag.ghost.classList.remove("dragging");
+    drag.ghost.style.transform = "";
+    drag.line.remove();
+    queue.classList.remove("is-dragging");
+    drag = null;
+    if (commit && active) moveQueue(from, slot > from ? slot - 1 : slot);
+  };
+
+  queue.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.target.closest(".queue-x")) return;
+    const item = e.target.closest(".queue-item");
+    if (!item) return;
+    drag = {
+      from: Number(item.dataset.queueIndex),
+      ghost: item,
+      startY: e.clientY,
+      y: e.clientY,
+      startScroll: queue.scrollTop,
+      slot: Number(item.dataset.queueIndex),
+      active: false,
+      pointer: e.pointerId,
+      line: null,
+      frame: 0,
+    };
+  });
+  queue.addEventListener("pointermove", (e) => {
+    if (!drag || e.pointerId !== drag.pointer) return;
+    drag.y = e.clientY;
+    // Un vrai geste (au-delà de 5 px) : sinon c'est un clic.
+    if (!drag.active && Math.abs(e.clientY - drag.startY) > 5) {
+      drag.active = true;
+      queue.setPointerCapture(e.pointerId);
+      drag.ghost.classList.add("dragging");
+      queue.classList.add("is-dragging");
+      drag.line = document.createElement("div");
+      drag.line.className = "queue-drop";
+      queue.querySelector(":scope > .list-spacer").appendChild(drag.line);
+      drag.frame = requestAnimationFrame(paint);
+    }
+  });
+  queue.addEventListener("pointerup", (e) => {
+    if (!drag || e.pointerId !== drag.pointer) return;
+    const was = drag.active;
+    stop(true);
+    if (was) ignoreClickUntil = performance.now() + 300;
+  });
+  queue.addEventListener("pointercancel", () => stop(false));
+  queue.addEventListener("lostpointercapture", () => drag && drag.active && stop(true));
+
+  queue.addEventListener("click", (e) => {
+    if (performance.now() < ignoreClickUntil) return;
+    const item = e.target.closest(".queue-item");
+    if (!item) return;
+    const i = Number(item.dataset.queueIndex);
+    if (e.target.closest(".queue-x")) return removeFromQueue(i);
+    state.queueIndex = i;
+    playCurrent();
+  });
+  queue.addEventListener("keydown", (e) => {
+    const item = e.target.closest(".queue-item");
+    if (!item || e.target !== item) return;
+    const i = Number(item.dataset.queueIndex);
+    if (e.key === "Enter") {
+      e.preventDefault();
       state.queueIndex = i;
       playCurrent();
+    } else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      // Alt + flèches : la ligne monte ou descend, et garde le focus.
+      e.preventDefault();
+      e.stopPropagation();
+      const to = i + (e.key === "ArrowUp" ? -1 : 1);
+      if (to < 0 || to >= state.queue.length) return;
+      moveQueue(i, to);
+      requestAnimationFrame(() => {
+        const moved = queue.querySelector(`.queue-item[data-queue-index="${to}"]`);
+        if (moved) moved.focus({ preventScroll: false });
+      });
+    } else if (e.key === "Delete" || e.key === "Backspace") {
+      e.preventDefault();
+      e.stopPropagation();
+      removeFromQueue(i);
+    }
+  });
+  el("queue-clear").addEventListener("click", clearQueue);
+  el("queue-save").addEventListener("click", saveQueue);
+}
+
+/* ============================================================
+   Bibliothèque : albums et artistes
+   ============================================================ */
+
+const LIB_SORTS = {
+  songs: [["title", "Titre"], ["artist", "Artiste"], ["album", "Album"], ["duration", "Durée"]],
+  albums: [["name", "Titre"], ["artist", "Artiste"], ["year", "Année"], ["added", "Ajout récent"]],
+  artists: [["name", "Nom"], ["count", "Morceaux"], ["plays", "Écoutes"]],
+};
+
+/// Préférences d'affichage propres à cet écran (onglet, tri) : perdues sans gravité.
+function loadPref(key, fallback, allowed) {
+  try {
+    const v = localStorage.getItem(key);
+    return v && (!allowed || allowed.includes(v)) ? v : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function savePref(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* stockage indisponible : la préférence ne survit pas au redémarrage */
+  }
+}
+
+/// Clé d'un artiste, la même que celle des listes automatiques.
+function artistKey(name) {
+  return normalize(name).replace(/\s+/g, " ").trim();
+}
+
+/// Numéro de piste : celui des tags, sinon celui du nom de fichier (« 03 - Titre.ogg »).
+/// 0 : inconnu.
+function trackNo(t) {
+  if (t.track_no) return t.track_no;
+  if (t._no === undefined) {
+    // « 03 - », « 03. », « 03_ » : pas « 50 Cent - … ».
+    const m = String(t.path || "").match(/[\\/](\d{1,3})\s*[-._)][^\\/]*$/);
+    t._no = m ? Number(m[1]) : 0;
+  }
+  return t._no;
+}
+
+/// Albums de la bibliothèque. Un album sans « artiste de l'album » dans les tags est
+/// reconnu à son nom et à son dossier : les morceaux d'une compilation restent ensemble.
+let albumGroupMemo = { version: -1, list: [], byKey: new Map(), byTrack: new Map(), loose: 0 };
+
+function albumGroups() {
+  if (albumGroupMemo.version === libraryVersion) return albumGroupMemo;
+  const first = new Map();
+  let loose = 0;
+  for (const t of audioTracks()) {
+    const name = (t.album || "").trim();
+    if (!name) {
+      loose += 1;
+      continue;
+    }
+    const dir = String(t.path || "").replace(/[\\/][^\\/]*$/, "");
+    const key = `${normalize(name)}|${t.album_artist ? normalize(t.album_artist) : "dir:" + dir}`;
+    let g = first.get(key);
+    if (!g) first.set(key, (g = { name, albumArtist: t.album_artist || "", tracks: [] }));
+    g.tracks.push(t);
+  }
+  const merged = new Map();
+  for (const g of first.values()) {
+    let artist = g.albumArtist;
+    if (!artist) {
+      // L'artiste principal le plus présent ; aucun ne domine : une compilation.
+      const counts = new Map();
+      for (const t of g.tracks) {
+        const a = (t.artists && t.artists[0]) || t.artist || "";
+        counts.set(a, (counts.get(a) || 0) + 1);
+      }
+      const [top, n] = [...counts.entries()].sort((x, y) => y[1] - x[1])[0];
+      artist = top && n / g.tracks.length >= 0.6 ? top : "Artistes variés";
+    }
+    // Le même album rangé en plusieurs dossiers (CD1, CD2) : un seul album.
+    const key = `${normalize(g.name)}::${normalize(artist)}`;
+    const m = merged.get(key);
+    if (m) m.tracks.push(...g.tracks);
+    else merged.set(key, { key, name: g.name, artist, tracks: [...g.tracks] });
+  }
+  const list = [...merged.values()];
+  const byTrack = new Map();
+  for (const a of list) {
+    // Numéro inconnu : après les autres, par titre.
+    a.tracks.sort(
+      (x, y) => (x.disc_no || 0) - (y.disc_no || 0) || (trackNo(x) || 1000) - (trackNo(y) || 1000) || COLLATOR.compare(x.title, y.title)
+    );
+    a.year = 0;
+    a.added = 0;
+    a.duration = 0;
+    for (const t of a.tracks) {
+      a.year = Math.max(a.year, t.year || 0);
+      a.added = Math.max(a.added, t.mtime || 0);
+      a.duration += t.duration_ms || 0;
+      byTrack.set(t.id, a.key);
+    }
+    a.coverTrack = a.tracks.find((t) => t.cover) || a.tracks[0];
+    a.artistKey = a.artist === "Artistes variés" ? "" : artistKey(a.artist);
+  }
+  albumGroupMemo = { version: libraryVersion, list, byKey: new Map(list.map((a) => [a.key, a])), byTrack, loose };
+  return albumGroupMemo;
+}
+
+/// Artistes (featurings compris), une fois par version de la bibliothèque.
+let artistMemo = { version: -1, index: new Map() };
+
+function artistEntries() {
+  if (artistMemo.version !== libraryVersion) {
+    const index = artistIndex();
+    for (const a of index.values()) {
+      a.tracks = [...a.main, ...a.guest].map(trackById).filter(Boolean);
+      a.coverTrack = a.tracks.find((t) => t.cover) || a.tracks[0] || null;
+    }
+    artistMemo = { version: libraryVersion, index };
+  }
+  return artistMemo.index;
+}
+
+function artistPlays(a) {
+  const plays = state.stats.plays || {};
+  return a.tracks.reduce((sum, t) => sum + ((plays[t.id] && plays[t.id].count) || 0), 0);
+}
+
+/// Albums et artistes qui répondent à la recherche de la bibliothèque. Une recherche
+/// simple porte sur leur nom ; une recherche avancée, sur leurs morceaux.
+function browseMatches(kind) {
+  const text = state.search.trim();
+  const q = EchoLogic.parseQuery(text);
+  const { list } = albumGroups();
+  const artists = [...artistEntries().values()];
+  if (!text) return kind === "albums" ? list : artists;
+  if (!q.advanced) {
+    const has = (s) => q.words.every((w) => normalize(s).includes(w));
+    return kind === "albums" ? list.filter((a) => has(`${a.name} ${a.artist}`)) : artists.filter((a) => has(a.name));
+  }
+  const tracks = searchTracks(audioTracks(), text);
+  if (kind === "albums") {
+    const { byTrack } = albumGroups();
+    const keys = new Set(tracks.map((t) => byTrack.get(t.id)).filter(Boolean));
+    return list.filter((a) => keys.has(a.key));
+  }
+  const keys = new Set();
+  for (const t of tracks) {
+    for (const n of [...(t.artists && t.artists.length ? t.artists : [t.artist]), ...(t.featured || [])]) if (n) keys.add(artistKey(n));
+  }
+  return artists.filter((a) => keys.has(a.key));
+}
+
+function sortedAlbums() {
+  const list = [...browseMatches("albums")];
+  const by = state.albumSort;
+  return list.sort((x, y) => {
+    if (by === "artist") return COLLATOR.compare(x.artist, y.artist) || (x.year || 9999) - (y.year || 9999) || COLLATOR.compare(x.name, y.name);
+    if (by === "year") return (y.year || 0) - (x.year || 0) || COLLATOR.compare(x.name, y.name);
+    if (by === "added") return y.added - x.added || COLLATOR.compare(x.name, y.name);
+    return COLLATOR.compare(x.name, y.name);
+  });
+}
+
+function sortedArtists() {
+  const list = [...browseMatches("artists")];
+  const by = state.artistSort;
+  if (by === "plays") {
+    const plays = new Map(list.map((a) => [a.key, artistPlays(a)]));
+    return list.sort((x, y) => plays.get(y.key) - plays.get(x.key) || COLLATOR.compare(x.name, y.name));
+  }
+  if (by === "count") return list.sort((x, y) => y.tracks.length - x.tracks.length || COLLATOR.compare(x.name, y.name));
+  return list.sort((x, y) => COLLATOR.compare(x.name, y.name));
+}
+
+/* --- photos d'artistes --- */
+
+/// Clé d'artiste → adresse de sa photo (null : pas de photo).
+const artistPhotos = new Map();
+const photoWanted = [];
+let photoBusy = false;
+let photoSetting = null;
+
+function initials(name) {
+  const words = String(name || "?").replace(/[^\p{L}\p{N} ]/gu, " ").trim().split(/\s+/);
+  return ((words[0] || "?")[0] + (words.length > 1 ? words[words.length - 1][0] : "")).toUpperCase();
+}
+
+function setPhoto(node, url) {
+  node.classList.remove("no-cover");
+  node.innerHTML = "";
+  node.style.background = `var(--cover-bg) url("${url}") center / cover no-repeat`;
+  node.dataset.photo = "1";
+}
+
+/// Photo d'un artiste : la sienne (en ligne, si activé), sinon une de ses pochettes,
+/// sinon ses initiales.
+function paintArtistPhoto(node, a) {
+  const url = artistPhotos.get(a.key);
+  if (url) return setPhoto(node, url);
+  if (!node.dataset.photo) {
+    if (a.coverTrack && a.coverTrack.cover && state.settings.show_covers) fillCover(node, a.coverTrack, false);
+    else {
+      const hue = hueFor(a.key);
+      node.style.background = `linear-gradient(140deg, hsl(${hue} 45% 34%), hsl(${(hue + 45) % 360} 45% 20%))`;
+      node.innerHTML = `<span>${escapeHtml(initials(a.name))}</span>`;
+    }
+  }
+  if (state.settings.artist_photos && !artistPhotos.has(a.key) && !photoWanted.some((w) => w.key === a.key)) {
+    photoWanted.push({ key: a.key, name: a.name });
+    pumpPhotos();
+  }
+}
+
+/// Une photo à la fois, sans presser Deezer.
+async function pumpPhotos() {
+  if (photoBusy) return;
+  photoBusy = true;
+  try {
+    while (photoWanted.length) {
+      const { key, name } = photoWanted.shift();
+      if (artistPhotos.has(key)) continue;
+      const path = await invoke("artist_photo", { name }).catch(() => null);
+      // Réglage coupé entre-temps : rien n'est retenu, on recherchera s'il revient.
+      if (!state.settings.artist_photos) break;
+      const url = path ? convertFileSrc(path) : null;
+      artistPhotos.set(key, url);
+      if (url) document.querySelectorAll(`[data-artist-photo="${CSS.escape(key)}"]`).forEach((n) => setPhoto(n, url));
+      await new Promise((r) => setTimeout(r, 120));
+    }
+  } finally {
+    photoBusy = false;
+  }
+}
+
+/* --- affichage --- */
+
+let browseShown = "";
+let browseObserver = null;
+/// Listes de morceaux de la page affichée (album, artiste) : lues au clic sur une ligne.
+let browseSections = [];
+/// Défilement de la grille, retrouvé au retour d'un album ou d'un artiste.
+const gridScroll = { albums: 0, artists: 0 };
+
+function observeBrowse(box) {
+  if (browseObserver) browseObserver.disconnect();
+  if (!window.IntersectionObserver) {
+    box.querySelectorAll("[data-lazy]").forEach(paintLazy);
+    return;
+  }
+  browseObserver = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        browseObserver.unobserve(e.target);
+        paintLazy(e.target);
+      }
+    },
+    { root: box, rootMargin: "400px 0px" }
+  );
+  box.querySelectorAll("[data-lazy]").forEach((n) => browseObserver.observe(n));
+}
+
+/// Pochettes et photos posées quand elles approchent de l'écran.
+function paintLazy(node) {
+  const kind = node.dataset.lazy;
+  if (kind === "album") {
+    const a = albumGroups().byKey.get(node.dataset.album);
+    if (a) fillCover(node.querySelector(".alb-cover"), a.coverTrack, false);
+  } else if (kind === "artist") {
+    const a = artistEntries().get(node.dataset.artist);
+    if (a) paintArtistPhoto(node.querySelector(".art-photo"), a);
+  } else if (kind === "row") {
+    const t = trackById(node.dataset.trackId);
+    if (t) fillCover(node.querySelector(".thumb"), t);
+  }
+}
+
+function albumCard(a) {
+  const sub = [a.artist, a.year || ""].filter(Boolean).join(" · ");
+  return `<button type="button" class="alb-card" data-lazy="album" data-album="${escapeHtml(a.key)}" title="${escapeHtml(a.name)} — ${escapeHtml(a.artist)}">
+    <span class="alb-art"><span class="alb-cover"></span><span class="alb-play" data-play-album title="Lire l'album">${icon("play", 18)}</span></span>
+    <span class="alb-name">${escapeHtml(a.name)}</span>
+    <span class="alb-sub">${escapeHtml(sub)}</span>
+  </button>`;
+}
+
+function artistCard(a) {
+  const n = a.main.length;
+  const sub = n ? countLabel(n) : `${a.guest.length} en featuring`;
+  return `<button type="button" class="alb-card art-card" data-lazy="artist" data-artist="${escapeHtml(a.key)}" title="${escapeHtml(a.name)}">
+    <span class="art-photo" data-artist-photo="${escapeHtml(a.key)}"></span>
+    <span class="alb-name">${escapeHtml(a.name)}</span>
+    <span class="alb-sub">${escapeHtml(sub)}</span>
+  </button>`;
+}
+
+function browseRow(t, n, sec, i, { guest = false, album = false } = {}) {
+  const sub = album && t.album ? `${escapeHtml(t.artist || "—")} · ${escapeHtml(t.album)}` : escapeHtml(t.artist || "—");
+  return `<div class="pl-row browse-row" data-lazy="row" data-track-id="${escapeHtml(t.id)}" data-sec="${sec}" data-i="${i}" data-n="${escapeHtml(String(n))}">
+    <span class="trk-n">${escapeHtml(String(n))}</span>
+    <div class="thumb"></div>
+    <span class="pl-row-text"><span class="row-title">${escapeHtml(t.title)}</span><span class="row-artist">${guest ? `<span class="pl-feat">feat.</span>` : ""}${sub}</span></span>
+    <span class="row-time">${t.has_audio === false ? muteBadge(t) : t.duration_ms ? formatTime(t.duration_ms) : "—"}</span>
+    <span></span>
+  </div>`;
+}
+
+/// Une liste de morceaux de la page, numérotée ; `number(t, i)` donne le numéro affiché.
+function browseList(tracks, opts = {}, number = (t, i) => i + 1) {
+  const sec = browseSections.push(tracks.map((t) => t.id)) - 1;
+  return `<div class="pl-tracks">${tracks.map((t, i) => browseRow(t, number(t, i), sec, i, { ...opts, guest: opts.guests ? opts.guests.has(t.id) : false })).join("")}</div>`;
+}
+
+function renderBrowse() {
+  const box = el("lib-browse");
+  const songs = el("lib-songs");
+  if (!box || !songs) return;
+  const tab = state.libTab;
+  el("lib-tabs").querySelectorAll("[data-tab]").forEach((b) => {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-selected", String(on));
+  });
+  // Le tri proposé dépend de l'onglet.
+  const sort = el("sort");
+  if (sort.dataset.tab !== tab) {
+    sort.dataset.tab = tab;
+    sort.innerHTML = LIB_SORTS[tab].map(([v, label]) => `<option value="${v}">${label}</option>`).join("");
+  }
+  sort.value = tab === "songs" ? state.sort : tab === "albums" ? state.albumSort : state.artistSort;
+  el("search").placeholder = tab === "albums" ? "Rechercher un album…" : tab === "artists" ? "Rechercher un artiste…" : "Rechercher un titre, un artiste…";
+  songs.hidden = tab !== "songs";
+  box.hidden = tab === "songs";
+  if (tab === "songs") {
+    browseShown = "";
+    return;
+  }
+  // Photos en ligne activées après coup : les artistes sans photo sont recherchés de nouveau.
+  if (photoSetting !== state.settings.artist_photos) {
+    photoSetting = state.settings.artist_photos;
+    for (const [k, v] of artistPhotos) if (v === null) artistPhotos.delete(k);
+  }
+  const open = state.libOpen;
+  const advanced = EchoLogic.parseQuery(state.search).advanced;
+  const usesStats = advanced || (tab === "artists" && state.artistSort === "plays") || (open && open.type === "artist");
+  const key = [
+    tab, libraryVersion, usesStats ? statsVersion : "", state.search, state.albumSort, state.artistSort,
+    open ? `${open.type}:${open.key}` : "", state.settings.show_covers, state.settings.artist_photos,
+  ].join("|");
+  if (key === browseShown && box.firstElementChild) {
+    markBrowse();
+    return;
+  }
+  const wasGrid = box.dataset.view === "grid" && box.dataset.tab === tab;
+  browseShown = key;
+  browseSections = [];
+  if (open) {
+    if (wasGrid) gridScroll[tab] = box.scrollTop;
+    const ok = open.type === "album" ? renderAlbumPage(box, open.key) : renderArtistPage(box, open.key);
+    if (!ok) {
+      state.libOpen = null;
+      browseShown = "";
+      return renderBrowse();
+    }
+    box.dataset.view = "page";
+    box.scrollTop = 0;
+  } else {
+    renderGrid(box, tab);
+    const back = box.dataset.view === "page" && box.dataset.tab === tab;
+    box.dataset.view = "grid";
+    if (back) box.scrollTop = gridScroll[tab];
+  }
+  box.dataset.tab = tab;
+  observeBrowse(box);
+  markBrowse();
+}
+
+function renderGrid(box, tab) {
+  if (tab === "albums") {
+    const list = sortedAlbums();
+    const { loose } = albumGroups();
+    const note = loose && !state.search.trim()
+      ? `<p class="hint browse-note">${countLabel(loose)} sans album dans leurs tags : ${loose > 1 ? "ils sont" : "il est"} dans Morceaux et Artistes.</p>`
+      : "";
+    box.innerHTML = list.length
+      ? `<div class="browse-grid">${list.map(albumCard).join("")}</div>${note}`
+      : `<div class="hint browse-empty">${state.search.trim() ? `Aucun album pour « ${escapeHtml(state.search)} ».` : "Aucun album : les morceaux n'ont pas d'album dans leurs tags."}</div>${note}`;
+    return;
+  }
+  const list = sortedArtists();
+  const hint = state.settings.artist_photos
+    ? ""
+    : `<p class="hint browse-note">Les photos des artistes peuvent venir de Deezer : <button type="button" class="link-btn" data-browse="photos">activer</button> (seul le nom de l'artiste est envoyé).</p>`;
+  box.innerHTML = list.length
+    ? `${hint}<div class="browse-grid">${list.map(artistCard).join("")}</div>`
+    : `<div class="hint browse-empty">${state.search.trim() ? `Aucun artiste pour « ${escapeHtml(state.search)} ».` : "Aucun artiste pour l'instant."}</div>`;
+}
+
+function renderAlbumPage(box, key) {
+  const a = albumGroups().byKey.get(key);
+  if (!a) return false;
+  const discs = new Set(a.tracks.map((t) => t.disc_no || 0));
+  const meta = [
+    a.artistKey ? `<button type="button" class="link-btn" data-goto-artist="${escapeHtml(a.artistKey)}">${escapeHtml(a.artist)}</button>` : escapeHtml(a.artist),
+    a.year || "",
+    countLabel(a.tracks.length),
+    a.duration ? formatTime(a.duration) : "",
+  ].filter(Boolean);
+  // Plusieurs disques : un intertitre par disque.
+  let body;
+  if (discs.size > 1) {
+    body = [...discs]
+      .sort((x, y) => x - y)
+      .map((d) => {
+        const tracks = a.tracks.filter((t) => (t.disc_no || 0) === d);
+        return `<div class="browse-sub">Disque ${d || "?"}</div>${browseList(tracks, {}, (t) => trackNo(t) || "—")}`;
+      })
+      .join("");
+  } else {
+    body = browseList(a.tracks, {}, (t) => trackNo(t) || "—");
+  }
+  box.innerHTML = `
+    <div class="browse-page">
+      <button type="button" class="ghost-btn small browse-back" data-browse="back">${icon("arrow_left", 14)}Albums</button>
+      <div class="pl-head">
+        <div class="pl-cover browse-cover"></div>
+        <div class="pl-info">
+          <div class="listen-kicker">Album</div>
+          <div class="pl-title" title="${escapeHtml(a.name)}">${escapeHtml(a.name)}</div>
+          <div class="album-meta">${meta.join(" · ")}</div>
+          <div class="listen-actions">
+            <button type="button" class="play-big" data-browse="play" aria-label="Lire l'album" title="Lire">${icon("play", 20)}</button>
+            <button type="button" class="ghost-btn" data-browse="shuffle">${icon("shuffle", 15)}Aléatoire</button>
+            <button type="button" class="ghost-btn" data-browse="queue">${icon("queue", 15)}Ajouter à la file</button>
+          </div>
+        </div>
+      </div>
+      ${body}
+    </div>`;
+  fillCover(box.querySelector(".browse-cover"), a.coverTrack, false);
+  box.dataset.play = JSON.stringify(a.tracks.map((t) => t.id));
+  return true;
+}
+
+function renderArtistPage(box, key) {
+  const a = artistEntries().get(key);
+  if (!a) return false;
+  const plays = state.stats.plays || {};
+  const count = (t) => (plays[t.id] && plays[t.id].count) || 0;
+  const main = a.main.map(trackById).filter(Boolean).sort((x, y) => COLLATOR.compare(x.title, y.title));
+  const guest = a.guest.map(trackById).filter(Boolean).sort((x, y) => COLLATOR.compare(x.title, y.title));
+  const top = [...main, ...guest].filter((t) => count(t) > 0).sort((x, y) => count(y) - count(x)).slice(0, 5);
+  const albums = albumGroups()
+    .list.filter((al) => al.artistKey === key)
+    .sort((x, y) => (y.year || 0) - (x.year || 0) || COLLATOR.compare(x.name, y.name));
+  const clips = [...main, ...guest].filter((t) => t.video).length;
+  const total = artistPlays(a);
+  const meta = [
+    main.length ? countLabel(main.length) : "",
+    guest.length ? `${guest.length} en featuring` : "",
+    albums.length ? `${albums.length} album${albums.length > 1 ? "s" : ""}` : "",
+    total ? `${total} écoute${total > 1 ? "s" : ""}` : "",
+  ].filter(Boolean);
+  const all = [...main, ...guest];
+  box.innerHTML = `
+    <div class="browse-page">
+      <button type="button" class="ghost-btn small browse-back" data-browse="back">${icon("arrow_left", 14)}Artistes</button>
+      <div class="pl-head">
+        <div class="art-photo art-photo-big" data-artist-photo="${escapeHtml(a.key)}"></div>
+        <div class="pl-info">
+          <div class="listen-kicker">Artiste</div>
+          <div class="pl-title" title="${escapeHtml(a.name)}">${escapeHtml(a.name)}</div>
+          <div class="album-meta">${meta.join(" · ")}</div>
+          <div class="listen-actions">
+            <button type="button" class="play-big" data-browse="play" aria-label="Tout lire" title="Tout lire">${icon("play", 20)}</button>
+            <button type="button" class="ghost-btn" data-browse="shuffle">${icon("shuffle", 15)}Aléatoire</button>
+            ${clips ? `<button type="button" class="ghost-btn" data-browse="clips">${icon("video", 15)}${clips} clip${clips > 1 ? "s" : ""}</button>` : ""}
+          </div>
+        </div>
+      </div>
+      ${top.length ? `<h3 class="browse-h">Les plus écoutés</h3>${browseList(top, { album: true }, (t) => `${count(t)}×`)}` : ""}
+      ${albums.length ? `<h3 class="browse-h">Albums</h3><div class="browse-grid small">${albums.map(albumCard).join("")}</div>` : ""}
+      ${main.length ? `<h3 class="browse-h">Morceaux</h3>${browseList(main, { album: true })}` : ""}
+      ${guest.length ? `<h3 class="browse-h">En featuring</h3>${browseList(guest, { album: true, guests: new Set(guest.map((t) => t.id)) })}` : ""}
+    </div>`;
+  paintArtistPhoto(box.querySelector(".art-photo-big"), a);
+  box.dataset.play = JSON.stringify(all.map((t) => t.id));
+  return true;
+}
+
+/// Morceau en cours dans la page affichée, marqué sans rien reconstruire.
+function markBrowse() {
+  const box = el("lib-browse");
+  if (!box || box.hidden) return;
+  const current = currentId();
+  const playing = isPlaying();
+  box.querySelectorAll(".browse-row").forEach((row) => {
+    const on = row.dataset.trackId === current;
+    row.classList.toggle("is-current", on);
+    const n = row.querySelector(".trk-n");
+    const html = on && playing ? `<span class="playing">${ICONS.waveform}</span>` : escapeHtml(row.dataset.n);
+    if (n && n.dataset.shown !== html) {
+      n.dataset.shown = html;
+      n.innerHTML = html;
+    }
+  });
+}
+
+/// Lit une liste d'identifiants (album, artiste), au début ou à partir d'un morceau.
+function playIds(ids, { startId = null, shuffle = false } = {}) {
+  const tracks = ids.map(trackById).filter((t) => t && t.has_audio !== false);
+  if (!tracks.length) return toast("Rien à lire ici (vidéos sans piste son).");
+  state.queue = tracks.map((t) => t.id);
+  if (shuffle) state.shuffle = true;
+  const at = startId ? state.queue.indexOf(startId) : -1;
+  state.queueIndex = at >= 0 ? at : shuffle ? Math.floor(Math.random() * tracks.length) : 0;
+  refreshToggles();
+  playCurrent();
+}
+
+/// Ouvre la page d'un album ou d'un artiste, dans n'importe quelle disposition.
+function openBrowse(type, key) {
+  if (!key) return;
+  closeTrackMenu();
+  closeSoundPop();
+  state.libTab = type === "album" ? "albums" : "artists";
+  state.libOpen = { type, key };
+  savePref("echo.libTab", state.libTab);
+  if (document.body.dataset.mode === "normal") {
+    closeSheet();
+    switchView("library");
+  } else {
+    openSheet(el("library-panel"), "Bibliothèque");
+  }
+  renderLibrary();
+}
+
+function bindBrowse() {
+  state.libTab = loadPref("echo.libTab", "songs", ["songs", "albums", "artists"]);
+  state.albumSort = loadPref("echo.albumSort", "name", LIB_SORTS.albums.map((s) => s[0]));
+  state.artistSort = loadPref("echo.artistSort", "name", LIB_SORTS.artists.map((s) => s[0]));
+  el("lib-tabs").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-tab]");
+    if (!b) return;
+    state.libTab = b.dataset.tab;
+    state.libOpen = null;
+    savePref("echo.libTab", state.libTab);
+    renderLibrary();
+  });
+  const box = el("lib-browse");
+  box.addEventListener("click", async (e) => {
+    const goArtist = e.target.closest("[data-goto-artist]");
+    if (goArtist) return openBrowse("artist", goArtist.dataset.gotoArtist);
+    const act = e.target.closest("[data-browse]");
+    if (act) {
+      const ids = JSON.parse(box.dataset.play || "[]");
+      switch (act.dataset.browse) {
+        case "back":
+          state.libOpen = null;
+          return renderLibrary();
+        case "play":
+          return playIds(ids);
+        case "shuffle":
+          return playIds(ids, { shuffle: true });
+        case "queue": {
+          const add = ids.filter((id) => trackById(id) && trackById(id).has_audio !== false);
+          if (!add.length) return;
+          if (!state.queue.length) return playIds(add);
+          state.queue = [...state.queue, ...add];
+          queueChanged();
+          return toast(`${countLabel(add.length)} ajouté${add.length > 1 ? "s" : ""} à la file.`);
+        }
+        case "clips": {
+          const a = state.libOpen && artistEntries().get(state.libOpen.key);
+          if (!a) return;
+          openClips();
+          const input = el("clip-search");
+          input.value = `artiste:"${a.name}"`;
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          return;
+        }
+        case "photos":
+          saveSettings({ artist_photos: true });
+          return renderLibrary();
+      }
+      return;
+    }
+    const card = e.target.closest(".alb-card");
+    if (card) {
+      if (card.dataset.album) {
+        if (e.target.closest("[data-play-album]")) {
+          const a = albumGroups().byKey.get(card.dataset.album);
+          if (a) playIds(a.tracks.map((t) => t.id));
+          return;
+        }
+        return openBrowse("album", card.dataset.album);
+      }
+      return openBrowse("artist", card.dataset.artist);
+    }
+    const row = e.target.closest(".browse-row");
+    if (row) {
+      const ids = browseSections[Number(row.dataset.sec)] || [];
+      playIds(ids, { startId: row.dataset.trackId });
+    }
+  });
+  // L'artiste du morceau en cours mène à sa page.
+  for (const id of ["listen-artist", "mini-artist", "comp-artist", "min-artist"]) {
+    const node = el(id);
+    node.classList.add("artist-link");
+    node.title = "Voir l'artiste";
+    node.addEventListener("click", () => {
+      const t = currentTrack();
+      const name = t && ((t.artists && t.artists[0]) || t.artist);
+      if (name) openBrowse("artist", artistKey(name));
     });
-    return item;
+  }
+  el("min-library").addEventListener("click", () => {
+    if (state.libTab === "songs") state.libTab = "albums";
+    state.libOpen = null;
+    openSheet(el("library-panel"), "Bibliothèque");
+    renderLibrary();
   });
 }
 
@@ -1197,15 +2187,20 @@ function albumList() {
   return albumMemo.list;
 }
 
+/// Les albums de la vue Albums (mêmes regroupements, pistes dans l'ordre du disque),
+/// puis, pour chaque artiste, ses morceaux sans album.
 function computeAlbumList() {
-  const map = new Map();
+  const loose = new Map();
   for (const track of audioTracks()) {
-    const name = track.album || "Sans album";
-    const key = `${normalize(name)}::${normalize(track.artist || "")}`;
-    if (!map.has(key)) map.set(key, { key, name, artist: track.artist || "", tracks: [] });
-    map.get(key).tracks.push(track);
+    if ((track.album || "").trim()) continue;
+    const artist = (track.artists && track.artists[0]) || track.artist || "";
+    const key = `sans-album::${normalize(artist)}`;
+    if (!loose.has(key)) loose.set(key, { key, name: "Sans album", artist, tracks: [] });
+    loose.get(key).tracks.push(track);
   }
-  return [...map.values()].sort((a, b) => COLLATOR.compare(a.name, b.name));
+  for (const group of loose.values()) group.tracks.sort((x, y) => COLLATOR.compare(x.title, y.title));
+  const albums = [...albumGroups().list].sort((a, b) => COLLATOR.compare(a.name, b.name) || COLLATOR.compare(a.artist, b.artist));
+  return [...albums, ...[...loose.values()].sort((a, b) => COLLATOR.compare(a.artist, b.artist))];
 }
 
 function currentAlbum() {
@@ -1246,8 +2241,7 @@ function renderMinimal() {
     const shownKey = `q:${state.minSearch}|${libraryVersion}`;
     if (right.dataset.shown === shownKey && right.querySelector(".album-tracks")) return markMinimal(right);
     right.dataset.shown = shownKey;
-    const q = normalize(state.minSearch);
-    const matches = audioTracks().filter((t) => searchKey(t).includes(q));
+    const matches = searchTracks(audioTracks(), state.minSearch);
     const results = matches.slice(0, 200);
     const capped = matches.length > results.length ? " · 200 premiers affichés" : "";
     right.innerHTML = `
@@ -1294,7 +2288,7 @@ function renderMinimal() {
   });
 
   const cover = el("min-cover");
-  fillCover(cover, album.tracks[0], false);
+  fillCover(cover, album.coverTrack || album.tracks[0], false);
   if (cover.dataset.album !== album.key) {
     // Changement d'album : la pochette et la fiche s'animent ensemble.
     playAnim(cover, "swap");
@@ -1328,7 +2322,7 @@ function minimalTrackRow(track, index, showAlbum) {
   return `<button class="trk${current ? " is-current" : ""}" data-min-id="${escapeHtml(track.id)}">
     ${left}
     <span class="trk-t">${escapeHtml(track.title)}${showAlbum && track.album ? ` <span class="hint">${escapeHtml(track.album)}</span>` : ""}</span>
-    <span class="trk-d">${track.has_audio === false ? '<span class="badge mute-badge">muet</span>' : track.duration_ms ? formatTime(track.duration_ms) : "—"}</span>
+    <span class="trk-d">${track.has_audio === false ? muteBadge(track) : track.duration_ms ? formatTime(track.duration_ms) : "—"}</span>
     <span class="trk-m" data-menu="${escapeHtml(track.id)}" role="button" aria-label="Plus d'actions" title="Plus d'actions">${icon("more", 15)}</span>
   </button>`;
 }
@@ -1340,7 +2334,7 @@ function setPeek(node, album, currentKey) {
     return;
   }
   node.hidden = false;
-  fillCover(node, album.tracks[0], false);
+  fillCover(node, album.coverTrack || album.tracks[0], false);
   node.onclick = () => {
     state.minimalAlbum = album.key;
     renderMinimal();
@@ -1366,11 +2360,13 @@ const nativeMedia = {
   duration: NaN,
   pos: 0,
   at: 0,
+  /// Vitesse à laquelle la position avance (vitesse de lecture choisie).
+  rate: 1,
   /// Morceau que le cœur joue (même s'il a disparu de la bibliothèque entre-temps).
   id: null,
   get currentTime() {
     if (this.paused) return this.pos;
-    const t = this.pos + (performance.now() - this.at) / 1000;
+    const t = this.pos + ((performance.now() - this.at) / 1000) * this.rate;
     return isFinite(this.duration) ? Math.min(t, this.duration) : t;
   },
   set currentTime(v) {
@@ -1400,6 +2396,7 @@ const nativeMedia = {
     const keep = !s.changed && s.playing && !this.paused && before - pos > 0 && before - pos < 0.25;
     this.paused = !s.playing;
     this.pos = keep ? before : pos;
+    if (typeof s.rate === "number" && s.rate > 0) this.rate = s.rate;
     this.at = performance.now();
     this.id = s.id || null;
     // Durée pas encore lue par le cœur : celle des tags, sinon la barre disparaîtrait.
@@ -1431,6 +2428,11 @@ async function enableNative() {
       audio = nativeMedia;
       await listen("player", (event) => onNativeStatus(event.payload));
       await listen("player-error", (event) => toast(String(event.payload)));
+      // Vitesse, tonalité, réverbération : selon les greffons GStreamer présents.
+      const caps = await invoke("player_caps").catch(() => null);
+      if (caps) soundCaps = { tempo: !!caps.tempo, linked: !!caps.vinyl, reverb: !!caps.reverb };
+      nativeMedia.rate = soundRate();
+      updateSoundBadge();
     }
     const snap = await invoke("player_snapshot").catch(() => null);
     // Volume et son coupé : ceux du cœur, qui ont pu changer pendant que la page était fermée.
@@ -1469,6 +2471,10 @@ async function enableNative() {
 /// Lecture ou pause affichées dans les listes et le carrousel (seulement au changement).
 let listPlaying = null;
 function renderPlayState() {
+  updateVisual();
+  syncClip();
+  markPlaylists();
+  if (!clipBusy() && posterWanted.length) pumpPosters();
   const playing = isPlaying();
   if (playing === listPlaying) return;
   listPlaying = playing;
@@ -1483,12 +2489,14 @@ function onNativeStatus(s) {
     if (s.seq <= lastSeq) return;
     lastSeq = s.seq;
   }
-  const hadDuration = nativeMedia.duration;
-  nativeMedia.update(s);
+  // Un morceau vient d'être demandé : les nouvelles des autres (encore en route) ne
+  // touchent ni l'horloge ni l'affichage, sinon la page reviendrait un instant en arrière.
   if (nativeExpect) {
     if (s.id === nativeExpect.id || performance.now() > nativeExpect.until) nativeExpect = null;
-    else if (!s.changed) return;
+    else return;
   }
+  const hadDuration = nativeMedia.duration;
+  nativeMedia.update(s);
   // Le morceau du cœur fait foi : la page s'y recale, changement annoncé ou non.
   if (s.id && currentId() !== s.id) {
     const i = state.queue[s.index] === s.id ? s.index : state.queue.indexOf(s.id);
@@ -1608,6 +2616,9 @@ function buildQueueFromLibrary(startId) {
 function playCurrent({ autoplay = true } = {}) {
   const track = currentTrack();
   if (!track) return;
+  // Vidéo sans son : on dit pourquoi elle est sautée (téléchargement incomplet…).
+  // (Lecteur du cœur : c'est lui qui le dit, une seule fois.)
+  if (track.has_audio === false && autoplay && !NATIVE) toast(`« ${track.title} » est sauté. ${silentReason(track)}`);
   if (NATIVE) {
     // Le cœur lit, enchaîne (et saute lui-même les vidéos muettes), prévient le
     // système et retient la position.
@@ -1632,7 +2643,6 @@ function playCurrent({ autoplay = true } = {}) {
   }
   if (track.has_audio === false) {
     // Vidéo téléchargée sans son : rien à écouter, on passe à la suivante.
-    toast(`« ${track.title} » n'a pas de piste son (vidéo seule).`);
     if (autoplay && silentSkips < state.queue.length) {
       silentSkips += 1;
       setTimeout(() => step(1, true), 0);
@@ -1647,7 +2657,7 @@ function playCurrent({ autoplay = true } = {}) {
     if (token !== playToken) return;
     audio = Sound.element;
     audio.src = playableSrc(track);
-    Sound.beginTrack(track.id);
+    Sound.beginTrack(track.id, track.gain_db || 0);
     if (autoplay) {
       startPlayback();
       notifyTrack(track);
@@ -1737,7 +2747,7 @@ function maybeCrossfade() {
   Sound.other.src = playableSrc(next);
   audio = Sound.crossfade(seconds);
   prepareAudio(trackById(state.queue[(i + 1) % state.queue.length]));
-  Sound.beginTrack(next.id);
+  Sound.beginTrack(next.id, next.gain_db || 0);
   startPlayback();
   notifyTrack(next);
   pushNowPlaying(next);
@@ -1749,7 +2759,13 @@ function maybeCrossfade() {
 let shuffleBag = EchoLogic.freshBag(null);
 
 function playContext() {
-  if (shuffleBag.queue !== state.queue) shuffleBag = EchoLogic.freshBag(state.queue);
+  // Nouvelle file : nouvelle tournée. Un simple ajout (même début, plus long) la garde.
+  if (shuffleBag.queue !== state.queue) {
+    const old = shuffleBag.queue;
+    const extended = old && state.queue.length > old.length && old.every((id, i) => state.queue[i] === id);
+    if (extended) shuffleBag.queue = state.queue;
+    else shuffleBag = EchoLogic.freshBag(state.queue);
+  }
   return { n: state.queue.length, index: state.queueIndex, shuffle: state.shuffle, repeat: state.repeat, bag: shuffleBag };
 }
 
@@ -1961,9 +2977,9 @@ async function bindMediaKeys() {
     const [action, raw] = String(event.payload).split(":");
     const ms = Number(raw);
     if (action === "set-position" && isFinite(ms)) {
-      media.currentTime = Math.min(media.duration || 0, Math.max(0, ms / 1000));
+      seekTo(ms / 1000);
     } else if (action === "seek-by" && isFinite(ms)) {
-      media.currentTime = Math.min(media.duration || 0, Math.max(0, media.currentTime + ms / 1000));
+      seekTo(media.currentTime + ms / 1000);
     } else if (action === "quit") {
       saveProgress(true);
       invoke("quit_app").catch(() => {});
@@ -1990,7 +3006,7 @@ async function bindMediaKeys() {
         step(-1);
         break;
       case "seek-forward":
-        media.currentTime = Math.min(media.duration || 0, media.currentTime + state.settings.skip_seconds);
+        seekTo(media.currentTime + state.settings.skip_seconds);
         break;
       case "seek-backward":
         media.currentTime = Math.max(0, media.currentTime - state.settings.skip_seconds);
@@ -2012,6 +3028,7 @@ let lastCarouselId = null;
 
 /// Rejoue une animation CSS sur un élément (la classe est retirée puis remise).
 function playAnim(node, cls) {
+  if (document.body.dataset.anim === "off") return;
   // Élément caché : rien à animer (et l'animation se rejouerait à son retour).
   if (!node || !node.getClientRects().length) return;
   node.classList.remove(cls);
@@ -2034,6 +3051,7 @@ function renderNowPlaying() {
         .forEach((id) => playAnim(el(id), "swap-text"));
     }
   }
+  renderLove();
   // « Modifier » sans morceau ne ferait rien : le bouton le dit.
   const edit = el("btn-edit-listen");
   if (edit) edit.disabled = !track;
@@ -2095,6 +3113,10 @@ function renderAll() {
   renderCarousel();
   renderMinimal();
   updateProgress();
+  updateClipVideo();
+  markPlaylists();
+  // Le panneau du son suit le morceau en cours (son volume propre).
+  if (!el("sound-pop").hidden && soundPopFor !== currentId()) renderSoundPop();
 }
 
 function switchView(view) {
@@ -2104,6 +3126,8 @@ function switchView(view) {
   syncSettingsNav();
   if (view === "library") renderLibrary();
   if (view === "playlists") renderPlaylists();
+  updateClipVideo();
+  updateVisual();
 }
 
 /* ---------------- surfaces superposées ---------------- */
@@ -2120,8 +3144,9 @@ function returnHome(node) {
   // Pas d'emplacement connu : on ne supprime jamais un panneau de l'interface.
   if (node.id === "settings-panel") el("settings-host-normal").appendChild(node);
   else if (node.id === "library-panel") el("view-library").appendChild(node);
-  else if (node.id === "queue") el("view-listen").appendChild(node);
+  else if (node.id === "queue-box") el("view-listen").appendChild(node);
   else if (node.id === "playlists-panel") el("view-playlists").appendChild(node);
+  else if (node.id === "clips-panel") el("view-clips").appendChild(node);
   else node.remove();
 }
 
@@ -2137,6 +3162,8 @@ function openSheet(node, title, { flush = false } = {}) {
   el("sheet").hidden = false;
   requestAnimationFrame(() => {
     if (node && node.id === "library-panel") renderLibrary();
+    updateClipVideo();
+    updateVisual();
   });
 }
 
@@ -2145,6 +3172,8 @@ function closeSheet() {
   const node = body.firstElementChild;
   if (node) returnHome(node);
   el("sheet").hidden = true;
+  updateClipVideo();
+  updateVisual();
 }
 
 /// « Aucun morceau », « 1 morceau », « 12 morceaux ».
@@ -2227,7 +3256,10 @@ function paintEditCover(coverName, pickedPath = null) {
     node.style.background = DEFAULT_COVER;
     return;
   }
+  const editingId = editing && editing.id;
   coverSrc(coverName).then((url) => {
+    // Un autre morceau a été ouvert entre-temps : sa pochette ne doit pas être remplacée.
+    if (!editing || editing.id !== editingId) return;
     node.style.background = url ? `var(--cover-bg) url("${url}") center / cover no-repeat` : DEFAULT_COVER;
   });
 }
@@ -2336,7 +3368,10 @@ function bindEditor() {
     const track = trackById(node.dataset.trackId || node.dataset.minId);
     if (!track) return;
     e.preventDefault();
-    openTrackMenu(track, e.clientX, e.clientY, { playlist: node.dataset.playlist || null });
+    openTrackMenu(track, e.clientX, e.clientY, {
+      playlist: node.dataset.playlist || null,
+      queueAt: node.dataset.queueIndex !== undefined ? Number(node.dataset.queueIndex) : -1,
+    });
   });
 }
 
@@ -2443,7 +3478,944 @@ function bindCoverPicker() {
   });
 }
 
+/* ---------------- clips ---------------- */
+
+/// Affiches 16:9 déjà faites (identifiant → adresse), `null` : pas d'affiche (la
+/// pochette sert alors). Faites par le cœur une à la fois, pour les cartes visibles.
+const clipPosters = new Map();
+const posterWanted = [];
+let posterBusy = false;
+let posterObserver = null;
+let clipQuery = "";
+/// Mini-fenêtre fermée par l'utilisateur : elle reste fermée jusqu'à ce qu'il ouvre
+/// un clip ou la section Clips.
+let clipMiniClosed = false;
+/// Clip chargé dans le lecteur vidéo.
+let clipShownId = null;
+let clipSyncTimer = null;
+let clipsShown = "";
+
+function isClip(track) {
+  return !!track && track.video && track.has_audio !== false;
+}
+
+function allClips() {
+  return state.tracks.filter((t) => t.video).sort((a, b) => COLLATOR.compare(a.title, b.title));
+}
+
+function clipTracks() {
+  return searchTracks(allClips(), clipQuery);
+}
+
+/// Le panneau des clips est à l'écran (vue Clips, ou feuille des autres dispositions).
+function clipsPanelShown() {
+  return el("clips-panel").offsetParent !== null;
+}
+
+/// Un clip joue à l'écran : le processeur lui revient en priorité.
+function clipBusy() {
+  return !!clipShownId && !mediaEl().paused;
+}
+
+function paintPoster(node, track) {
+  const url = clipPosters.get(track.id);
+  if (url) {
+    node.style.background = `var(--cover-bg) url("${url}") center / cover no-repeat`;
+    node.classList.add("has-poster");
+    return;
+  }
+  // En attendant l'affiche (ou à défaut) : la pochette, comme dans la bibliothèque.
+  fillCover(node, track, false);
+}
+
+function wantPoster(id) {
+  if (clipPosters.has(id) || posterWanted.includes(id)) return;
+  posterWanted.push(id);
+  pumpPosters();
+}
+
+/// Fabrique les affiches demandées, une à la fois. Chaque affiche décode une image
+/// 4K : rien ne se fait tant qu'un clip joue à l'écran (la file reprend à la pause).
+async function pumpPosters() {
+  if (posterBusy) return;
+  posterBusy = true;
+  try {
+    while (posterWanted.length && !clipBusy()) {
+      const id = posterWanted.shift();
+      if (clipPosters.has(id)) continue;
+      const path = await invoke("clip_poster", { id }).catch(() => undefined);
+      // Échec passager (fichier lent à ouvrir) : rien n'est retenu, on réessaiera.
+      if (path === undefined) continue;
+      const url = path ? convertFileSrc(path) : null;
+      clipPosters.set(id, url);
+      const track = trackById(id);
+      if (!track) continue;
+      document.querySelectorAll(`[data-poster-of="${CSS.escape(id)}"]`).forEach((node) => paintPoster(node, track));
+    }
+  } finally {
+    posterBusy = false;
+  }
+}
+
+/// Les affiches ne sont demandées que pour les cartes qui entrent à l'écran.
+function observePosters(grid) {
+  if (!posterObserver) {
+    posterObserver = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          posterObserver.unobserve(e.target);
+          wantPoster(e.target.dataset.posterOf);
+        }
+      },
+      { root: el("clip-scroll"), rootMargin: "200px 0px" }
+    );
+  }
+  posterObserver.disconnect();
+  grid.querySelectorAll("[data-poster-of]").forEach((node) => {
+    if (!clipPosters.has(node.dataset.posterOf)) posterObserver.observe(node);
+  });
+}
+
+function renderClips() {
+  if (!clipsPanelShown()) return;
+  const list = clipTracks();
+  const current = currentId();
+  const grid = el("clip-grid");
+  const key = `${libraryVersion}|${clipQuery}|${list.length}`;
+  if (key === clipsShown) {
+    // Seul le clip en cours a changé : la carte est marquée sur place (pas de clignotement).
+    grid.querySelectorAll(".clip-card").forEach((card) => {
+      const on = card.dataset.clipId === current;
+      card.classList.toggle("is-current", on);
+      if (on) card.setAttribute("aria-current", "true");
+      else card.removeAttribute("aria-current");
+    });
+    return;
+  }
+  clipsShown = key;
+  if (!list.length) {
+    grid.innerHTML = `<div class="clip-empty">${
+      clipQuery ? "Aucun clip ne correspond à ta recherche." : "Aucun clip pour l'instant. Les vidéos (webm, mp4, mkv) de tes dossiers apparaissent ici."
+    }</div>`;
+    return;
+  }
+  grid.innerHTML = list
+    .map((t) => {
+      const sub = [t.artist || "", t.duration_ms ? formatTime(t.duration_ms) : ""].filter(Boolean).join(" · ");
+      const on = t.id === current;
+      return `<button type="button" class="clip-card${on ? " is-current" : ""}"${on ? ' aria-current="true"' : ""} data-clip-id="${escapeHtml(t.id)}" aria-label="${escapeHtml(`${t.title} — ${t.artist || ""}`)}">
+        <span class="clip-poster" data-poster-of="${escapeHtml(t.id)}"></span>
+        ${t.has_audio === false ? muteBadge(t, "clip-badge") : ""}
+        <span class="clip-card-title">${escapeHtml(t.title)}</span>
+        <span class="clip-card-sub">${escapeHtml(sub || "—")}</span>
+      </button>`;
+    })
+    .join("");
+  grid.querySelectorAll("[data-poster-of]").forEach((node) => {
+    const track = trackById(node.dataset.posterOf);
+    if (track) paintPoster(node, track);
+  });
+  observePosters(grid);
+}
+
+function playClip(id) {
+  const track = trackById(id);
+  if (!track) return;
+  if (track.has_audio === false) {
+    toast(`« ${track.title} » : ${silentReason(track)}`);
+    return;
+  }
+  clipMiniClosed = false;
+  if (currentId() === id) {
+    if (audio.paused) startPlayback();
+  } else {
+    // Tous les clips à la suite (pas seulement les résultats d'une recherche).
+    const ids = allClips().filter(isClip).map((t) => t.id);
+    state.queue = ids.includes(id) ? ids : [id];
+    state.queueIndex = state.queue.indexOf(id);
+    playCurrent();
+  }
+  el("clip-scroll").scrollTo({ top: 0, behavior: state.settings.animations ? "smooth" : "auto" });
+}
+
+/// Où montrer la vidéo : la grande scène, la mini-fenêtre, « de côté » (paroles
+/// ouvertes : la vidéo garde sa place mais ne joue plus), ou nulle part (le lecteur
+/// vidéo est vidé : aucune image décodée pour rien).
+function clipPlace() {
+  const track = currentTrack();
+  if (!isClip(track) || document.hidden) return null;
+  if (lyricsOpen) return "parked";
+  if (clipsPanelShown()) return "stage";
+  if (clipMiniClosed) return null;
+  return "mini";
+}
+
+function updateClipVideo() {
+  const video = el("clip-video");
+  const layer = el("clip-mini");
+  const track = currentTrack();
+  const place = clipPlace();
+  el("clip-stage").hidden = !isClip(track);
+  if (isClip(track)) {
+    setText(el("clip-title"), track.title);
+    setText(el("clip-artist"), track.artist || "—");
+  }
+  // La vidéo quitte la scène : le plein écran (qui ne montrerait plus que du noir) aussi.
+  if (place !== "stage" && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  renderClips();
+  if (!place) {
+    layer.hidden = true;
+    stopClipSync();
+    if (clipShownId) {
+      clipShownId = null;
+      video.pause();
+      video.removeAttribute("src");
+      video.removeAttribute("poster");
+      video.load();
+    }
+    return;
+  }
+  if (place === "parked") {
+    layer.hidden = true;
+    stopClipSync();
+    video.pause();
+    return;
+  }
+  // Le lecteur ne change jamais de place dans la page : seule sa position change.
+  layer.classList.toggle("on-stage", place === "stage");
+  if (place === "stage") followStage(450);
+  else clearStageGeometry();
+  layer.hidden = false;
+  if (clipShownId !== track.id) {
+    clipShownId = track.id;
+    clipSync.lastFix = 0;
+    // Pendant le chargement, l'affiche (ou la pochette) plutôt qu'un cadre noir.
+    const poster = clipPosters.get(track.id);
+    if (poster) video.poster = poster;
+    else {
+      video.removeAttribute("poster");
+      if (track.cover) {
+        const id = track.id;
+        coverSrc(track.cover).then((url) => {
+          if (url && clipShownId === id && !video.getAttribute("poster")) video.poster = url;
+        });
+      }
+    }
+    video.src = mediaSrc(track.path);
+  }
+  startClipSync();
+  syncClip();
+}
+
+/// Pose le lecteur exactement sur l'emplacement de la scène.
+function placeOnStage() {
+  const layer = el("clip-mini");
+  if (!layer.classList.contains("on-stage") || document.fullscreenElement) return;
+  const r = el("clip-frame").getBoundingClientRect();
+  if (!r.width || !r.height) {
+    layer.style.visibility = "hidden";
+    return;
+  }
+  layer.style.visibility = "";
+  layer.style.left = `${r.left}px`;
+  layer.style.top = `${r.top}px`;
+  layer.style.width = `${r.width}px`;
+  layer.style.height = `${r.height}px`;
+}
+
+/// Suit l'emplacement pendant une transition (feuille qui glisse, vue qui apparaît).
+let stageFollow = 0;
+function followStage(ms) {
+  const until = performance.now() + ms;
+  cancelAnimationFrame(stageFollow);
+  const tick = () => {
+    placeOnStage();
+    if (performance.now() < until) stageFollow = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function clearStageGeometry() {
+  cancelAnimationFrame(stageFollow);
+  const layer = el("clip-mini");
+  for (const k of ["left", "top", "width", "height", "visibility"]) layer.style[k] = "";
+}
+
+/// Cale la vidéo sur le son. La vidéo défile librement : changer sa vitesse ou la
+/// déplacer force WebKit à redécoder depuis l'image clé précédente (très coûteux en
+/// AV1 4K, d'où des saccades). On ne la recale donc que si l'écart se voit (0,2 s),
+/// au plus toutes les 2,5 s, ou tout de suite après un saut demandé (plus d'1 s).
+/// Le temps que prend un recalage est mesuré et compensé au suivant.
+const clipSync = { lastFix: 0, lag: 0.15, fixStarted: 0, waiting: false };
+
+function syncClip() {
+  const video = el("clip-video");
+  if (!clipShownId || clipShownId !== currentId() || video.readyState < 1 || video.seeking) return;
+  const media = mediaEl();
+  const target = media.currentTime;
+  if (!isFinite(target)) return;
+  // La vidéo suit la vitesse de la musique (0,85× : l'image ralentit aussi).
+  const rate = soundRate();
+  if (video.playbackRate !== rate) video.playbackRate = rate;
+  const end = isFinite(video.duration) ? video.duration : Infinity;
+  // Le son continue après la fin de l'image (clip coupé) : la dernière image reste.
+  if (target >= end - 0.05) {
+    if (!video.paused) video.pause();
+    return;
+  }
+  const diff = video.currentTime - target;
+  if (media.paused) {
+    if (!video.paused) video.pause();
+    // À l'arrêt, l'image suit les sauts (sans coût tant que rien ne change).
+    if (Math.abs(diff) > 0.25) seekClip(video, target, false);
+    return;
+  }
+  // Décodage en retard (image clé lointaine, processeur pris) : on ne recale pas
+  // pendant qu'il rattrape, sinon chaque recalage recommencerait le travail.
+  if (clipSync.waiting && Math.abs(diff) < 1) return;
+  const now = performance.now();
+  if (Math.abs(diff) > 1 || (Math.abs(diff) > 0.2 && now - clipSync.lastFix > 2500)) {
+    seekClip(video, target, true);
+    return;
+  }
+  if (video.paused && !video.ended) video.play().catch(() => {});
+}
+
+function seekClip(video, target, playing) {
+  clipSync.lastFix = performance.now();
+  clipSync.fixStarted = clipSync.lastFix;
+  // En lecture, on vise un peu plus loin : le son avance pendant que la vidéo se recale.
+  const aim = playing ? target + clipSync.lag * soundRate() : target;
+  video.currentTime = isFinite(video.duration) ? Math.min(aim, Math.max(0, video.duration - 0.1)) : aim;
+}
+
+function startClipSync() {
+  if (!clipSyncTimer) clipSyncTimer = setInterval(syncClip, 500);
+}
+
+function stopClipSync() {
+  clearInterval(clipSyncTimer);
+  clipSyncTimer = null;
+}
+
+function toggleClipFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else if (!el("clip-stage").hidden && clipsPanelShown()) el("clip-mini").requestFullscreen().catch(() => toast("Plein écran indisponible."));
+}
+
+function openClips() {
+  clipMiniClosed = false;
+  if (document.body.dataset.mode === "normal") {
+    closeSheet();
+    switchView("clips");
+  } else {
+    openSheet(el("clips-panel"), "Clips");
+  }
+  updateClipVideo();
+}
+
+function bindClips() {
+  const video = el("clip-video");
+  video.addEventListener("loadedmetadata", syncClip);
+  video.addEventListener("waiting", () => (clipSync.waiting = true));
+  video.addEventListener("playing", () => (clipSync.waiting = false));
+  // Durée réelle d'un recalage (décodage depuis l'image clé) : visée au suivant.
+  video.addEventListener("seeked", () => {
+    if (!clipSync.fixStarted) return;
+    const took = (performance.now() - clipSync.fixStarted) / 1000;
+    clipSync.fixStarted = 0;
+    clipSync.lag = Math.min(1.5, Math.max(0.05, clipSync.lag * 0.5 + took * 0.5));
+    if (!mediaEl().paused) video.play().catch(() => {});
+  });
+  video.addEventListener("dblclick", toggleClipFullscreen);
+  el("clip-full").addEventListener("click", toggleClipFullscreen);
+  el("clip-grid").addEventListener("click", (e) => {
+    const card = e.target.closest("[data-clip-id]");
+    if (card) playClip(card.dataset.clipId);
+  });
+  let searchTimer = null;
+  el("clip-search").addEventListener("input", (e) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      clipQuery = e.target.value;
+      renderClips();
+    }, 120);
+  });
+  el("clip-mini-open").addEventListener("click", openClips);
+  el("clip-mini-close").addEventListener("click", (e) => {
+    e.stopPropagation();
+    clipMiniClosed = true;
+    updateClipVideo();
+  });
+  const mini = el("clip-mini-frame");
+  // Un clic sur la mini-fenêtre ouvre les clips (posée sur la scène, il ne fait rien).
+  mini.addEventListener("click", () => {
+    if (!el("clip-mini").classList.contains("on-stage")) openClips();
+  });
+  // L'emplacement de la scène bouge (fenêtre redimensionnée, sortie du plein écran) :
+  // le lecteur suit.
+  new ResizeObserver(() => placeOnStage()).observe(el("clip-frame"));
+  window.addEventListener("resize", () => placeOnStage());
+  document.addEventListener("fullscreenchange", () => {
+    if (!document.fullscreenElement) followStage(300);
+  });
+  mini.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openClips();
+    }
+  });
+  el("dock-clips").addEventListener("click", openClips);
+  el("min-clips").addEventListener("click", openClips);
+  // Fenêtre cachée ou réduite : plus d'images décodées, elles reviennent au retour.
+  document.addEventListener("visibilitychange", updateClipVideo);
+}
+
+/* ---------------- doublons ---------------- */
+
+let dupBusy = false;
+/// Résultat de la dernière recherche : les masquages le modifient sur place.
+let dupData = null;
+
+function formatSize(bytes) {
+  if (!bytes) return "";
+  const mo = bytes / (1024 * 1024);
+  return mo >= 1 ? `${mo.toFixed(mo >= 100 ? 0 : 1).replace(".", ",")} Mo` : `${Math.max(1, Math.round(bytes / 1024))} Ko`;
+}
+
+async function openDuplicates() {
+  el("dup-dialog").hidden = false;
+  el("dup-close").focus();
+  await renderDuplicates();
+}
+
+function closeDuplicates() {
+  el("dup-dialog").hidden = true;
+}
+
+async function renderDuplicates() {
+  const body = el("dup-body");
+  body.innerHTML = `<div class="cover-wait"><span class="spinner" aria-hidden="true"></span>Recherche des doublons…</div>`;
+  try {
+    const [groups, hidden] = await Promise.all([invoke("find_duplicates"), invoke("hidden_tracks")]);
+    dupData = { groups, hidden };
+  } catch (err) {
+    body.innerHTML = `<div class="cover-wait">${escapeHtml(String(err))}</div>`;
+    return;
+  }
+  if (el("dup-dialog").hidden) return;
+  paintDuplicates();
+}
+
+/// Dessine les doublons connus, en gardant la position du défilement.
+function paintDuplicates() {
+  const body = el("dup-body");
+  const scroll = body.scrollTop;
+  const { groups, hidden } = dupData;
+  const advised = groups.filter((g) => !g.mixed).flatMap((g) => g.items.filter((i) => !i.keep).map((i) => i.id));
+  const row = (i, mixed) => {
+    const meta = [i.format, formatSize(i.size), i.duration_ms ? formatTime(i.duration_ms) : ""].filter(Boolean).join(" · ");
+    const badge = i.keep ? `<span class="dup-keep">Meilleure qualité</span>` : mixed && i.video ? `<span class="dup-kind">Clip</span>` : "";
+    return `<div class="dup-row">
+      <div class="dup-text">
+        <div class="dup-line"><b>${escapeHtml(meta)}</b>${badge}</div>
+        <div class="dup-path" title="${escapeHtml(i.path)}"><bdi>${escapeHtml(i.path)}</bdi></div>
+      </div>
+      <button type="button" class="ghost-btn" data-hide="${escapeHtml(i.id)}">Masquer</button>
+    </div>`;
+  };
+  const list = groups
+    .map(
+      (g) => `<div class="dup-group">
+        <div class="dup-name">${escapeHtml(g.items[0].title)} <span>— ${escapeHtml(g.items[0].artist || "Artiste inconnu")}</span></div>
+        ${g.mixed ? `<div class="dup-note">Le même morceau en audio et en clip : garde les deux si tu regardes le clip.</div>` : ""}
+        ${g.items.map((i) => row(i, g.mixed)).join("")}
+      </div>`
+    )
+    .join("");
+  const hiddenList = hidden.length
+    ? `<div class="dup-section">
+        <div class="dup-section-head"><b>Morceaux masqués (${hidden.length})</b><button type="button" class="ghost-btn" data-show-all>Tout réafficher</button></div>
+        ${hidden
+          .map(
+            (h) => `<div class="dup-row"><div class="dup-text"><div class="dup-line"><b>${escapeHtml(h.title)}</b> — ${escapeHtml(h.artist || "—")}</div><div class="dup-path" title="${escapeHtml(h.path)}"><bdi>${escapeHtml(h.path)}</bdi></div></div>
+              <button type="button" class="ghost-btn" data-show="${escapeHtml(h.id)}">Réafficher</button></div>`
+          )
+          .join("")}
+      </div>`
+    : "";
+  body.innerHTML = groups.length
+    ? `<div class="dup-top"><span>${groups.length} morceau${groups.length > 1 ? "x" : ""} en plusieurs exemplaires.</span>${
+        advised.length ? `<button type="button" class="primary-btn" data-hide-advised>Masquer les ${advised.length} moins bons</button>` : ""
+      }</div>${list}${hiddenList}`
+    : `<div class="cover-wait">Aucun doublon dans ta bibliothèque.</div>${hiddenList}`;
+  body.dataset.advised = JSON.stringify(advised);
+  body.scrollTop = scroll;
+}
+
+async function setHidden(ids, hidden) {
+  if (dupBusy || !ids.length) return;
+  dupBusy = true;
+  try {
+    const snap = await invoke("set_hidden", { ids, hidden });
+    applySnapshot(snap);
+    toast(hidden ? `${countLabel(ids.length)} masqué${ids.length > 1 ? "s" : ""}.` : `${countLabel(ids.length)} réaffiché${ids.length > 1 ? "s" : ""}.`);
+  } catch (err) {
+    toast(String(err));
+    dupBusy = false;
+    return;
+  }
+  dupBusy = false;
+  if (!dupData) return renderDuplicates();
+  // La liste est mise à jour sur place : pas de nouvelle recherche, pas de saut en haut.
+  const set = new Set(ids);
+  if (hidden) {
+    for (const g of dupData.groups) {
+      for (const i of g.items.filter((i) => set.has(i.id))) {
+        dupData.hidden.push({ id: i.id, title: i.title, artist: i.artist, path: i.path });
+      }
+      g.items = g.items.filter((i) => !set.has(i.id));
+    }
+    dupData.groups = dupData.groups.filter((g) => g.items.length > 1);
+    paintDuplicates();
+  } else {
+    // Un morceau réaffiché peut reformer un groupe : là, une nouvelle recherche s'impose.
+    await renderDuplicates();
+  }
+}
+
+function bindDuplicates() {
+  el("dup-close").addEventListener("click", closeDuplicates);
+  el("dup-dialog").addEventListener("click", async (e) => {
+    if (e.target === el("dup-dialog")) return closeDuplicates();
+    const hide = e.target.closest("[data-hide]");
+    if (hide) return setHidden([hide.dataset.hide], true);
+    const show = e.target.closest("[data-show]");
+    if (show) return setHidden([show.dataset.show], false);
+    if (e.target.closest("[data-show-all]")) {
+      const ids = [...el("dup-body").querySelectorAll("[data-show]")].map((b) => b.dataset.show);
+      return setHidden(ids, false);
+    }
+    if (e.target.closest("[data-hide-advised]")) {
+      const ids = JSON.parse(el("dup-body").dataset.advised || "[]");
+      const ok = await ask(
+        `Masquer ${countLabel(ids.length)} ?`,
+        "Pour chaque doublon, le fichier de meilleure qualité reste dans la bibliothèque. Les autres sont masqués, sans être supprimés : tu peux les réafficher ici.",
+        [
+          { label: "Annuler", value: false },
+          { label: "Masquer", value: true, primary: true },
+        ]
+      );
+      if (ok) setHidden(ids, true);
+    }
+  });
+}
+
+/* ---------------- visualiseur ---------------- */
+
+const VISUAL_BANDS = 32;
+const visual = {
+  /// Valeurs affichées (lissées) et dernières reçues, de 0 à 1.
+  shown: new Float32Array(VISUAL_BANDS),
+  target: new Float32Array(VISUAL_BANDS),
+  /// Spectre demandé au lecteur du cœur.
+  asked: false,
+  raf: 0,
+  last: 0,
+  received: 0,
+  colors: null,
+};
+
+/// Toile à l'écran, selon la disposition : « Écouter » (normale), sous le titre
+/// (compacte), au-dessus de la barre de lecture (minimaliste), ou les paroles.
+function visualCanvases() {
+  if (!state.settings || state.settings.visualizer === "off" || document.hidden) return [];
+  if (lyricsOpen) return [el("visual-lyrics")];
+  if (!el("sheet").hidden) return [];
+  const mode = document.body.dataset.mode;
+  if (mode === "compact") return [el("visual-compact")];
+  if (mode === "minimal") return [el("visual-minimal")];
+  return state.view === "listen" ? [el("visual-listen")] : [];
+}
+
+/// Allume le visualiseur s'il est à l'écran et que la musique joue ; sinon il retombe
+/// doucement puis s'arrête (le cœur ne calcule plus le spectre).
+function updateVisual() {
+  const canvases = visualCanvases();
+  const want = canvases.length > 0 && isPlaying();
+  if (NATIVE && want !== visual.asked) {
+    visual.asked = want;
+    invoke("player_visual", { on: want }).catch(() => {});
+  }
+  if (!want) visual.target.fill(0);
+  if (canvases.length && !visual.raf) visual.raf = requestAnimationFrame(drawVisual);
+}
+
+function drawVisual(now) {
+  visual.raf = 0;
+  const canvases = visualCanvases();
+  if (!canvases.length) return;
+  const playing = isPlaying();
+  // 30 images par seconde suffisent (le spectre arrive 20 fois par seconde) : deux
+  // fois moins de dessin, et un mouvement plus posé.
+  if (now - visual.last < 30) {
+    visual.raf = requestAnimationFrame(drawVisual);
+    return;
+  }
+  visual.last = now;
+  // Lecture dans la page (Windows) : le spectre vient de la chaîne Web Audio.
+  if (!NATIVE && playing && !Sound.spectrum(visual.target)) visual.target.fill(0);
+  let energy = 0;
+  for (let i = 0; i < VISUAL_BANDS; i++) {
+    const t = visual.target[i];
+    const v = visual.shown[i];
+    // Montée franche mais amortie, descente lente : le rythme se lit sans à-coups.
+    visual.shown[i] = v + (t - v) * (t > v ? 0.35 : 0.1);
+    energy += visual.shown[i];
+  }
+  const style = state.settings.visualizer;
+  for (const canvas of canvases) paintVisual(canvas, style);
+  // Tout est retombé et rien ne joue : on s'arrête là.
+  if (playing || energy > 0.01) visual.raf = requestAnimationFrame(drawVisual);
+}
+
+function paintVisual(canvas, style) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.round(canvas.clientWidth * dpr);
+  const h = Math.round(canvas.clientHeight * dpr);
+  if (!w || !h) return;
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  const g = canvas.getContext("2d");
+  g.clearRect(0, 0, w, h);
+  // Couleurs du thème lues une seule fois (pas à chaque image) : remises à zéro
+  // quand le thème ou la palette changent.
+  if (!visual.colors) {
+    const css = getComputedStyle(document.body);
+    visual.colors = [css.getPropertyValue("--accent").trim() || "#38bdf8", css.getPropertyValue("--accent2").trim() || "#8b5cf6"];
+  }
+  const grad = g.createLinearGradient(0, 0, w, 0);
+  grad.addColorStop(0, visual.colors[0]);
+  grad.addColorStop(1, visual.colors[1]);
+  g.fillStyle = grad;
+  // Transparence dessinée dans la toile (pas d'opacité CSS à recomposer).
+  g.globalAlpha = canvas.id === "visual-lyrics" ? 0.35 : 0.75;
+  const n = VISUAL_BANDS;
+  if (style === "wave") {
+    // Onde : une courbe lisse qui passe par chaque bande, remplie jusqu'en bas.
+    g.beginPath();
+    g.moveTo(0, h);
+    const step = w / (n - 1);
+    let px = 0;
+    let py = h - visual.shown[0] * h * 0.92;
+    g.lineTo(px, py);
+    for (let i = 1; i < n; i++) {
+      const x = i * step;
+      const y = h - visual.shown[i] * h * 0.92;
+      g.quadraticCurveTo(px, py, (px + x) / 2, (py + y) / 2);
+      px = x;
+      py = y;
+    }
+    g.lineTo(w, py);
+    g.lineTo(w, h);
+    g.closePath();
+    g.globalAlpha *= 0.7;
+    g.fill();
+    g.globalAlpha = 1;
+    return;
+  }
+  const gap = Math.max(2, Math.round(w / n / 4));
+  const bar = (w - gap * (n - 1)) / n;
+  const r = Math.min(bar / 2, 3 * dpr);
+  for (let i = 0; i < n; i++) {
+    const bh = Math.max(2 * dpr, visual.shown[i] * h * 0.95);
+    const x = i * (bar + gap);
+    const y = h - bh;
+    g.beginPath();
+    if (g.roundRect) g.roundRect(x, y, bar, bh, [r, r, 0, 0]);
+    else g.rect(x, y, bar, bh);
+    g.fill();
+  }
+  g.globalAlpha = 1;
+}
+
+async function bindVisual() {
+  // Spectre envoyé par le cœur (Linux), vingt fois par seconde pendant la lecture.
+  await listen("spectrum", (event) => {
+    const bands = event.payload || [];
+    for (let i = 0; i < VISUAL_BANDS; i++) visual.target[i] = (bands[i] || 0) / 255;
+    visual.received = performance.now();
+    if (!visual.raf && visualCanvases().length) visual.raf = requestAnimationFrame(drawVisual);
+  });
+  document.addEventListener("visibilitychange", updateVisual);
+}
+
 /* ---------------- menu d'un morceau ---------------- */
+
+/* ---------------- vitesse, tonalité, réverbération, volume du morceau ---------------- */
+
+/// Ce que le lecteur sait faire : la vitesse en gardant la voix (`tempo`), la vitesse
+/// avec la tonalité qui suit, comme un disque (`linked`), la réverbération. Celui du
+/// cœur (Linux) dépend des greffons GStreamer installés ; la page (Windows) sait tout.
+let soundCaps = { tempo: true, linked: true, reverb: true };
+
+const SOUND_PRESETS = [
+  { id: "normal", label: "Normal", speed: 1, pitch_linked: false, reverb: 0 },
+  { id: "slowed", label: "Slowed + reverb", speed: 0.85, pitch_linked: true, reverb: 35 },
+  { id: "spedup", label: "Sped up", speed: 1.2, pitch_linked: true, reverb: 0 },
+];
+
+function frNum(n, digits = 2) {
+  return n.toLocaleString("fr-FR", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+/// Vitesse à laquelle la musique avance vraiment (la vidéo des clips la suit).
+function soundRate() {
+  const s = state.settings;
+  if (!s) return 1;
+  const linked = s.pitch_linked && soundCaps.linked;
+  if (!soundCaps.tempo && !linked) return 1;
+  return s.speed || 1;
+}
+
+/// Tonalité entendue, en demi-tons : celle d'un disque joué plus vite ou plus lentement.
+function soundSemitones() {
+  const s = state.settings;
+  return s.pitch_linked && soundCaps.linked ? 12 * Math.log2(s.speed || 1) : 0;
+}
+
+/// Préréglage qui correspond aux réglages actuels, s'il y en a un.
+function currentPreset() {
+  const s = state.settings;
+  const linked = !!(s.pitch_linked && soundCaps.linked);
+  return SOUND_PRESETS.find((p) => Math.abs(p.speed - s.speed) < 0.001 && p.reverb === s.reverb && p.pitch_linked === linked) || null;
+}
+
+function semitoneLabel(v) {
+  const r = Math.round(v * 10) / 10;
+  if (!r) return "d'origine";
+  const n = Math.abs(r);
+  return `${r > 0 ? "+" : "−"}${frNum(n, Number.isInteger(n) ? 0 : 1)} demi-ton${n >= 2 ? "s" : ""}`;
+}
+
+function dbLabel(v) {
+  if (!v) return "0 dB";
+  return `${v > 0 ? "+" : "−"}${frNum(Math.abs(v), Number.isInteger(v) ? 0 : 1)} dB`;
+}
+
+/// Petit repère sur les boutons du son : vitesse changée, effet actif.
+function updateSoundBadge() {
+  const s = state.settings;
+  if (!s) return;
+  const speed = soundRate();
+  const effect = speed !== 1 || (soundCaps.reverb && s.reverb > 0);
+  const badge = el("sound-badge");
+  if (badge) {
+    badge.hidden = !effect;
+    badge.textContent = speed !== 1 ? `${frNum(speed)}×` : "";
+    badge.classList.toggle("dot", speed === 1);
+  }
+  for (const id of ["btn-sound", "comp-sound", "min-sound"]) {
+    const btn = el(id);
+    if (btn) btn.classList.toggle("is-on", effect);
+  }
+}
+
+/// Fond d'un curseur rempli depuis son milieu (tonalité, volume) ou depuis le début.
+function paintRange(input) {
+  const min = Number(input.min);
+  const max = Number(input.max);
+  const p = ((Number(input.value) - min) / (max - min)) * 100;
+  const from = input.dataset.center !== undefined ? ((Number(input.dataset.center) - min) / (max - min)) * 100 : 0;
+  input.style.setProperty("--a", `${Math.min(from, p)}%`);
+  input.style.setProperty("--b", `${Math.max(from, p)}%`);
+}
+
+let soundAnchor = null;
+let soundPopFor = null;
+let gainTimer = null;
+
+function renderSoundPop() {
+  const pop = el("sound-pop");
+  const s = state.settings;
+  const track = currentTrack();
+  soundPopFor = track ? track.id : null;
+  const linked = s.pitch_linked && soundCaps.linked;
+  const speedOk = soundCaps.tempo || linked;
+  const preset = currentPreset();
+  const gain = track ? track.gain_db || 0 : 0;
+  const range = (id, min, max, step, value, extra = "") =>
+    `<input type="range" class="snd-range" id="${id}" min="${min}" max="${max}" step="${step}" value="${value}" ${extra} />`;
+  pop.innerHTML = `
+    <div class="snd-head">
+      <div class="snd-title">Vitesse et effets</div>
+      <button type="button" class="icon-btn" data-snd="close" title="Fermer" aria-label="Fermer">${icon("close", 16)}</button>
+    </div>
+    <div class="snd-presets" role="group" aria-label="Préréglages">${SOUND_PRESETS.filter((p) => p.id === "normal" || soundCaps.linked)
+      .map((p) => `<button type="button" class="chip${preset === p ? " on" : ""}" data-preset="${p.id}">${p.label}</button>`)
+      .join("")}</div>
+
+    <div class="snd-row"><label for="snd-speed">Vitesse</label><output id="snd-speed-out">${frNum(s.speed)}×</output></div>
+    ${range("snd-speed", 0.5, 2, 0.05, s.speed, `data-center="1"${speedOk ? "" : " disabled"}`)}
+    ${speedOk ? "" : `<p class="snd-hint">La vitesse sans changer la voix demande le greffon GStreamer « scaletempo » (paquet gstreamer1.0-plugins-good). Active « Tonalité liée » pour ralentir comme un disque.</p>`}
+
+    ${soundCaps.linked ? `
+    <div class="snd-switch">
+      <div><div class="lab">Tonalité liée à la vitesse</div><div class="desc">Comme un disque : plus lent, plus grave. Tonalité : <span id="snd-pitch-out">${semitoneLabel(soundSemitones())}</span>.</div></div>
+      <button type="button" role="switch" aria-label="Tonalité liée à la vitesse" aria-checked="${linked}" class="switch${linked ? " on" : ""}" data-snd="linked"><i></i></button>
+    </div>` : ""}
+
+    ${soundCaps.reverb ? `
+    <div class="snd-row"><label for="snd-reverb">Réverbération</label><output id="snd-reverb-out">${s.reverb ? `${s.reverb} %` : "aucune"}</output></div>
+    ${range("snd-reverb", 0, 100, 5, s.reverb)}` : ""}
+
+    <div class="snd-sep"></div>
+    <div class="snd-row"><label for="snd-gain">Volume de ce morceau</label><output id="snd-gain-out">${dbLabel(gain)}</output></div>
+    ${range("snd-gain", -12, 12, 0.5, gain, `data-center="0"${track ? "" : " disabled"}`)}
+    <div class="snd-track">${track ? `${escapeHtml(track.title)}${track.artist ? " — " + escapeHtml(track.artist) : ""} · s'ajoute au volume égal, gardé pour ce morceau` : "Aucun morceau en cours"}</div>
+
+    <div class="snd-foot">
+      <span class="snd-keys">Touches <kbd>^</kbd> et <kbd>$</kbd> : vitesse</span>
+      <button type="button" class="ghost-btn small" data-snd="reset"${preset && preset.id === "normal" ? " disabled" : ""}>Remettre à la normale</button>
+    </div>`;
+  pop.querySelectorAll(".snd-range").forEach(paintRange);
+}
+
+/// Au-dessus du bouton (barres de lecture en bas), sinon en dessous.
+function placeSoundPop() {
+  const pop = el("sound-pop");
+  if (pop.hidden || !soundAnchor) return;
+  placePop(pop, soundAnchor, false);
+}
+
+function openSoundPop(anchor) {
+  const pop = el("sound-pop");
+  if (!pop.hidden && soundAnchor === anchor) return closeSoundPop();
+  closeTrackMenu();
+  soundAnchor = anchor;
+  renderSoundPop();
+  pop.hidden = false;
+  placeSoundPop();
+  playAnim(pop, "menu-in");
+  anchor.setAttribute("aria-expanded", "true");
+  const first = pop.querySelector(".chip, .snd-range");
+  if (first) first.focus({ preventScroll: true });
+}
+
+function closeSoundPop() {
+  const pop = el("sound-pop");
+  if (pop.hidden) return;
+  pop.hidden = true;
+  if (soundAnchor) {
+    soundAnchor.setAttribute("aria-expanded", "false");
+    if (pop.contains(document.activeElement)) soundAnchor.focus({ preventScroll: true });
+  }
+  soundAnchor = null;
+}
+
+function setSound(patch) {
+  saveSettings(patch, { refresh: false });
+  if (!el("sound-pop").hidden) {
+    // Les curseurs en cours de geste ne sont pas redessinés : seulement les valeurs.
+    const s = state.settings;
+    const out = (id, text) => el(id) && (el(id).textContent = text);
+    out("snd-speed-out", `${frNum(s.speed)}×`);
+    out("snd-pitch-out", semitoneLabel(soundSemitones()));
+    out("snd-reverb-out", s.reverb ? `${s.reverb} %` : "aucune");
+    const reset = el("sound-pop").querySelector('[data-snd="reset"]');
+    const preset = currentPreset();
+    if (reset) reset.disabled = !!preset && preset.id === "normal";
+    el("sound-pop").querySelectorAll("[data-preset]").forEach((b) => b.classList.toggle("on", !!preset && preset.id === b.dataset.preset));
+  }
+  // La vidéo d'un clip suit la nouvelle vitesse sans attendre.
+  syncClip();
+}
+
+/// Vitesse au clavier (touches à droite du P : ^ et $ en AZERTY, [ et ] en QWERTY).
+function nudgeSpeed(delta) {
+  const s = state.settings;
+  if (!soundCaps.tempo && !(s.pitch_linked && soundCaps.linked)) return;
+  const speed = Math.min(2, Math.max(0.5, Math.round((s.speed + delta) * 100) / 100));
+  setSound({ speed });
+  const slider = el("snd-speed");
+  if (slider) {
+    slider.value = String(speed);
+    paintRange(slider);
+  }
+  toast(`Vitesse : ${frNum(speed)}×`);
+}
+
+async function setTrackGain(track, db) {
+  track.gain_db = db;
+  if (!NATIVE && track.id === currentId()) Sound.setTrackGain(db);
+  clearTimeout(gainTimer);
+  gainTimer = setTimeout(() => {
+    invoke("set_track_gain", { id: track.id, db }).catch((err) => toast(String(err)));
+  }, 200);
+}
+
+function bindSound() {
+  const pop = el("sound-pop");
+  for (const id of ["btn-sound", "comp-sound", "min-sound"]) {
+    el(id).addEventListener("click", (e) => {
+      e.stopPropagation();
+      openSoundPop(e.currentTarget);
+    });
+  }
+  pop.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const btn = e.target.closest("[data-snd], [data-preset]");
+    if (!btn) return;
+    if (btn.dataset.preset) {
+      const p = SOUND_PRESETS.find((x) => x.id === btn.dataset.preset);
+      if (!p) return;
+      setSound({ speed: p.speed, pitch_linked: p.pitch_linked && soundCaps.linked, reverb: p.reverb });
+      renderSoundPop();
+      return;
+    }
+    switch (btn.dataset.snd) {
+      case "close":
+        closeSoundPop();
+        break;
+      case "linked":
+        setSound({ pitch_linked: !state.settings.pitch_linked });
+        renderSoundPop();
+        break;
+      case "reset":
+        setSound({ speed: 1, pitch_linked: false, reverb: 0 });
+        renderSoundPop();
+        break;
+    }
+  });
+  pop.addEventListener("input", (e) => {
+    const input = e.target.closest(".snd-range");
+    if (!input) return;
+    paintRange(input);
+    const v = Number(input.value);
+    if (input.id === "snd-speed") setSound({ speed: v });
+    else if (input.id === "snd-reverb") setSound({ reverb: v });
+    else if (input.id === "snd-gain") {
+      const track = currentTrack();
+      if (!track) return;
+      el("snd-gain-out").textContent = dbLabel(v);
+      setTrackGain(track, v);
+    }
+  });
+  // Double-clic sur un curseur : sa valeur d'origine.
+  pop.addEventListener("dblclick", (e) => {
+    const input = e.target.closest(".snd-range");
+    if (!input || input.disabled) return;
+    input.value = input.dataset.center !== undefined ? input.dataset.center : input.min;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  document.addEventListener("click", (e) => {
+    if (!pop.hidden && !e.target.closest("#sound-pop")) closeSoundPop();
+  });
+  window.addEventListener("resize", placeSoundPop);
+}
 
 function closeTrackMenu() {
   const menu = el("ctx-menu");
@@ -2467,8 +4439,17 @@ function enqueue(track, next) {
   toast(next ? "Sera lu juste après." : "Ajouté à la file.");
 }
 
-function openTrackMenu(track, x, y, { playlist = null } = {}) {
+function openTrackMenu(track, x, y, { playlist = null, queueAt = -1 } = {}) {
   const menu = el("ctx-menu");
+  // Artistes du morceau (featurings compris) : chacun mène à sa page.
+  const seenPeople = new Set();
+  const people = [
+    ...(track.artists && track.artists.length ? track.artists : track.artist ? [track.artist] : []).map((name) => ({ name, guest: false })),
+    ...(track.featured || []).map((name) => ({ name, guest: true })),
+  ]
+    .map((p) => ({ ...p, key: artistKey(p.name) }))
+    .filter((p) => p.key && !seenPeople.has(p.key) && seenPeople.add(p.key));
+  const albumKey = albumGroups().byTrack.get(track.id) || null;
   const item = (label, iconName, action, extra = "") =>
     `<button role="menuitem" class="ctx-item${extra}" data-act="${action}">${icon(iconName, 15)}<span>${label}</span></button>`;
 
@@ -2481,6 +4462,14 @@ function openTrackMenu(track, x, y, { playlist = null } = {}) {
       <div class="ctx-sep"></div>
       ${item("Ajouter à une playlist", "playlist", "playlists", " has-sub")}
       ${playlist ? item("Retirer de cette playlist", "close", "remove") : ""}
+      ${queueAt >= 0 && queueAt !== state.queueIndex ? item("Retirer de la file", "close", "unqueue") : ""}
+      <div class="ctx-sep"></div>
+      ${item(isFavorite(track.id) ? "Retirer des favoris" : "Ajouter aux favoris", "heart", "love")}
+      ${people.length || albumKey ? `<div class="ctx-sep"></div>` : ""}
+      ${albumKey ? item(`Album : ${escapeHtml(track.album)}`, "album", "album") : ""}
+      ${people.length ? `${people
+        .map((p, i) => `<button role="menuitem" class="ctx-item" data-act="artist" data-i="${i}">${icon("user", 15)}<span>${p.guest ? "Invité : " : ""}${escapeHtml(p.name)}</span></button>`)
+        .join("")}` : ""}
       <div class="ctx-sep"></div>
       ${item("Modifier le morceau…", "sliders", "edit")}
       ${item("Chercher une pochette en ligne…", "search", "cover")}`;
@@ -2490,6 +4479,7 @@ function openTrackMenu(track, x, y, { playlist = null } = {}) {
       <button class="ctx-item ctx-back" data-act="back">${icon("arrow_left", 15)}<span>Ajouter à une playlist</span></button>
       <div class="ctx-sep"></div>
       ${state.playlists
+        .filter((p) => !p.query)
         .map((p) => {
           const has = p.tracks.includes(track.id);
           return `<button role="menuitemcheckbox" aria-checked="${has}" class="ctx-item" data-act="toggle" data-pl="${escapeHtml(p.id)}">${icon(has ? "check" : "playlist", 15)}<span>${escapeHtml(p.name)}</span></button>`;
@@ -2527,9 +4517,9 @@ function openTrackMenu(track, x, y, { playlist = null } = {}) {
         const list = state.playlists.find((p) => p.id === btn.dataset.pl);
         if (!list) return;
         const had = list.tracks.includes(track.id);
+        const before = playlistsCopy();
         list.tracks = had ? list.tracks.filter((id) => id !== track.id) : [...list.tracks, track.id];
-        await savePlaylists();
-        toast(had ? `Retiré de « ${list.name} ».` : `Ajouté à « ${list.name} ».`);
+        if (await savePlaylists(before)) toast(had ? `Retiré de « ${list.name} ».` : `Ajouté à « ${list.name} ».`);
         lists();
         break;
       }
@@ -2543,10 +4533,15 @@ function openTrackMenu(track, x, y, { playlist = null } = {}) {
         closeTrackMenu();
         const list = state.playlists.find((p) => p.id === playlist);
         if (!list) return;
+        const before = playlistsCopy();
         list.tracks = list.tracks.filter((id) => id !== track.id);
-        await savePlaylists();
+        await savePlaylists(before);
         break;
       }
+      case "unqueue":
+        closeTrackMenu();
+        removeFromQueue(queueAt);
+        break;
       case "edit":
         closeTrackMenu();
         openEditor(track);
@@ -2554,6 +4549,20 @@ function openTrackMenu(track, x, y, { playlist = null } = {}) {
       case "cover":
         closeTrackMenu();
         openCoverPicker(track);
+        break;
+      case "love":
+        closeTrackMenu();
+        toggleFavorite(track.id);
+        break;
+      case "artist": {
+        closeTrackMenu();
+        const person = people[Number(btn.dataset.i)];
+        if (person) openBrowse("artist", person.key);
+        break;
+      }
+      case "album":
+        closeTrackMenu();
+        openBrowse("album", albumKey);
         break;
     }
   };
@@ -2574,13 +4583,23 @@ function newPlaylistId() {
   return `pl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-async function savePlaylists() {
+/// Enregistre les playlists. Faux en cas d'échec : `previous` (copie d'avant la
+/// modification) est alors remis, pour que l'écran ne mente pas.
+async function savePlaylists(previous = null) {
+  let ok = true;
   try {
     state.playlists = await invoke("save_playlists", { playlists: state.playlists });
   } catch (err) {
+    ok = false;
+    if (previous) state.playlists = previous;
     toast(`Playlist non enregistrée : ${err}`);
   }
   renderPlaylists();
+  return ok;
+}
+
+function playlistsCopy() {
+  return state.playlists.map((p) => ({ ...p, tracks: [...p.tracks] }));
 }
 
 async function createPlaylist(tracks = []) {
@@ -2590,20 +4609,201 @@ async function createPlaylist(tracks = []) {
   ], { input: `Playlist ${state.playlists.length + 1}` });
   if (!name) return null;
   const list = { id: newPlaylistId(), name, tracks };
+  const before = playlistsCopy();
   state.playlists = [...state.playlists, list];
   state.playlistOpen = list.id;
-  await savePlaylists();
-  return list;
+  return (await savePlaylists(before)) ? list : null;
 }
 
+/// Morceaux d'une playlist intelligente, recalculés quand la bibliothèque ou les
+/// écoutes changent.
+const smartMemo = new Map();
+
 function playlistTracks(list) {
+  if (list.query) {
+    const key = `${libraryVersion}|${statsVersion}|${list.query}`;
+    const memo = smartMemo.get(list.id);
+    if (memo && memo.key === key) return memo.tracks;
+    const tracks = searchTracks(audioTracks(), list.query);
+    smartMemo.set(list.id, { key, tracks });
+    return tracks;
+  }
   return list.tracks.map(trackById).filter(Boolean);
 }
 
+/// Enregistre une recherche comme playlist intelligente : elle se remplit seule.
+async function createSmartPlaylist(query) {
+  const q = query.trim();
+  if (!q) return null;
+  const name = await ask("Playlist intelligente", "Elle se remplit toute seule avec les morceaux qui répondent à cette recherche, même ceux ajoutés plus tard. Donne-lui un nom.", [
+    { label: "Annuler", value: false },
+    { label: "Créer", value: true, primary: true },
+  ], { input: q.length <= 40 ? q : "Ma sélection" });
+  if (!name) return null;
+  const list = { id: newPlaylistId(), name, tracks: [], query: q };
+  const before = playlistsCopy();
+  state.playlists = [...state.playlists, list];
+  state.playlistOpen = list.id;
+  if (!(await savePlaylists(before))) return null;
+  toast(`Playlist intelligente « ${name} » créée.`);
+  return list;
+}
+
+/* --- playlists automatiques --- */
+
+let statsVersion = 0;
+let playedRender = null;
+
+/// Met à jour les compteurs de la colonne des listes, sans toucher au détail ouvert.
+function renderPlaylistCounts() {
+  const byId = new Map([...state.playlists, ...autoLists()].map((p) => [p.id, p]));
+  document.querySelectorAll("#pl-list [data-open]").forEach((item) => {
+    const p = byId.get(item.dataset.open);
+    const count = item.querySelector(".pl-count");
+    if (p && count) setText(count, String(playlistTracks(p).length));
+  });
+}
+let autoMemo = { key: "", lists: [] };
+
+function isFavorite(id) {
+  return !!id && state.stats.favorites.includes(id);
+}
+
+/// Artistes de la bibliothèque, featurings compris : clé → nom affiché, morceaux à leur
+/// nom d'abord, puis ceux où ils sont invités.
+function artistIndex() {
+  const index = new Map();
+  const add = (name, track, guest) => {
+    const key = normalize(name).replace(/\s+/g, " ").trim();
+    if (!key) return;
+    let entry = index.get(key);
+    if (!entry) index.set(key, (entry = { key, names: new Map(), main: [], guest: [], seen: new Set() }));
+    entry.names.set(name, (entry.names.get(name) || 0) + 1);
+    if (entry.seen.has(track.id)) return;
+    entry.seen.add(track.id);
+    (guest ? entry.guest : entry.main).push(track.id);
+  };
+  for (const t of state.tracks) {
+    const main = t.artists && t.artists.length ? t.artists : t.artist ? [t.artist] : [];
+    main.forEach((n) => add(n, t, false));
+    (t.featured || []).forEach((n) => add(n, t, true));
+  }
+  // Le nom le plus fréquent l'emporte (« Kevin MacLeod » plutôt que « KEVIN MACLEOD »).
+  for (const entry of index.values()) {
+    entry.name = [...entry.names.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  }
+  return index;
+}
+
+function autoLists() {
+  const key = `${libraryVersion}|${statsVersion}`;
+  if (autoMemo.key === key) return autoMemo.lists;
+  const plays = state.stats.plays || {};
+  const byTitle = (a, b) => COLLATOR.compare(a.title, b.title);
+  const ids = (list) => list.map((t) => t.id);
+  const played = state.tracks.filter((t) => plays[t.id] && plays[t.id].count > 0);
+  const lists = [
+    {
+      id: "auto:favorites", auto: true, icon: "heart", name: "Favoris",
+      desc: "Les morceaux que tu aimes : le cœur dans la barre de lecture ou le clic droit.",
+      tracks: state.stats.favorites.filter((id) => trackById(id)),
+    },
+    {
+      id: "auto:recent", auto: true, icon: "sparkles", name: "Ajoutés récemment",
+      desc: "Les 50 derniers fichiers arrivés dans tes dossiers.",
+      tracks: ids([...state.tracks].sort((a, b) => (b.mtime || 0) - (a.mtime || 0)).slice(0, 50)),
+    },
+    {
+      id: "auto:top", auto: true, icon: "chart", name: "Les plus écoutés",
+      desc: "Ton top 50. Une écoute compte après 30 secondes.",
+      tracks: ids([...played].sort((a, b) => plays[b.id].count - plays[a.id].count || byTitle(a, b)).slice(0, 50)),
+    },
+    {
+      id: "auto:history", auto: true, icon: "history", name: "Écoutés récemment",
+      desc: "Les 50 derniers morceaux écoutés.",
+      tracks: ids([...played].sort((a, b) => plays[b.id].last - plays[a.id].last).slice(0, 50)),
+    },
+    {
+      id: "auto:never", auto: true, icon: "magic", name: "Jamais écoutés",
+      desc: "Jusqu'à 300 morceaux de ta bibliothèque qui attendent leur tour.",
+      tracks: ids(state.tracks.filter((t) => !plays[t.id] && t.has_audio !== false).sort(byTitle).slice(0, 300)),
+    },
+  ];
+  const artists = [...artistIndex().values()]
+    .map((a) => ({ a, count: a.main.length + a.guest.length }))
+    .filter(({ count }) => count >= 3)
+    .sort((x, y) => y.count - x.count || COLLATOR.compare(x.a.name, y.a.name))
+    .slice(0, 40)
+    .map(({ a }) => {
+      const order = (list) => list.map(trackById).filter(Boolean).sort(byTitle).map((t) => t.id);
+      return {
+        id: `artist:${a.key}`, auto: true, artist: true, icon: "user", name: a.name,
+        desc: a.guest.length
+          ? `${countLabel(a.main.length)} à son nom, et ${a.guest.length} en featuring.`
+          : "Tous ses morceaux de ta bibliothèque.",
+        tracks: [...order(a.main), ...order(a.guest)],
+        guests: new Set(a.guest),
+      };
+    });
+  autoMemo = { key, lists: [...lists, ...artists] };
+  return autoMemo.lists;
+}
+
+function findList(id) {
+  return state.playlists.find((p) => p.id === id) || autoLists().find((p) => p.id === id) || null;
+}
+
+/// Ouvre une liste (playlist, liste automatique ou artiste) dans la vue Playlists.
+function openList(id) {
+  state.playlistOpen = id;
+  if (document.body.dataset.mode === "normal") {
+    closeSheet();
+    switchView("playlists");
+  } else {
+    openSheet(el("playlists-panel"), "Playlists");
+  }
+  renderPlaylists();
+  const item = document.querySelector(`#pl-list [data-open="${CSS.escape(id)}"]`);
+  if (item) item.scrollIntoView({ block: "nearest" });
+}
+
+async function toggleFavorite(id, on = !isFavorite(id)) {
+  if (!id) return;
+  try {
+    state.stats.favorites = await invoke("set_favorite", { id, on });
+  } catch (err) {
+    toast(String(err));
+    return;
+  }
+  statsVersion += 1;
+  renderLove();
+  renderPlaylists();
+  toast(on ? "Ajouté aux favoris." : "Retiré des favoris.");
+}
+
+function renderLove() {
+  const btn = el("btn-love");
+  if (!btn) return;
+  const id = currentId();
+  const on = isFavorite(id);
+  btn.disabled = !id;
+  btn.classList.toggle("is-on", on);
+  btn.setAttribute("aria-pressed", String(on));
+  const label = on ? "Retirer des favoris" : "Ajouter aux favoris";
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+}
+
 function playPlaylist(list, { shuffle = false, startId = null } = {}) {
-  const tracks = playlistTracks(list).filter((t) => t.has_audio !== false);
+  const all = playlistTracks(list);
+  const tracks = all.filter((t) => t.has_audio !== false);
   if (!tracks.length) {
-    toast("Cette playlist est vide.");
+    toast(all.length ? "Aucun morceau de cette playlist n'a de son (vidéos sans piste son)." : "Cette playlist est vide.");
+    return;
+  }
+  const start = startId ? trackById(startId) : null;
+  if (start && start.has_audio === false) {
+    toast(`« ${start.title} » : ${silentReason(start)}`);
     return;
   }
   state.queue = tracks.map((t) => t.id);
@@ -2613,73 +4813,162 @@ function playPlaylist(list, { shuffle = false, startId = null } = {}) {
   playCurrent();
 }
 
+function plItem(p) {
+  const count = playlistTracks(p).length;
+  return `<button role="listitem" class="pl-item${p.id === state.playlistOpen ? " on" : ""}" data-open="${escapeHtml(p.id)}">
+    <span class="pl-mark">${icon(p.icon || "playlist", 16)}</span>
+    <span class="pl-name">${escapeHtml(p.name)}</span>
+    <span class="pl-count">${count}</span>
+  </button>`;
+}
+
 function renderPlaylists() {
   const listBox = el("pl-list");
   const detail = el("pl-detail");
   if (!listBox || !detail) return;
   const lists = state.playlists;
-  if (!lists.some((p) => p.id === state.playlistOpen)) state.playlistOpen = lists.length ? lists[0].id : null;
+  const autos = autoLists();
+  if (!findList(state.playlistOpen)) state.playlistOpen = lists.length ? lists[0].id : autos[0].id;
 
-  listBox.innerHTML = lists.length
-    ? lists
-        .map((p) => {
-          const count = playlistTracks(p).length;
-          return `<button role="listitem" class="pl-item${p.id === state.playlistOpen ? " on" : ""}" data-open="${escapeHtml(p.id)}">
-            <span class="pl-mark">${icon("playlist", 16)}</span>
-            <span class="pl-name">${escapeHtml(p.name)}</span>
-            <span class="pl-count">${count}</span>
-          </button>`;
-        })
-        .join("")
-    : `<div class="hint pl-empty">Aucune playlist pour l'instant.</div>`;
+  const generated = autos.filter((p) => !p.artist);
+  const artists = autos.filter((p) => p.artist);
+  listBox.innerHTML = `
+    <div class="pl-group">Mes playlists</div>
+    ${lists.length ? lists.map(plItem).join("") : `<div class="hint pl-empty">Aucune playlist pour l'instant.</div>`}
+    <div class="pl-group">Automatiques</div>
+    ${generated.map(plItem).join("")}
+    ${artists.length ? `<div class="pl-group">Artistes</div>${artists.map(plItem).join("")}` : ""}`;
 
-  const open = lists.find((p) => p.id === state.playlistOpen);
+  const open = findList(state.playlistOpen);
   if (!open) {
-    detail.innerHTML = `<div class="pl-intro">
-      <div class="pl-intro-mark">${icon("playlist", 28)}</div>
-      <div class="album-title">Tes playlists</div>
-      <div class="album-meta">Crée une playlist, puis fais un clic droit sur un morceau → « Ajouter à une playlist ».</div>
-    </div>`;
+    detail.innerHTML = "";
     return;
   }
   const tracks = playlistTracks(open);
   const total = tracks.reduce((sum, t) => sum + (t.duration_ms || 0), 0);
+  const smart = !!open.query;
+  const kicker = open.artist ? "Artiste" : open.auto ? "Playlist automatique" : smart ? "Playlist intelligente" : "Playlist";
+  const manual = !open.auto;
+  // Les morceaux d'une playlist intelligente viennent de sa recherche : rien à retirer à la main.
+  const editable = manual && !smart;
+  const favorites = open.id === "auto:favorites";
+  const empty = favorites
+    ? "Aucun favori pour l'instant : touche le cœur à côté du morceau en cours."
+    : smart
+      ? "Aucun morceau ne répond à cette recherche pour l'instant."
+      : manual
+        ? "Playlist vide : clic droit sur un morceau de la bibliothèque → « Ajouter à une playlist »."
+        : "Rien ici pour l'instant.";
   detail.innerHTML = `
     <div class="pl-head">
       <div class="pl-cover" id="pl-cover"></div>
       <div class="pl-info">
-        <div class="listen-kicker">Playlist</div>
+        <div class="listen-kicker">${kicker}</div>
         <div class="pl-title">${escapeHtml(open.name)}</div>
-        <div class="album-meta">${countLabel(tracks.length)}${total ? " · " + formatTime(total) : ""}</div>
+        <div class="album-meta">${countLabel(tracks.length)}${total ? " · " + formatTime(total) : ""}${open.desc ? ` · ${escapeHtml(open.desc)}` : ""}</div>
+        ${smart ? `<div class="pl-query" title="La recherche qui remplit cette playlist">${icon("search", 13)}<code>${escapeHtml(open.query)}</code></div>` : ""}
         <div class="listen-actions">
           <button class="play-big" data-pl-act="play" aria-label="Lire la playlist" title="Lire">${icon("play", 20)}</button>
           <button class="ghost-btn" data-pl-act="shuffle">${icon("shuffle", 15)}Aléatoire</button>
-          <button class="ghost-btn" data-pl-act="rename">${icon("sliders", 15)}Renommer</button>
-          <button class="ghost-btn danger" data-pl-act="delete">${icon("close", 15)}Supprimer</button>
+          ${manual ? `<button class="ghost-btn" data-pl-act="rename">${icon("sliders", 15)}Renommer</button>` : ""}
+          ${smart ? `<button class="ghost-btn" data-pl-act="query">${icon("search", 15)}Modifier la recherche</button>` : ""}
+          <button class="ghost-btn" data-pl-act="export" ${tracks.length ? "" : "disabled"}>${icon("share", 15)}Exporter</button>
+          ${manual ? `<button class="ghost-btn danger" data-pl-act="delete">${icon("close", 15)}Supprimer</button>` : ""}
         </div>
       </div>
     </div>
     <div class="pl-tracks">${
       tracks.length
         ? tracks
-            .map(
-              (t, i) => `<div class="pl-row${t.id === currentId() ? " is-current" : ""}" data-track-id="${escapeHtml(t.id)}" data-playlist="${escapeHtml(open.id)}">
+            .map((t, i) => {
+              const guest = open.guests && open.guests.has(t.id) ? `<span class="pl-feat">feat.</span>` : "";
+              const remove = editable
+                ? `<button class="icon-btn pl-remove" data-remove="${escapeHtml(t.id)}" aria-label="Retirer de la playlist" title="Retirer">${icon("close", 14)}</button>`
+                : favorites
+                  ? `<button class="icon-btn pl-remove" data-unlove="${escapeHtml(t.id)}" aria-label="Retirer des favoris" title="Retirer des favoris">${icon("close", 14)}</button>`
+                  : `<span></span>`;
+              return `<div class="pl-row${t.id === currentId() ? " is-current" : ""}" data-track-id="${escapeHtml(t.id)}"${editable ? ` data-playlist="${escapeHtml(open.id)}"` : ""}>
                 <span class="trk-n">${t.id === currentId() && isPlaying() ? `<span class="playing">${ICONS.waveform}</span>` : i + 1}</span>
                 <div class="thumb"></div>
-                <span class="pl-row-text"><span class="row-title">${escapeHtml(t.title)}</span><span class="row-artist">${escapeHtml(t.artist || "—")}</span></span>
+                <span class="pl-row-text"><span class="row-title">${escapeHtml(t.title)}</span><span class="row-artist">${guest}${escapeHtml(t.artist || "—")}</span></span>
                 <span class="row-time">${t.duration_ms ? formatTime(t.duration_ms) : "—"}</span>
-                <button class="icon-btn pl-remove" data-remove="${escapeHtml(t.id)}" aria-label="Retirer de la playlist" title="Retirer">${icon("close", 14)}</button>
-              </div>`
-            )
+                ${remove}
+              </div>`;
+            })
             .join("")
-        : `<div class="hint pl-empty">Playlist vide : clic droit sur un morceau de la bibliothèque → « Ajouter à une playlist ».</div>`
+        : `<div class="hint pl-empty">${empty}</div>`
     }</div>`;
   fillCover(el("pl-cover"), tracks.find((t) => t.cover) || tracks[0] || null, false);
   detail.querySelectorAll(".pl-row").forEach((row, i) => fillCover(row.querySelector(".thumb"), tracks[i]));
 }
 
+/// Morceau en cours dans la playlist affichée : marqué sur place, sans tout redessiner.
+function markPlaylists() {
+  const detail = el("pl-detail");
+  if (!detail || !detail.isConnected) return;
+  const current = currentId();
+  const playing = isPlaying();
+  detail.querySelectorAll(".pl-row").forEach((row, i) => {
+    const on = row.dataset.trackId === current;
+    row.classList.toggle("is-current", on);
+    const n = row.querySelector(".trk-n");
+    const html = on && playing ? `<span class="playing">${ICONS.waveform}</span>` : String(i + 1);
+    if (n && n.dataset.shown !== html) {
+      n.dataset.shown = html;
+      n.innerHTML = html;
+    }
+  });
+}
+
+async function exportList(list) {
+  const tracks = playlistTracks(list);
+  if (!tracks.length) return;
+  const safe = list.name.replace(/[\\/:*?"<>|]+/g, " ").trim() || "Playlist";
+  const path = await saveDialog({
+    title: "Exporter la playlist",
+    defaultPath: `${safe}.m3u8`,
+    filters: [{ name: "Playlist M3U", extensions: ["m3u8", "m3u"] }],
+  }).catch(() => null);
+  if (!path) return;
+  try {
+    const n = await invoke("export_playlist", { name: list.name, ids: tracks.map((t) => t.id), path });
+    toast(`Playlist exportée (${countLabel(n)}).`);
+  } catch (err) {
+    toast(String(err));
+  }
+}
+
+async function importLists() {
+  const picked = await openDialog({
+    multiple: true,
+    title: "Importer des playlists",
+    filters: [{ name: "Playlists M3U", extensions: ["m3u", "m3u8"] }],
+  }).catch(() => null);
+  if (!picked) return;
+  const paths = (Array.isArray(picked) ? picked : [picked]).map((p) => (typeof p === "string" ? p : p.path));
+  try {
+    const result = await invoke("import_playlists", { paths });
+    state.playlists = result.playlists;
+    const added = result.report.filter(([, found]) => found > 0);
+    const missing = result.report.reduce((sum, [, , miss]) => sum + miss, 0);
+    if (!added.length) {
+      toast("Aucun de ces morceaux n'est dans ta bibliothèque.");
+    } else {
+      const last = state.playlists[state.playlists.length - 1];
+      if (last) state.playlistOpen = last.id;
+      const names = added.map(([name]) => `« ${name} »`).join(", ");
+      toast(`${added.length > 1 ? "Playlists importées" : "Playlist importée"} : ${names}${missing ? ` (${missing} morceau${missing > 1 ? "x" : ""} introuvable${missing > 1 ? "s" : ""})` : ""}.`);
+    }
+    renderPlaylists();
+  } catch (err) {
+    toast(String(err));
+  }
+}
+
 function bindPlaylists() {
   el("btn-new-playlist").addEventListener("click", () => createPlaylist());
+  el("btn-import-playlist").addEventListener("click", importLists);
+  el("btn-love").addEventListener("click", () => toggleFavorite(currentId()));
   el("pl-list").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-open]");
     if (!btn) return;
@@ -2687,13 +4976,20 @@ function bindPlaylists() {
     renderPlaylists();
   });
   el("pl-detail").addEventListener("click", async (e) => {
-    const open = state.playlists.find((p) => p.id === state.playlistOpen);
+    const open = findList(state.playlistOpen);
     if (!open) return;
     const remove = e.target.closest("[data-remove]");
-    if (remove) {
+    if (remove && !open.auto) {
       e.stopPropagation();
+      const before = playlistsCopy();
       open.tracks = open.tracks.filter((id) => id !== remove.dataset.remove);
-      await savePlaylists();
+      await savePlaylists(before);
+      return;
+    }
+    const unlove = e.target.closest("[data-unlove]");
+    if (unlove) {
+      e.stopPropagation();
+      await toggleFavorite(unlove.dataset.unlove, false);
       return;
     }
     const action = e.target.closest("[data-pl-act]");
@@ -2705,25 +5001,45 @@ function bindPlaylists() {
         case "shuffle":
           playPlaylist(open, { shuffle: true });
           break;
+        case "export":
+          exportList(open);
+          break;
         case "rename": {
+          if (open.auto) break;
           const name = await ask("Renommer la playlist", "Nouveau nom :", [
             { label: "Annuler", value: false },
             { label: "Renommer", value: true, primary: true },
           ], { input: open.name });
           if (name) {
+            const before = playlistsCopy();
             open.name = name;
-            await savePlaylists();
+            await savePlaylists(before);
+          }
+          break;
+        }
+        case "query": {
+          if (!open.query) break;
+          const query = await ask("Modifier la recherche", "Les morceaux qui y répondent remplissent la playlist (exemple : artiste:ninho année>2018).", [
+            { label: "Annuler", value: false },
+            { label: "Enregistrer", value: true, primary: true },
+          ], { input: open.query });
+          if (query) {
+            const before = playlistsCopy();
+            open.query = query;
+            await savePlaylists(before);
           }
           break;
         }
         case "delete": {
+          if (open.auto) break;
           const ok = await ask(`Supprimer « ${open.name} » ?`, "Les morceaux restent dans ta bibliothèque.", [
             { label: "Annuler", value: false },
             { label: "Supprimer", value: true, primary: true },
           ]);
           if (ok) {
+            const before = playlistsCopy();
             state.playlists = state.playlists.filter((p) => p.id !== open.id);
-            await savePlaylists();
+            await savePlaylists(before);
           }
           break;
         }
@@ -2833,6 +5149,11 @@ async function extractFrames() {
   let missing = 0;
   try {
     for (;;) {
+      // Un clip joue à l'écran : les pochettes attendront (chacune décode une image 4K).
+      if (clipBusy()) {
+        scheduleFrames();
+        break;
+      }
       const track = state.tracks.find((t) => t.video && !t.cover && !t.no_frame && !frameTried.has(t.id));
       if (!track) break;
       frameTried.add(track.id);
@@ -2983,7 +5304,7 @@ function replaceTrack(track) {
 let coversSoon = null;
 let renderSoon = null;
 
-async function applyBootstrap(boot) {
+async function applyBootstrap(boot, { resume = true } = {}) {
   // Réglages importés ou remis à zéro : tout est redessiné, même bibliothèque ou non.
   snapshotSig = "";
   state.settings = boot.settings;
@@ -2998,7 +5319,11 @@ async function applyBootstrap(boot) {
   applySnapshot(boot.snapshot);
   // Le morceau (repris, ou celui que le cœur joue déjà) est en place avant que la
   // fenêtre n'apparaisse : pas de « Rien en cours » suivi d'un changement animé.
-  if (boot.native_audio) {
+  // Réglages importés ou remis à zéro : la musique en cours continue.
+  if (!resume) {
+    refreshToggles();
+    renderAll();
+  } else if (boot.native_audio) {
     const adopted = await enableNative();
     if (!adopted) prepareResume();
   } else {
@@ -3031,7 +5356,13 @@ function bindOnce() {
   document.addEventListener("pointerdown", () => (keyboardFocus = false), true);
   bindEditor();
   bindCoverPicker();
+  bindClips();
+  bindDuplicates();
   bindPlaylists();
+  bindQueue();
+  bindSound();
+  bindSearch();
+  bindBrowse();
   // Un clic ailleurs, un défilement ou une autre fenêtre ferment le menu d'un morceau.
   document.addEventListener("click", (e) => {
     if (!e.target.closest("#ctx-menu")) closeTrackMenu();
@@ -3052,10 +5383,15 @@ function bindOnce() {
 
   el("search").addEventListener("input", (e) => {
     state.search = e.target.value;
+    // Une recherche ramène à la grille des albums ou des artistes.
+    state.libOpen = null;
     renderLibrary();
   });
   el("sort").addEventListener("change", (e) => {
-    state.sort = e.target.value;
+    const v = e.target.value;
+    if (state.libTab === "albums") savePref("echo.albumSort", (state.albumSort = v));
+    else if (state.libTab === "artists") savePref("echo.artistSort", (state.artistSort = v));
+    else state.sort = v;
     renderLibrary();
   });
   el("min-search").addEventListener("input", (e) => {
@@ -3113,6 +5449,14 @@ function bindOnce() {
     Sound.setVolume(v / 100);
     saveSettings({ volume: v }, { refresh: false });
   });
+  // Pas de curseur en disposition compacte, minimaliste ou en fenêtre étroite : la
+  // molette sur le bouton du son règle le volume.
+  for (const id of ["dock-volume", "min-volume", "btn-mute"]) {
+    el(id).addEventListener("wheel", (e) => {
+      e.preventDefault();
+      nudgeVolume(e.deltaY < 0 ? 5 : -5);
+    }, { passive: false });
+  }
 
   el("seek").addEventListener("input", (e) => {
     state.seeking = true;
@@ -3154,14 +5498,13 @@ function bindOnce() {
   el("comp-settings").addEventListener("click", () => openSheet(el("settings-panel"), "Réglages", { flush: true }));
   el("comp-queue").addEventListener("click", () => {
     renderQueue();
-    const list = el("queue");
-    openSheet(list, "File d'attente");
+    openSheet(el("queue-box"), "File d'attente");
   });
 
   el("min-settings").addEventListener("click", () => openSheet(el("settings-panel"), "Réglages", { flush: true }));
   el("min-queue").addEventListener("click", () => {
     renderQueue();
-    openSheet(el("queue"), "File d'attente");
+    openSheet(el("queue-box"), "File d'attente");
   });
 
   const toggleTheme = () => {
@@ -3230,12 +5573,29 @@ function bindOnce() {
   });
 
   document.addEventListener("keydown", (e) => {
+    if (!el("sound-pop").hidden && e.code === "Escape") {
+      e.preventDefault();
+      closeSoundPop();
+      return;
+    }
+    if (!el("search-pop").hidden && e.code === "Escape") {
+      e.preventDefault();
+      closeSearchHelp();
+      return;
+    }
     if (!el("ctx-menu").hidden) {
       if (e.code === "Escape") {
         e.preventDefault();
         closeTrackMenu();
       }
       return;
+    }
+    if (!el("dup-dialog").hidden) {
+      if (e.code === "Escape" && el("modal").hidden) {
+        e.preventDefault();
+        closeDuplicates();
+      }
+      if (el("modal").hidden) return;
     }
     // Fenêtre des pochettes (au-dessus de « Modifier ») : Échap la ferme, le reste lui revient.
     if (!el("cover-dialog").hidden) {
@@ -3263,8 +5623,8 @@ function bindOnce() {
         e.target.value = "";
         e.target.dispatchEvent(new Event("input", { bubbles: true }));
       } else {
+        // Le champ est quitté ; la feuille ou les paroles se ferment au prochain Échap.
         e.target.blur();
-        if (!el("sheet").hidden) closeSheet();
       }
       return;
     }
@@ -3288,8 +5648,16 @@ function bindOnce() {
       media.currentTime = Math.min(end, media.currentTime + state.settings.skip_seconds);
     } else if (e.code === "ArrowLeft") {
       media.currentTime = Math.max(0, media.currentTime - state.settings.skip_seconds);
+    } else if ((e.code === "ArrowUp" || e.code === "ArrowDown") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      nudgeVolume(e.code === "ArrowUp" ? 5 : -5);
+    } else if ((e.code === "BracketLeft" || e.code === "BracketRight") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      nudgeSpeed(e.code === "BracketLeft" ? -0.05 : 0.05);
     } else if (e.code === "KeyL" && !e.ctrlKey && !e.metaKey && !e.altKey) {
       toggleLyrics();
+    } else if (e.code === "KeyF" && !e.ctrlKey && !e.metaKey && !e.altKey && (document.fullscreenElement || (clipShownId && clipsPanelShown()))) {
+      toggleClipFullscreen();
     } else if (e.code === "Escape") {
       if (!el("modal").hidden && modalCancel) modalCancel();
       else if (lyricsOpen) toggleLyrics(false);
@@ -3375,6 +5743,21 @@ async function bindBackendEvents() {
     coversProgress = event.payload || null;
     showPill();
   });
+  // Une écoute vient d'être comptée : les listes « les plus écoutés » suivent.
+  await listen("played", (event) => {
+    const [id, plays] = event.payload || [];
+    if (!id) return;
+    state.stats.plays[id] = plays;
+    statsVersion += 1;
+    // Seules les listes tirées des écoutes changent ; les autres ne sont pas redessinées.
+    const open = state.playlistOpen || "";
+    const affected = open === "auto:top" || open === "auto:history" || open === "auto:never";
+    const shown = state.view === "playlists" || (!el("sheet").hidden && el("pl-detail").isConnected);
+    if (shown) {
+      clearTimeout(playedRender);
+      playedRender = setTimeout(() => (affected ? renderPlaylists() : renderPlaylistCounts()), 400);
+    }
+  });
   // Pochettes trouvées en ligne : posées sur place.
   await listen("tracks-updated", (event) => {
     for (const track of event.payload || []) replaceTrack(track);
@@ -3441,6 +5824,8 @@ function toggleLyrics(force) {
   lyricsOpen = open;
   el("lyrics").hidden = !open;
   ["btn-lyrics", "comp-lyrics", "min-lyrics"].forEach((id) => el(id) && el(id).classList.toggle("on", open));
+  updateClipVideo();
+  updateVisual();
   if (open) {
     loadLyrics();
     clearInterval(lyricsTimer);
@@ -3803,6 +6188,13 @@ async function start() {
   el("dock-settings").innerHTML = icon("settings", 19);
   el("dock-playlists").innerHTML = icon("playlist", 19);
   el("min-playlists").innerHTML = icon("playlist", 18);
+  el("btn-love").innerHTML = icon("heart", 18);
+  el("dock-clips").innerHTML = icon("video", 19);
+  el("min-clips").innerHTML = icon("video", 18);
+  el("min-library").innerHTML = icon("album", 18);
+  el("clip-full").innerHTML = icon("expand", 17);
+  el("clip-mini-open").innerHTML = icon("expand", 15);
+  el("clip-mini-close").innerHTML = icon("close", 15);
   el("dock-volume").innerHTML = icon("volume_high", 19);
   el("min-theme").innerHTML = icon("moon", 18);
   el("min-settings").innerHTML = icon("settings", 18);
@@ -3810,15 +6202,19 @@ async function start() {
   el("min-prev").innerHTML = icon("prev", 18);
   el("min-next").innerHTML = icon("next", 18);
   el("min-queue").innerHTML = icon("queue", 18);
+  el("min-sound").innerHTML = icon("gauge", 18);
+  el("comp-sound").innerHTML = icon("gauge", 19);
   el("min-volume").innerHTML = icon("volume_high", 18);
   el("sheet-close").innerHTML = icon("close", 18);
   el("edit-close").innerHTML = icon("close", 18);
   el("cover-close").innerHTML = icon("close", 18);
+  el("dup-close").innerHTML = icon("close", 18);
 
   // Les écouteurs d'abord : un scan qui finit pendant le démarrage ne doit pas être perdu.
-  await Promise.all([bindMediaKeys(), bindBackendEvents()]).catch(() => {});
+  await Promise.all([bindMediaKeys(), bindBackendEvents(), bindVisual()]).catch(() => {});
 
   state.playlists = await invoke("get_playlists").catch(() => []);
+  state.stats = await invoke("get_stats").catch(() => state.stats);
   const boot = await invoke("bootstrap");
   await applyBootstrap(boot);
   if (pendingLibrary) {

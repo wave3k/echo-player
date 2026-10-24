@@ -412,13 +412,34 @@ pub(crate) async fn get_json<T: serde::de::DeserializeOwned>(client: &reqwest::C
         if !status.is_success() {
             return Err(format!("{} {status}", url.host_str().unwrap_or("")));
         }
-        match res.json::<T>().await {
-            Ok(v) => return Ok(Some(v)),
-            Err(e) => last = e.to_string(),
+        // Réponse lue avec un plafond (2 Mo) : un serveur qui enverrait sans fin ne
+        // remplit pas la mémoire.
+        match read_capped(res, 2 * 1024 * 1024).await {
+            Ok(Some(bytes)) => match serde_json::from_slice::<T>(&bytes) {
+                Ok(v) => return Ok(Some(v)),
+                Err(e) => last = e.to_string(),
+            },
+            Ok(None) => return Err("réponse trop grosse".into()),
+            Err(e) => last = e,
         }
     }
     // Limite atteinte, panne : une erreur, jamais gardée en cache comme « introuvable ».
     Err(last)
+}
+
+/// Corps d'une réponse, lu morceau par morceau. `None` : il dépasse `cap` octets.
+pub(crate) async fn read_capped(mut res: reqwest::Response, cap: usize) -> Result<Option<Vec<u8>>, String> {
+    if res.content_length().is_some_and(|n| n > cap as u64) {
+        return Ok(None);
+    }
+    let mut out = Vec::new();
+    while let Some(chunk) = res.chunk().await.map_err(|e| e.to_string())? {
+        if out.len() + chunk.len() > cap {
+            return Ok(None);
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(Some(out))
 }
 
 pub(crate) fn client() -> Result<reqwest::Client, String> {
@@ -428,6 +449,14 @@ pub(crate) fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .user_agent(concat!("Echo/", env!("CARGO_PKG_VERSION"), " (https://github.com/wave3k/echo-player)"))
         .timeout(Duration::from_secs(12))
+        // Redirections : 5 au plus, et jamais vers une adresse non chiffrée.
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 5 || attempt.url().scheme() != "https" {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
         .build()
         .map_err(|e| e.to_string())
 }

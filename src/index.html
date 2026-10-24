@@ -17,16 +17,19 @@
       </div>
 
       <nav class="nav" id="nav">
-        <button class="nav-item" data-view="listen">
+        <button class="nav-item" data-view="listen" aria-label="Écouter">
           <span data-icon="home" data-size="17"></span><span>Écouter</span>
         </button>
-        <button class="nav-item" data-view="library">
+        <button class="nav-item" data-view="library" aria-label="Bibliothèque">
           <span data-icon="library" data-size="17"></span><span>Bibliothèque</span>
         </button>
-        <button class="nav-item" data-view="playlists">
+        <button class="nav-item" data-view="clips" aria-label="Clips">
+          <span data-icon="video" data-size="17"></span><span>Clips</span>
+        </button>
+        <button class="nav-item" data-view="playlists" aria-label="Playlists">
           <span data-icon="playlist" data-size="17"></span><span>Playlists</span>
         </button>
-        <button class="nav-item" data-view="settings">
+        <button class="nav-item" data-view="settings" aria-label="Réglages">
           <span data-icon="settings" data-size="17"></span><span>Réglages</span>
         </button>
       </nav>
@@ -67,11 +70,23 @@
             </div>
           </div>
         </div>
-        <div class="section-head">
-          <h3>File d'attente</h3>
-          <span class="muted" id="queue-count"></span>
+        <canvas class="visual visual-listen" id="visual-listen" aria-hidden="true"></canvas>
+        <!-- La file, ses actions comprises : elle passe telle quelle dans une feuille en
+             disposition compacte ou minimaliste. -->
+        <div class="queue-box" id="queue-box">
+          <div class="section-head queue-head">
+            <h3>File d'attente</h3>
+            <span class="muted" id="queue-count"></span>
+            <span class="grow"></span>
+            <button type="button" class="ghost-btn small" id="queue-save" title="Enregistrer la file comme playlist">
+              <span data-icon="save" data-size="14"></span>Enregistrer
+            </button>
+            <button type="button" class="ghost-btn small" id="queue-clear" title="Vider la file (le morceau en cours reste)">
+              <span data-icon="trash" data-size="14"></span>Vider
+            </button>
+          </div>
+          <div class="queue" id="queue" role="list" aria-label="File d'attente"></div>
         </div>
-        <div class="queue" id="queue"></div>
       </section>
 
       <!-- Bibliothèque -->
@@ -79,10 +94,16 @@
         <div class="library-panel" id="library-panel">
           <div class="view-head">
             <h2 class="view-title">Bibliothèque</h2>
+            <span class="seg lib-tabs" id="lib-tabs" role="tablist" aria-label="Afficher">
+              <button type="button" role="tab" data-tab="songs">Morceaux</button>
+              <button type="button" role="tab" data-tab="albums">Albums</button>
+              <button type="button" role="tab" data-tab="artists">Artistes</button>
+            </span>
             <div class="controls">
               <label class="search">
                 <span data-icon="search" data-size="15"></span>
                 <input type="search" id="search" aria-label="Rechercher dans la bibliothèque" placeholder="Rechercher un titre, un artiste…" />
+                <button type="button" class="search-help" id="search-help" title="Recherche avancée : filtres par artiste, année, durée…" aria-label="Aide de la recherche avancée" aria-haspopup="dialog">?</button>
               </label>
               <label class="select-wrap">
                 <select id="sort" class="select" aria-label="Trier la bibliothèque">
@@ -95,20 +116,61 @@
               </label>
             </div>
           </div>
+          <div class="lib-songs" id="lib-songs">
+          <!-- Résultats d'une recherche : les lire, ou les garder en playlist intelligente -->
+          <div class="search-bar" id="search-bar" hidden>
+            <span id="search-count"></span>
+            <span class="grow"></span>
+            <button type="button" class="ghost-btn small" id="search-play"><span data-icon="play" data-size="14"></span>Tout lire</button>
+            <button type="button" class="ghost-btn small" id="search-save" title="Une playlist qui se remplit seule avec cette recherche"><span data-icon="sparkles" data-size="14"></span>Playlist intelligente</button>
+          </div>
           <div class="list-head">
             <span></span><span>Titre</span><span>Album</span><span class="ta-r">Durée</span>
           </div>
           <div class="list" id="list"></div>
+          </div>
+          <!-- Albums et artistes : la grille, ou la page d'un album ou d'un artiste -->
+          <div class="lib-browse" id="lib-browse" hidden></div>
         </div>
       </section>
 
-      <!-- Réglages -->
+      <!-- Clips : la vidéo du morceau en cours, calée sur le son, et la grille des clips -->
+      <section class="view" id="view-clips">
+        <div class="clips-panel" id="clips-panel">
+          <div class="view-head">
+            <h2 class="view-title">Clips</h2>
+            <div class="controls">
+              <label class="search">
+                <span data-icon="search" data-size="15"></span>
+                <input type="search" id="clip-search" aria-label="Rechercher un clip" placeholder="Rechercher un clip…" />
+              </label>
+            </div>
+          </div>
+          <div class="clip-stage" id="clip-stage" hidden>
+            <div class="clip-frame" id="clip-frame"></div>
+            <div class="clip-info">
+              <div class="clip-text">
+                <div class="clip-title" id="clip-title"></div>
+                <div class="clip-artist" id="clip-artist"></div>
+              </div>
+              <button type="button" class="icon-btn" id="clip-full" title="Plein écran (F)" aria-label="Plein écran"></button>
+            </div>
+          </div>
+          <div class="clip-scroll" id="clip-scroll">
+            <div class="clip-grid" id="clip-grid"></div>
+          </div>
+        </div>
+      </section>
+
       <!-- Playlists -->
       <section class="view" id="view-playlists">
         <div class="playlists-panel" id="playlists-panel">
           <div class="view-head">
             <h2 class="view-title">Playlists</h2>
             <div class="controls">
+              <button class="ghost-btn" id="btn-import-playlist" title="Importer des playlists M3U (VLC, foobar2000, Winamp…)">
+                <span data-icon="download" data-size="15"></span>Importer
+              </button>
               <button class="primary-btn" id="btn-new-playlist">
                 <span data-icon="plus" data-size="15"></span>Nouvelle playlist
               </button>
@@ -135,6 +197,7 @@
           <div class="mini-title" id="mini-title">Aucun morceau</div>
           <div class="mini-artist" id="mini-artist">—</div>
         </div>
+        <button class="ctl ctl-love" id="btn-love" aria-pressed="false" title="Ajouter aux favoris" aria-label="Ajouter aux favoris" disabled></button>
       </div>
 
       <div class="player-center">
@@ -165,6 +228,10 @@
       </div>
 
       <div class="player-right">
+        <button aria-label="Vitesse et effets" class="ctl ctl-sound" id="btn-sound" title="Vitesse, tonalité, réverbération et volume du morceau" aria-haspopup="dialog">
+          <span data-icon="gauge" data-size="17"></span>
+          <span class="sound-badge" id="sound-badge" hidden></span>
+        </button>
         <button aria-label="Paroles" class="ctl" id="btn-lyrics" title="Paroles (L)">
           <span data-icon="mic" data-size="17"></span>
         </button>
@@ -194,18 +261,22 @@
       <div class="car-title" id="comp-title">Rien en cours</div>
       <div class="car-artist" id="comp-artist">Choisis un morceau dans ta bibliothèque</div>
 
+      <canvas class="visual visual-compact" id="visual-compact" aria-hidden="true"></canvas>
+
       <div class="car-progress">
         <div class="bar" id="comp-bar"><i></i></div>
         <div class="times"><span id="comp-now">0:00</span><span id="comp-total">0:00</span></div>
       </div>
 
       <div class="car-controls">
+        <!-- Lecture au milieu : trois boutons de chaque côté. -->
         <button aria-label="File d'attente" class="icon-btn" id="comp-queue" title="File d'attente"></button>
+        <button aria-label="Aléatoire" class="icon-btn" id="comp-shuffle" title="Aléatoire"></button>
         <button aria-label="Précédent" class="icon-btn" id="comp-prev" title="Précédent"></button>
         <button aria-label="Lecture" class="icon-btn play" id="comp-play" title="Lecture"></button>
         <button aria-label="Suivant" class="icon-btn" id="comp-next" title="Suivant"></button>
-        <button aria-label="Aléatoire" class="icon-btn" id="comp-shuffle" title="Aléatoire"></button>
         <button aria-label="Paroles" class="icon-btn" id="comp-lyrics" title="Paroles (L)"></button>
+        <button aria-label="Vitesse et effets" class="icon-btn" id="comp-sound" title="Vitesse et effets" aria-haspopup="dialog"></button>
       </div>
 
       <div class="dock">
@@ -213,6 +284,7 @@
         <button aria-label="Rechercher" class="icon-btn" id="dock-search" title="Rechercher"></button>
         <button aria-label="Bibliothèque" class="icon-btn" id="dock-library" title="Bibliothèque"></button>
         <button aria-label="Playlists" class="icon-btn" id="dock-playlists" title="Playlists"></button>
+        <button aria-label="Clips" class="icon-btn" id="dock-clips" title="Clips"></button>
         <button aria-label="Réglages" class="icon-btn" id="dock-settings" title="Réglages"></button>
         <button aria-label="Couper le son" class="icon-btn" id="dock-volume" title="Couper le son"></button>
       </div>
@@ -227,6 +299,8 @@
         </label>
         <div class="min-actions">
           <button aria-label="Clair ou sombre" class="icon-btn" id="min-theme" title="Clair ou sombre"></button>
+          <button aria-label="Albums et artistes" class="icon-btn" id="min-library" title="Albums et artistes"></button>
+          <button aria-label="Clips" class="icon-btn" id="min-clips" title="Clips"></button>
           <button aria-label="Playlists" class="icon-btn" id="min-playlists" title="Playlists"></button>
           <button aria-label="Réglages" class="icon-btn" id="min-settings" title="Réglages"></button>
         </div>
@@ -240,6 +314,8 @@
         </div>
         <div class="min-right" id="min-right"></div>
       </div>
+
+      <canvas class="visual visual-minimal" id="visual-minimal" aria-hidden="true"></canvas>
 
       <div class="min-player">
         <div class="min-now">
@@ -259,6 +335,7 @@
         <div class="min-actions-r">
           <button aria-label="Paroles" class="icon-btn" id="min-lyrics" title="Paroles (L)"></button>
           <button aria-label="File d'attente" class="icon-btn" id="min-queue" title="File d'attente"></button>
+          <button aria-label="Vitesse et effets" class="icon-btn" id="min-sound" title="Vitesse et effets" aria-haspopup="dialog"></button>
           <button aria-label="Couper le son" class="icon-btn" id="min-volume" title="Couper le son"></button>
         </div>
       </div>
@@ -276,6 +353,7 @@
       </header>
       <div class="lyr-bar" id="lyr-bar" hidden></div>
       <div class="lyr-body" id="lyr-body"></div>
+      <canvas class="visual visual-lyrics" id="visual-lyrics" aria-hidden="true"></canvas>
     </div>
 
     <!-- ================= mise à jour ================= -->
@@ -331,6 +409,33 @@
       </form>
     </div>
 
+    <!-- Le lecteur vidéo, unique et jamais déplacé dans la page (un déplacement faisait
+         alterner des images noires) : en mini-fenêtre, ou posé sur la grande scène. -->
+    <div class="clip-mini" id="clip-mini" hidden>
+      <div class="clip-mini-frame" id="clip-mini-frame" role="button" tabindex="0" aria-label="Ouvrir les clips">
+        <!-- La vidéo n'a jamais de son : la musique vient du lecteur, la vidéo s'y cale. -->
+        <video id="clip-video" muted playsinline preload="metadata" disablepictureinpicture disableremoteplayback aria-hidden="true"></video>
+      </div>
+      <div class="clip-mini-bar">
+        <button type="button" class="icon-btn" id="clip-mini-open" title="Ouvrir les clips" aria-label="Ouvrir les clips"></button>
+        <button type="button" class="icon-btn" id="clip-mini-close" title="Masquer la vidéo" aria-label="Masquer la vidéo"></button>
+      </div>
+    </div>
+
+    <!-- Doublons : le même morceau en plusieurs fichiers, à masquer (rien n'est supprimé) -->
+    <div class="edit-dialog dup-dialog" id="dup-dialog" role="dialog" aria-modal="true" aria-labelledby="dup-title" hidden>
+      <div class="edit-box dup-box">
+        <div class="edit-head">
+          <div>
+            <div class="modal-title" id="dup-title">Doublons</div>
+            <div class="cover-query">Un morceau masqué disparaît de la bibliothèque, mais son fichier reste sur le disque.</div>
+          </div>
+          <button type="button" class="icon-btn" id="dup-close" title="Fermer" aria-label="Fermer"></button>
+        </div>
+        <div class="dup-body" id="dup-body" aria-live="polite"></div>
+      </div>
+    </div>
+
     <!-- Pochettes trouvées en ligne pour un morceau : on choisit celle qui convient -->
     <div class="edit-dialog cover-dialog" id="cover-dialog" role="dialog" aria-modal="true" aria-labelledby="cover-dialog-title" hidden>
       <div class="edit-box cover-box">
@@ -372,6 +477,12 @@
       <button class="ghost-btn" id="btn-banner-close">Fermer</button>
     </div>
 
+    <!-- Vitesse, tonalité, réverbération et volume du morceau : rempli par app.js -->
+    <div class="sound-pop" id="sound-pop" role="dialog" aria-label="Vitesse et effets" hidden></div>
+
+    <!-- Aide de la recherche avancée : rempli par app.js -->
+    <div class="sound-pop search-pop" id="search-pop" role="dialog" aria-label="Recherche avancée" hidden></div>
+
     <!-- Menu d'un morceau (clic droit, ou bouton « … ») -->
     <div class="ctx-menu" id="ctx-menu" role="menu" hidden></div>
 
@@ -379,7 +490,7 @@
       <div class="modal-box">
         <div class="modal-title" id="modal-title">Quitter Écho ?</div>
         <div class="modal-text" id="modal-text">La musique s'arrêtera.</div>
-        <input class="modal-input" id="modal-input" type="text" maxlength="80" hidden />
+        <input class="modal-input" id="modal-input" type="text" maxlength="300" hidden />
         <div class="modal-actions" id="modal-actions"></div>
       </div>
     </div>

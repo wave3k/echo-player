@@ -1,7 +1,9 @@
 /* ============================================================
    Écho — moteur audio
    Deux lecteurs (pour le fondu enchaîné) qui passent par une même chaîne :
-   égaliseur 5 bandes → volume égal → limiteur → volume général.
+   égaliseur 5 bandes → volume égal → volume du morceau → limiteur → volume général,
+   avec la réverbération en parallèle. La vitesse est celle des lecteurs <audio>
+   (voix gardée, ou liée comme sur un disque).
    La chaîne Web Audio n'est montée que si un réglage de son en a besoin.
    Sous Linux, c'est le cœur de l'app qui lit la musique (GStreamer) : `useNative`
    remplace alors les deux lecteurs par une télécommande, et ce module ne fait plus
@@ -34,8 +36,11 @@ const Sound = (() => {
   let sources = []; // gain propre à chaque lecteur (pour les fondus)
   let filters = [];
   let level = null; // correction du volume égal
+  let trim = null; // volume propre au morceau
+  let wet = null; // part de réverbération
   let master = null; // volume général
   let analyser = null;
+  let freq = null; // mesures du spectre (visualiseur)
   let levelTimer = null;
 
   let volume = 0.9;
@@ -43,6 +48,10 @@ const Sound = (() => {
   let eq = "flat";
   let loudness = false;
   let trackId = null;
+  let rate = 1; // vitesse de lecture
+  let keepPitch = true; // faux : la tonalité suit la vitesse
+  let reverb = 0; // de 0 à 1
+  let trimDb = 0;
   let measured = 0; // énergie moyenne mesurée sur le morceau en cours
   let samples = 0; // nombre de mesures prises sur ce morceau
   const gains = loadGains();
@@ -62,7 +71,28 @@ const Sound = (() => {
     }
   }
 
-  const needsGraph = () => loudness || eq !== "flat";
+  const needsGraph = () => loudness || eq !== "flat" || reverb > 0 || trimDb !== 0;
+
+  /// Réponse d'une salle : un bruit qui s'éteint en 2,5 s, un peu différent à gauche
+  /// et à droite pour l'ampleur.
+  function impulse() {
+    const seconds = 2.5;
+    const length = Math.floor(ctx.sampleRate * seconds);
+    const buffer = ctx.createBuffer(2, length, ctx.sampleRate);
+    for (let c = 0; c < 2; c++) {
+      const data = buffer.getChannelData(c);
+      for (let i = 0; i < length; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 3.2);
+    }
+    return buffer;
+  }
+
+  function applyRate() {
+    for (const p of players) {
+      p.defaultPlaybackRate = rate;
+      p.playbackRate = rate;
+      p.preservesPitch = keepPitch;
+    }
+  }
 
   /// Monte la chaîne Web Audio (une seule fois : un lecteur ne peut plus s'en détacher).
   function graph() {
@@ -82,6 +112,12 @@ const Sound = (() => {
       analyser = ctx.createAnalyser();
       analyser.fftSize = 2048;
       level = ctx.createGain();
+      trim = ctx.createGain();
+      // Réverbération en parallèle : le son d'origine reste entier, la salle s'ajoute.
+      const room = ctx.createConvolver();
+      room.buffer = impulse();
+      wet = ctx.createGain();
+      wet.gain.value = 0;
       // Limiteur : rattrape les crêtes qu'un égaliseur ou une correction feraient saturer.
       const limiter = ctx.createDynamicsCompressor();
       limiter.threshold.value = -1.5;
@@ -93,7 +129,11 @@ const Sound = (() => {
       const last = filters[filters.length - 1];
       last.connect(analyser);
       last.connect(level);
-      level.connect(limiter);
+      last.connect(room);
+      room.connect(wet);
+      wet.connect(level);
+      level.connect(trim);
+      trim.connect(limiter);
       limiter.connect(master);
       master.connect(ctx.destination);
       sources = players.map((p) => {
@@ -109,9 +149,11 @@ const Sound = (() => {
       });
       applyEq();
       applyVolume();
+      applyEffects();
       return true;
     } catch (err) {
       console.error("chaîne audio indisponible", err);
+      if (ctx) ctx.close().catch(() => {});
       ctx = null;
       return false;
     }
@@ -124,6 +166,12 @@ const Sound = (() => {
     // L'égaliseur ajoute du volume : on le compense pour ne pas saturer.
     const boost = Math.max(0, ...values);
     if (!loudness) level.gain.setTargetAtTime(Math.pow(10, -boost / 20 / 1.5), ctx.currentTime, 0.1);
+  }
+
+  function applyEffects() {
+    if (!ctx) return;
+    trim.gain.setTargetAtTime(Math.pow(10, trimDb / 20), ctx.currentTime, 0.05);
+    wet.gain.setTargetAtTime(reverb * 0.6, ctx.currentTime, 0.1);
   }
 
   function applyVolume() {
@@ -159,10 +207,15 @@ const Sound = (() => {
     if (ctx && loudness) levelTimer = setInterval(tickLevel, 250);
   }
 
-  /// Nouveau morceau : on reprend la correction déjà apprise pour lui.
-  function beginTrack(id) {
+  /// Nouveau morceau : on reprend la correction déjà apprise pour lui, et son volume propre.
+  function beginTrack(id, db = 0) {
     if (trackId && gains.has(trackId)) saveGains();
     trackId = id;
+    trimDb = Number.isFinite(db) ? db : 0;
+    if (needsGraph()) graph();
+    applyEffects();
+    // Un nouveau fichier remet la vitesse du lecteur à 1.
+    applyRate();
     measured = 0;
     samples = 0;
     if (ctx && loudness) {
@@ -188,6 +241,30 @@ const Sound = (() => {
       return native ? native.media : players[1 - active];
     },
     players,
+
+    /// Spectre du son pour le visualiseur : `out` reçoit des bandes de 0 à 1, de 40 Hz
+    /// à 16 kHz (échelle logarithmique, comme celles du lecteur du cœur). Faux sans
+    /// chaîne Web Audio.
+    spectrum(out) {
+      // Le visualiseur seul ne monte pas la chaîne Web Audio (un lecteur ne peut plus
+      // s'en détacher) : il se sert de celle de l'égaliseur ou du volume égal.
+      if (native || !ctx || !analyser) return false;
+      if (!freq || freq.length !== analyser.frequencyBinCount) freq = new Float32Array(analyser.frequencyBinCount);
+      analyser.getFloatFrequencyData(freq);
+      const hz = ctx.sampleRate / 2 / freq.length;
+      const n = out.length;
+      const ratio = Math.pow(16000 / 40, 1 / n);
+      const floor = -75;
+      for (let i = 0; i < n; i++) {
+        const f0 = 40 * Math.pow(ratio, i);
+        const a = Math.min(freq.length - 1, Math.floor(f0 / hz));
+        const b = Math.min(freq.length, Math.max(a + 1, Math.ceil((f0 * ratio) / hz)));
+        let db = floor;
+        for (let k = a; k < b; k++) db = Math.max(db, freq[k]);
+        out[i] = Math.min(1, Math.max(0, (db + (6 * i) / n - floor) / -floor));
+      }
+      return true;
+    },
 
     /// La musique passe par le cœur : plus de chaîne Web Audio, plus de lecteurs ici.
     useNative(bridge) {
@@ -215,14 +292,26 @@ const Sound = (() => {
       }
       eq = EQ_PRESETS[settings.eq] ? settings.eq : "flat";
       loudness = !!settings.loudness;
+      rate = Math.min(2, Math.max(0.5, Number(settings.speed) || 1));
+      keepPitch = !settings.pitch_linked;
+      reverb = Math.min(1, Math.max(0, (settings.reverb || 0) / 100));
+      applyRate();
       volume = Math.min(1, Math.max(0, settings.volume / 100));
       if (needsGraph()) graph();
       if (ctx) {
         applyEq();
+        applyEffects();
         if (!loudness) clearInterval(levelTimer);
         else startLevel();
       }
       applyVolume();
+    },
+    /// Volume propre au morceau en cours, en dB.
+    setTrackGain(db) {
+      if (native) return;
+      trimDb = Number.isFinite(db) ? db : 0;
+      if (needsGraph()) graph();
+      applyEffects();
     },
     /// Volume et son coupé tels que le cœur les a (page rouverte) : rien n'est renvoyé.
     adopt(v, m) {

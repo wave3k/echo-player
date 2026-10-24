@@ -19,10 +19,19 @@ fn u64_at(b: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_be_bytes(b.get(at..at + 8)?.try_into().ok()?))
 }
 
+/// Profondeur maximale des boîtes : un vrai fichier en a 3 (moov, trak, mdia). Un
+/// fichier piégé fait de boîtes imbriquées sans fin ne fait pas déborder la pile.
+const MAX_DEPTH: u32 = 8;
+
 /// Parcourt les boîtes entre `start` et `end` ; descend dans moov, trak et mdia.
-fn walk<R: Read + Seek>(r: &mut R, start: u64, end: u64, info: &mut Info, found_moov: &mut bool) -> Option<()> {
+/// Chaque taille est vérifiée : une boîte ne dépasse jamais son parent, et la position
+/// avance toujours (pas de boucle sans fin sur une taille fabriquée).
+fn walk<R: Read + Seek>(r: &mut R, start: u64, end: u64, depth: u32, info: &mut Info, found_moov: &mut bool) -> Option<()> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
     let mut pos = start;
-    while pos + 8 <= end {
+    while pos.checked_add(8)? <= end {
         r.seek(SeekFrom::Start(pos)).ok()?;
         let mut head = [0u8; 8];
         r.read_exact(&mut head).ok()?;
@@ -37,7 +46,8 @@ fn walk<R: Read + Seek>(r: &mut R, start: u64, end: u64, info: &mut Info, found_
         } else if size == 0 {
             size = end - pos;
         }
-        if size < header {
+        let box_end = pos.checked_add(size)?;
+        if size < header || box_end > end {
             return None;
         }
         let body = pos + header;
@@ -47,7 +57,7 @@ fn walk<R: Read + Seek>(r: &mut R, start: u64, end: u64, info: &mut Info, found_
                 if kind == b"moov" {
                     *found_moov = true;
                 }
-                walk(r, body, pos + size, info, found_moov)?;
+                walk(r, body, box_end, depth + 1, info, found_moov)?;
             }
             b"mvhd" if body_len >= 32 => {
                 let mut b = vec![0u8; body_len.min(40) as usize];
@@ -72,7 +82,7 @@ fn walk<R: Read + Seek>(r: &mut R, start: u64, end: u64, info: &mut Info, found_
             }
             _ => {}
         }
-        pos += size;
+        pos = box_end;
     }
     Some(())
 }
@@ -83,7 +93,7 @@ pub fn read(path: &Path) -> Option<Info> {
     let mut r = BufReader::new(file);
     let mut info = Info { duration_ms: 0, has_audio: false, has_video: false };
     let mut found_moov = false;
-    walk(&mut r, 0, len, &mut info, &mut found_moov);
+    walk(&mut r, 0, len, 0, &mut info, &mut found_moov);
     found_moov.then_some(info)
 }
 
@@ -116,5 +126,41 @@ mod tests {
         std::fs::write(&path, b"pas un mp4").unwrap();
         assert!(read(&path).is_none());
         let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod pieges {
+    use super::*;
+    use std::io::Cursor;
+
+    fn boxed(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut out = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+        out.extend_from_slice(kind);
+        out.extend_from_slice(body);
+        out
+    }
+
+    #[test]
+    fn un_fichier_piege_ne_fait_pas_planter() {
+        // 5 000 boîtes « trak » imbriquées : la pile ne déborde pas.
+        let mut data = Vec::new();
+        for _ in 0..5_000 {
+            data = boxed(b"trak", &data);
+        }
+        let data = boxed(b"moov", &data);
+        let len = data.len() as u64;
+        let mut info = Info { duration_ms: 0, has_audio: false, has_video: false };
+        let mut moov = false;
+        walk(&mut Cursor::new(data), 0, len, 0, &mut info, &mut moov);
+        assert!(moov);
+
+        // Taille 64 bits énorme : pas de boucle sans fin ni de débordement.
+        let mut big = 1u32.to_be_bytes().to_vec();
+        big.extend_from_slice(b"free");
+        big.extend_from_slice(&(u64::MAX - 4).to_be_bytes());
+        big.extend_from_slice(&[0u8; 32]);
+        let len = big.len() as u64;
+        assert!(walk(&mut Cursor::new(big), 0, len, 0, &mut info, &mut moov).is_none());
     }
 }

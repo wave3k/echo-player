@@ -100,7 +100,11 @@ pub async fn check(app: &AppHandle) -> Status {
         builder = builder.target("linux-x86_64-bin");
     }
     // Autre source (essais) : https obligatoire, et la signature d'Écho reste exigée.
-    if let Some(url) = std::env::var("ECHO_UPDATE_ENDPOINT").ok().and_then(|u| u.parse().ok()) {
+    if let Some(url) = std::env::var("ECHO_UPDATE_ENDPOINT")
+        .ok()
+        .and_then(|u| u.parse::<reqwest::Url>().ok())
+        .filter(|u| u.scheme() == "https")
+    {
         match builder.endpoints(vec![url]) {
             Ok(b) => builder = b,
             Err(e) => {
@@ -209,8 +213,13 @@ pub fn extract_binary(archive: &[u8]) -> Result<Vec<u8>, String> {
             .and_then(|p| p.file_name().map(|n| n == "echo-player"))
             .unwrap_or(false);
         if is_binary {
+            // Taille plafonnée (200 Mo) : une archive piégée ne remplit pas la mémoire.
+            const MAX: u64 = 200 * 1024 * 1024;
             let mut out = Vec::new();
-            entry.read_to_end(&mut out).map_err(|e| e.to_string())?;
+            (&mut entry).take(MAX + 1).read_to_end(&mut out).map_err(|e| e.to_string())?;
+            if out.len() as u64 > MAX {
+                return Err("archive de mise à jour trop grosse".into());
+            }
             if out.len() < 1024 {
                 return Err("archive de mise à jour invalide".into());
             }
