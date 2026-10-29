@@ -37,7 +37,7 @@ Tu lui montres un dossier, il joue tout ce qu'il contient.
 | | |
 |---|---|
 | 📁 **Bibliothèque** | Un ou plusieurs dossiers analysés en profondeur : titre, artiste, album, durée, pochette. Les nouveaux fichiers apparaissent tout seuls. Les analyses suivantes ne relisent que les fichiers modifiés. |
-| 🎞️ **Clips** | Une section pour regarder tes clips (webm, mp4, mkv) : la vidéo est calée sur le son, qui garde le fondu enchaîné, l'égaliseur et les touches média. En plein écran avec **F**, et dans une mini-fenêtre qui reste à l'écran quand tu changes de section (on la ferme d'un clic). La vidéo n'est décodée que quand elle est visible. L'artiste est deviné dans le titre (« Artiste - Titre (Official Video) ft. Invité » → *Artiste* / *Titre (feat. Invité)*). Un téléchargement incomplet de yt-dlp (« .f616.webm », l'image sans le son) est signalé. |
+| 🎞️ **Clips** | Une section pour regarder tes clips (webm, mp4, mkv) : la vidéo est calée sur le son, qui garde le fondu enchaîné, l'égaliseur et les touches média. En plein écran avec **F**, et dans une mini-fenêtre qui reste à l'écran quand tu changes de section (on la ferme d'un clic). La vidéo n'est décodée que quand elle est visible. L'artiste est deviné dans le titre (« Artiste - Titre (Official Video) ft. Invité » → *Artiste* / *Titre (feat. Invité)*). Un téléchargement incomplet de yt-dlp (« .f616.webm », l'image sans le son) est signalé. Un clip trop lourd pour la machine (souvent de l'AV1 en 4K, décodé sans aide de la carte graphique) est repéré en quelques secondes : l'image se fige au lieu de saccader et de clignoter, et une **copie légère** en 720p se fait une fois en arrière-plan, puis prend le relais (Linux, désactivable). |
 | 🎤 **Featurings** | Les invités sont reconnus dans l'artiste (« Tiakola x Dave », « Ninho feat. Niska ») et dans le titre (« (feat. Dave) ») : chaque artiste a sa liste, featurings compris, et le clic droit sur un morceau mène à ses artistes. |
 | 🔊 **Son** | Volume égal (niveau des plateformes de streaming, sans saturer), égaliseur à 6 préréglages (Neutre, Basses, Rap, Voix, Aigus, Acoustique), fondu enchaîné de 3, 6 ou 10 s. |
 | 🎤 **Paroles** | Paroles synchronisées en plein écran (touche **L**) : la ligne chantée s'illumine, un clic sur une ligne y saute. Lues dans un fichier `.lrc` à côté du morceau, dans les tags du fichier, ou en ligne (à activer : seuls l'artiste, le titre et la durée sont envoyés) sur [LRCLIB](https://lrclib.net), base libre de paroles synchronisées, puis lyrics.ovh en secours (texte seul). Les noms de clips YouTube sont décomposés (« Tiakola x Dave - Meridian (Clip officiel) ») pour retrouver le bon morceau. Un clip plus long que le son (intro, scènes) se cale en un clic : on touche la ligne au moment où elle est chantée, et le calage est retenu. |
@@ -117,7 +117,7 @@ Aucun droit administrateur n'est nécessaire : tout est installé dans `~/.local
 mp3, flac, m4a, aac, ogg, opus, wav, aiff, wma, ainsi que d'autres formats moins courants (wv, ape, mpc…).
 Les conteneurs vidéo (mp4, webm, mkv, mov) sont lus pour leur son ; leur image s'affiche dans la section **Clips**.
 
-Tu peux choisir les formats dans **Réglages → Formats acceptés**. Le décodage passe par GStreamer : un format peu courant peut demander un greffon (`gst-plugins-good`, `gst-libav`).
+Tu peux choisir les formats dans **Réglages → Formats acceptés**. Le décodage passe par GStreamer : un format peu courant peut demander un greffon (`gst-plugins-good`, `gst-libav`). Pour que la carte graphique décode les clips (H.264, VP9, et AV1 sur les puces récentes), installe aussi son greffon VA-API : `gst-plugin-va` sous Arch, `gstreamer1.0-plugins-bad` sous Debian et Ubuntu.
 
 ## Architecture
 
@@ -167,6 +167,7 @@ Ta musique et tes réglages restent sur ta machine : aucun compte, aucune statis
 |---|---|
 | `~/.config/com.echo.player/` | Réglages, cache de la bibliothèque, corrections des morceaux |
 | `~/.cache/com.echo.player/covers/` | Pochettes extraites des fichiers ou trouvées en ligne (peut être vidé depuis les réglages) |
+| `~/.cache/com.echo.player/video/` | Copies légères des clips trop lourds, 6 Go au plus (peut être vidé depuis les réglages) |
 
 Si un fichier de réglages est abîmé, il est mis de côté (sous le nom `settings.json.bad`) plutôt qu'effacé.
 

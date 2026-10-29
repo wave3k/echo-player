@@ -69,6 +69,9 @@ pub struct Settings {
     pub visualizer: String,
     /// Photos des artistes cherchées en ligne (Deezer) pour la vue Artistes.
     pub artist_photos: bool,
+    /// Clips trop lourds pour la machine (4K, AV1…) : copie légère en 720p faite une
+    /// fois en arrière-plan, lue à la place de l'original (Linux).
+    pub lite_clips: bool,
 
     /// Vitesse de lecture (0,5 à 2).
     pub speed: f64,
@@ -124,6 +127,7 @@ impl Default for Settings {
             covers_prefer: "auto".into(),
             visualizer: "bars".into(),
             artist_photos: false,
+            lite_clips: true,
             speed: 1.0,
             pitch_linked: false,
             reverb: 0,

@@ -575,6 +575,11 @@ function sectionBiblio() {
       ${rowSwitch("Actualiser au démarrage", "Vérifie la bibliothèque à chaque ouverture", "refresh_on_start", s.refresh_on_start)}
       ${rowSwitch("Ajouter les nouveaux morceaux automatiquement", "Un fichier ajouté, déplacé ou supprimé dans tes dossiers est pris en compte tout seul", "watch", s.watch)}
     </div>
+    ${LINUX_WEBKIT ? `<h4 style="margin-top:18px">Clips trop lourds</h4>
+    <div class="card">
+      ${rowSwitch("Copies légères des clips", "Un clip que la machine n'arrive pas à suivre (4K, AV1…) est copié une fois en 720p, en arrière-plan, puis lu à la place de l'original : plus de saccades ni de clignotements. Le fichier d'origine n'est pas touché.", "lite_clips", s.lite_clips)}
+      ${rowButton("Place des copies légères", `${state.liteBytes == null ? "…" : Math.round(state.liteBytes / 1048576)} Mo sur le disque (6 Go au plus)`, `<button class="ghost-btn" data-action="clear-lite">Vider</button>`)}
+    </div>` : ""}
     <h4 style="margin-top:18px">Doublons</h4>
     <div class="card">
       ${rowButton("Trouver les doublons", "Le même morceau en plusieurs fichiers (MP3 et FLAC, clip téléchargé deux fois…) : choisis lesquels masquer", `<button class="ghost-btn" data-action="duplicates">${icon("search", 15)} Chercher</button>`)}
@@ -913,6 +918,15 @@ function bindSettings(panel) {
         applySnapshot(cleared.snapshot);
         refreshSettingsPanel();
         toast("Les pochettes ont été reconstruites.");
+        break;
+      }
+      case "clear-lite": {
+        state.liteBytes = await invoke("clear_lite_clips").catch(() => state.liteBytes);
+        clipLite.clear();
+        clipLiteFailed.clear();
+        clipLiteAsked.clear();
+        refreshSettingsPanel();
+        toast("Copies légères effacées : elles se referont au besoin.");
         break;
       }
       case "open-config":
@@ -3702,10 +3716,170 @@ function updateClipVideo() {
         });
       }
     }
-    video.src = mediaSrc(track.path);
+    setClipSource(video, track);
   }
   startClipSync();
   syncClip();
+  paintClipNotice();
+}
+
+/* ---------------- clips trop lourds ---------------- */
+
+/// Copies légères connues (id → chemin), clips que la machine n'arrive pas à suivre,
+/// copies en cours (id → avancement de 0 à 1) et copies ratées.
+const clipLite = new Map();
+const clipHeavy = new Set();
+const clipLiteProgress = new Map();
+const clipLiteFailed = new Set();
+const clipLiteAsked = new Set();
+/// Taille et cadence de chaque clip (lues dans le fichier), pour savoir combien d'images
+/// la machine devrait afficher.
+const clipProbe = new Map();
+let clipLiteSupported = LINUX_WEBKIT;
+
+/// Pose la source de la vidéo : la copie légère si elle est déjà faite, sinon l'original.
+function setClipSource(video, track) {
+  const id = track.id;
+  resetLagWatch();
+  resetClipSync();
+  if (!clipProbe.has(id)) {
+    clipProbe.set(id, null);
+    invoke("clip_probe", { id }).then((info) => clipProbe.set(id, info || null)).catch(() => {});
+  }
+  if (clipLite.has(id)) {
+    video.src = mediaSrc(clipLite.get(id));
+    return;
+  }
+  // Déjà jugé trop lourd : l'original n'est même pas ouvert, la vignette attend la copie.
+  if (clipHeavy.has(id)) {
+    unloadClipVideo(video);
+    requestLite(id);
+    return;
+  }
+  invoke("clip_lite", { id, start: false })
+    .catch(() => null)
+    .then((info) => {
+      if (clipShownId !== id) return;
+      if (info) clipLiteSupported = info.supported;
+      if (info && info.path) clipLite.set(id, info.path);
+      video.src = mediaSrc(clipLite.get(id) || track.path);
+      syncClip();
+    });
+}
+
+/// La copie légère est prête : elle remplace l'original sans attendre la fin du morceau.
+function useLiteClip(id, path) {
+  clipLite.set(id, path);
+  clipHeavy.delete(id);
+  clipLiteProgress.delete(id);
+  if (clipShownId === id) {
+    const video = el("clip-video");
+    resetClipSync();
+    resetLagWatch();
+    video.src = mediaSrc(path);
+    syncClip();
+  }
+  paintClipNotice();
+}
+
+/// Retard de la vidéo sur le son, mesuré sur quelques secondes, et recalages récents.
+const lagWatch = { since: 0, video: 0, sound: 0, total: 0, dropped: 0, fixes: [] };
+
+/// Images affichées et perdues depuis le chargement (0 si le moteur ne le dit pas).
+function frameStats(video) {
+  const q = typeof video.getVideoPlaybackQuality === "function" ? video.getVideoPlaybackQuality() : null;
+  return q ? { total: q.totalVideoFrames || 0, dropped: q.droppedVideoFrames || 0 } : { total: 0, dropped: 0 };
+}
+
+/// Journal de diagnostic (ECHO_DEBUG=1 dans le terminal).
+let debugOn = false;
+function debugLog(text) {
+  if (debugOn) invoke("debug_log", { text }).catch(() => {});
+}
+
+function resetLagWatch() {
+  lagWatch.since = 0;
+  lagWatch.fixes = [];
+}
+
+/// La machine ne suit pas ce clip : l'image se fige (plus de recalages, donc plus de
+/// clignotements), le son continue, et une copie légère se prépare.
+function markHeavy(id) {
+  if (!id || clipHeavy.has(id)) return;
+  clipHeavy.add(id);
+  // L'original est déchargé : son décodeur (souvent près d'1 Go en 4K) ne prend plus ni
+  // mémoire ni processeur pendant que la copie se fait. La vignette du clip s'affiche.
+  if (clipShownId === id) unloadClipVideo(el("clip-video"));
+  paintClipNotice();
+  requestLite(id);
+}
+
+function unloadClipVideo(video) {
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+}
+
+/// Lance la copie légère (une fois par clip, et seulement si le réglage le permet).
+function requestLite(id) {
+  if (clipLite.has(id) || clipLiteAsked.has(id) || !state.settings.lite_clips) return;
+  clipLiteAsked.add(id);
+  invoke("clip_lite", { id, start: true })
+    .then((info) => {
+      clipLiteSupported = info.supported;
+      if (info.path) useLiteClip(id, info.path);
+      else paintClipNotice();
+    })
+    .catch(() => {});
+}
+
+/// Mesure faite à chaque passage du recalage, la vidéo en lecture.
+function watchLag(video, target, now) {
+  if (video.paused || video.seeking || clipSync.waiting) {
+    lagWatch.since = 0;
+    return;
+  }
+  const frames = frameStats(video);
+  if (!lagWatch.since) {
+    Object.assign(lagWatch, { since: now, video: video.currentTime, sound: target, ...frames });
+    return;
+  }
+  if (now - lagWatch.since < 4000) return;
+  const sound = target - lagWatch.sound;
+  const pic = video.currentTime - lagWatch.video;
+  const shown = frames.total - lagWatch.total;
+  const lost = frames.dropped - lagWatch.dropped;
+  Object.assign(lagWatch, { since: now, video: video.currentTime, sound: target, ...frames });
+  // Images attendues : la cadence du fichier (30 au plus pour une copie légère).
+  const info = clipProbe.get(clipShownId);
+  const fps = info && info.fps > 0 ? (clipLite.has(clipShownId) ? Math.min(info.fps, 30) : info.fps) : 0;
+  const expected = fps * pic;
+  debugLog(`clip : son ${sound.toFixed(1)} s, image ${pic.toFixed(1)} s, ${shown} images sur ${Math.round(expected)} attendues, ${lost} perdues`);
+  // L'image avance à moins de 80 % du son (le décodeur prend du retard), ou la machine
+  // n'affiche pas les trois quarts des images (le décodeur en saute pour rester à
+  // l'heure : l'image saccade) : trop lourd.
+  if (sound > 2 && pic / sound < 0.8) markHeavy(clipShownId);
+  else if (expected > 20 && shown > 0 && shown < expected * 0.75) markHeavy(clipShownId);
+  else if (shown >= 20 && lost / shown > 0.2) markHeavy(clipShownId);
+}
+
+function paintClipNotice() {
+  const box = el("clip-notice");
+  const id = clipShownId;
+  if (!box) return;
+  if (!id || !clipHeavy.has(id)) {
+    box.hidden = true;
+    return;
+  }
+  const pct = clipLiteProgress.get(id);
+  let text;
+  if (!clipLiteSupported) text = "Clip trop lourd pour cette machine : l'image est figée, le son continue.";
+  else if (clipLite.has(id)) text = "Ce clip reste trop lourd, même en copie légère : l'image est figée.";
+  else if (!state.settings.lite_clips) text = "Clip trop lourd pour cette machine. Active « Copies légères des clips » dans les réglages pour le voir sans saccades.";
+  else if (clipLiteFailed.has(id)) text = "La copie légère de ce clip n'a pas pu être faite : l'image reste figée.";
+  else text = `Clip trop lourd pour cette machine : copie légère en préparation${pct != null ? ` (${Math.round(pct * 100)} %)` : ""}. L'image reprendra toute seule.`;
+  setText(box, text);
+  box.hidden = false;
 }
 
 /// Pose le lecteur exactement sur l'emplacement de la scène.
@@ -3747,11 +3921,26 @@ function clearStageGeometry() {
 /// AV1 4K, d'où des saccades). On ne la recale donc que si l'écart se voit (0,2 s),
 /// au plus toutes les 2,5 s, ou tout de suite après un saut demandé (plus d'1 s).
 /// Le temps que prend un recalage est mesuré et compensé au suivant.
-const clipSync = { lastFix: 0, lag: 0.15, fixStarted: 0, waiting: false };
+const clipSync = { lastFix: 0, lag: 0.15, fixStarted: 0, waiting: false, holdTimer: 0 };
+
+/// Nouvelle source (autre clip, ou copie légère) : rien de ce qui a été mesuré sur
+/// l'ancienne ne vaut plus (un recalage en 4K est bien plus long qu'en 720p).
+function resetClipSync() {
+  clearTimeout(clipSync.holdTimer);
+  Object.assign(clipSync, { lastFix: 0, lag: 0.15, fixStarted: 0, waiting: false, holdTimer: 0 });
+}
 
 function syncClip() {
   const video = el("clip-video");
-  if (!clipShownId || clipShownId !== currentId() || video.readyState < 1 || video.seeking) return;
+  if (!clipShownId || clipShownId !== currentId()) return;
+  // Trop lourd : la vignette reste affichée jusqu'à la copie légère.
+  if (clipHeavy.has(clipShownId)) {
+    if (!video.paused) video.pause();
+    // Réglage activé après coup : la copie se lance maintenant.
+    requestLite(clipShownId);
+    return;
+  }
+  if (video.readyState < 1 || video.seeking) return;
   const media = mediaEl();
   const target = media.currentTime;
   if (!isFinite(target)) return;
@@ -3774,8 +3963,32 @@ function syncClip() {
   // Décodage en retard (image clé lointaine, processeur pris) : on ne recale pas
   // pendant qu'il rattrape, sinon chaque recalage recommencerait le travail.
   if (clipSync.waiting && Math.abs(diff) < 1) return;
+  // En attente du son (vidéo un peu en avance) : elle repart toute seule.
+  if (clipSync.holdTimer) return;
   const now = performance.now();
+  watchLag(video, target, now);
+  if (clipHeavy.has(clipShownId)) return;
+  // Un peu en avance (recalage qui a visé trop loin) : la vidéo attend le son, sans saut
+  // (un saut redécode depuis l'image clé et peut clignoter).
+  if (diff > 0.2 && diff < 1.5 && !video.paused) {
+    video.pause();
+    clipSync.holdTimer = setTimeout(() => {
+      clipSync.holdTimer = 0;
+      if (!mediaEl().paused && clipShownId === currentId()) video.play().catch(() => {});
+    }, (diff / Math.max(0.25, rate)) * 1000);
+    lagWatch.since = 0;
+    return;
+  }
   if (Math.abs(diff) > 1 || (Math.abs(diff) > 0.2 && now - clipSync.lastFix > 2500)) {
+    // Trois recalages en 20 s : la vidéo ne tient pas, chaque recalage clignote.
+    // Le premier saut après le chargement (clip lancé en cours de morceau) ne compte pas.
+    lagWatch.fixes = lagWatch.fixes.filter((t) => now - t < 20000);
+    if (clipSync.lastFix) lagWatch.fixes.push(now);
+    if (lagWatch.fixes.length >= 3) {
+      markHeavy(clipShownId);
+      return;
+    }
+    lagWatch.since = 0;
     seekClip(video, target, true);
     return;
   }
@@ -5759,6 +5972,25 @@ async function bindBackendEvents() {
     }
   });
   // Pochettes trouvées en ligne : posées sur place.
+  // Copies légères des clips : avancement, copie prête, échec.
+  await listen("clip-lite-progress", (event) => {
+    const { id, done } = event.payload || {};
+    clipLiteProgress.set(id, done);
+    if (id === clipShownId) paintClipNotice();
+  });
+  await listen("clip-lite-ready", (event) => {
+    const { id, path } = event.payload || {};
+    if (path) useLiteClip(id, path);
+    invoke("lite_clips_size").then((n) => (state.liteBytes = n)).catch(() => {});
+  });
+  await listen("clip-lite-failed", (event) => {
+    const { id } = event.payload || {};
+    clipLiteFailed.add(id);
+    clipLiteProgress.delete(id);
+    if (id === clipShownId) paintClipNotice();
+  });
+  if (LINUX_WEBKIT) invoke("lite_clips_size").then((n) => (state.liteBytes = n)).catch(() => {});
+  invoke("debug_enabled").then((on) => (debugOn = !!on)).catch(() => {});
   await listen("tracks-updated", (event) => {
     for (const track of event.payload || []) replaceTrack(track);
   });

@@ -1525,3 +1525,13 @@ kbd {
   .browse-page .pl-head { flex-direction: column; align-items: flex-start; }
   .lib-tabs { order: 3; width: 100%; }
 }
+
+/* Clip trop lourd : message posé sur l'image figée */
+.clip-notice {
+  position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 2;
+  padding: 8px 12px; border-radius: 10px; font-size: 12.5px; line-height: 1.4;
+  background: rgba(8, 8, 12, 0.78); color: #f2f3f8; pointer-events: none;
+  backdrop-filter: none;
+}
+.clip-mini:not(.on-stage) .clip-notice { font-size: 11px; padding: 6px 8px; left: 6px; right: 6px; bottom: 6px;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
