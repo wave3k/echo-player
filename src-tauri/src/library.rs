@@ -270,7 +270,14 @@ pub fn scan(
             }
 
             // Pas d'artiste dans les tags : on le cherche dans le titre (« Artiste - Titre »).
-            if track.artist.trim().is_empty() {
+            // Une vidéo téléchargée (yt-dlp) a en tag le titre YouTube complet et le nom de
+            // la chaîne comme artiste (« Moulaga14 ») : le titre « Artiste - Titre » fait foi.
+            let from_title = track.video && !track.artist.trim().is_empty() && track.title.contains(" - ");
+            let guessed = from_title.then(|| crate::titles::guess(&track.title)).filter(|(a, _)| !a.is_empty());
+            if let Some((artist, title)) = guessed {
+                track.artist = artist;
+                track.title = title;
+            } else if track.artist.trim().is_empty() {
                 let (artist, title) = crate::titles::guess(&track.title);
                 track.artist = artist;
                 track.title = title;

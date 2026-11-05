@@ -4,7 +4,7 @@
 
 /// Version des règles de lecture des fichiers (titres, pistes) : quand elle change,
 /// les morceaux déjà connus sont relus une fois.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 /// Mots qui signalent un ajout de la plateforme vidéo, pas une partie du titre.
 const NOISE: &[&str] = &[
@@ -214,7 +214,9 @@ pub fn find_ci(text: &str, needle: &str) -> Option<(usize, usize)> {
 
 /// Sépare les artistes invités : « ft. », « feat. », « featuring », y compris entre parenthèses.
 fn take_feat(text: &str) -> (String, Vec<String>) {
-    let markers = ["(feat. ", "(feat ", "(ft. ", "(ft ", "[feat. ", " feat. ", " feat ", " ft. ", " ft ", " featuring "];
+    let markers = [
+        "(feat. ", "(feat ", "(ft. ", "(ft ", "[feat. ", " feat. ", " feat ", " ft. ", " ft ", " featuring ", " f/ ", " w/ ",
+    ];
     let mut best: Option<(usize, usize, &str)> = None;
     for m in markers {
         if let Some((start, end)) = find_ci(text, m) {
@@ -326,6 +328,16 @@ pub fn credits(artist: &str, title: &str, solo: &dyn Fn(&str) -> bool) -> (Vec<S
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn titres_youtube_de_yt_dlp() {
+        assert_eq!(super::guess("Ninho - Putana (Clip officiel)"), ("Ninho".into(), "Putana".into()));
+        assert_eq!(super::guess("Kaaris - Chargé."), ("Kaaris".into(), "Chargé.".into()));
+        assert_eq!(
+            super::guess("Chief Keef - I Don't Like f/ Lil Reese"),
+            ("Chief Keef".into(), "I Don't Like (feat. Lil Reese)".into())
+        );
+    }
+
     use super::guess;
 
     #[test]

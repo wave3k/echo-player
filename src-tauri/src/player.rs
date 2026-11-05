@@ -349,7 +349,7 @@ fn chain_description(caps: Caps, vinyl: bool, sink: &str) -> String {
         // 48 kHz, puis 48 kHz / vitesse, relu à 48 kHz : la tonalité suit la vitesse.
         let hz = VINYL_RATE as i32;
         format!(
-            ",rate={hz} ! audioresample ! capsfilter name=vinyl caps=audio/x-raw,format=F32LE,layout=interleaved,rate={hz} \
+            ",rate={hz} ! audioresample quality=10 ! capsfilter name=vinyl caps=audio/x-raw,format=F32LE,layout=interleaved,rate={hz} \
              ! capssetter caps=audio/x-raw,rate={hz} "
         )
     } else if caps.tempo {
@@ -360,10 +360,12 @@ fn chain_description(caps: Caps, vinyl: bool, sink: &str) -> String {
     // Réverbération toujours en place (niveau 0 : son d'origine) pour la régler pendant
     // l'écoute ; elle rend du stéréo, comme la sortie.
     let verb = if caps.reverb { "! freeverb name=verb level=0 room-size=0.75 damping=0.35 " } else { "" };
+    // Rééchantillonnage à la meilleure qualité (10 au lieu de 4) : il ne sert que si la
+    // fréquence change (effet disque), sinon le son passe tel quel.
     // Entrelacé : certains décodeurs (AAC) rendent des canaux séparés, que `capssetter`
     // et `freeverb` refusent.
     format!(
-        "audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved{speed}\
+        "audioconvert ! audioresample quality=10 ! audio/x-raw,format=F32LE,layout=interleaved{speed}\
          ! equalizer-nbands name=eq num-bands=5 \
          ! level name=meter interval=250000000 post-messages=false \
          ! spectrum name=spec bands=512 threshold=-75 interval=50000000 post-messages=false \
