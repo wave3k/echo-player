@@ -2256,6 +2256,15 @@ fn prepare_webview_env() {
     {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
+    // Composition accélérée de WebKitGTK : sous Wayland, avec certaines puces (Intel et
+    // AMD hybrides), elle fait clignoter l'interface et rend les clips saccadés. Sans
+    // elle, l'affichage est stable et les vidéos fluides. ECHO_GPU_COMPOSITING=1 la garde.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none()
+        && std::env::var_os("ECHO_GPU_COMPOSITING").is_none()
+    {
+        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+    }
 }
 
 /// Moins de mémoire pour le moteur d'affichage : Écho n'est pas un navigateur,
