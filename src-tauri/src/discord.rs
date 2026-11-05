@@ -30,6 +30,8 @@ pub struct NowPlaying {
     pub position_ms: u64,
     pub duration_ms: u64,
     pub playing: bool,
+    /// Pochette en ligne (Discord n'affiche que des adresses https) ; sinon le logo.
+    pub cover_url: Option<String>,
 }
 
 enum Command {
@@ -128,7 +130,11 @@ fn activity(now: &NowPlaying) -> Activity<'_> {
         times = times.end(start + now.duration_ms as i64);
     }
     let artist = if now.artist.is_empty() { "Artiste inconnu" } else { now.artist.as_str() };
-    let mut assets = Assets::new().large_image(ICON_URL);
+    // La pochette en grand et le logo d'Écho en petit ; sans pochette, le logo seul.
+    let mut assets = match now.cover_url.as_deref() {
+        Some(url) => Assets::new().large_image(url).small_image(ICON_URL).small_text("Écho"),
+        None => Assets::new().large_image(ICON_URL),
+    };
     if !now.album.is_empty() {
         assets = assets.large_text(now.album.as_str());
     }

@@ -521,6 +521,27 @@ async fn dz_tracks(client: &reqwest::Client, want: &Want, strict: bool) -> Resul
         .collect())
 }
 
+/// Adresse publique de la pochette d'un morceau (Deezer), pour le statut Discord qui
+/// n'affiche que des images en ligne. `None` : rien de sûr trouvé.
+pub async fn public_cover_url(artist: &str, title: &str, duration_ms: u64, video: bool) -> Option<String> {
+    if artist.trim().is_empty() || title.trim().is_empty() {
+        return None;
+    }
+    let want = Want {
+        artist: artist.into(),
+        title: title.into(),
+        album: String::new(),
+        duration_ms,
+        video,
+        prefer: Prefer::Album,
+        scope: Scope::TrackOnly,
+    };
+    let client = crate::lyrics::client().ok()?;
+    let mut found = dz_tracks(&client, &want, false).await.ok()?;
+    found.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    found.into_iter().find(|c| c.score > 0.5).map(|c| c.full)
+}
+
 /// Albums de ce nom sur Deezer.
 async fn dz_albums(client: &reqwest::Client, want: &Want) -> Result<Vec<Candidate>, String> {
     let artist = artist_variants(&want.artist).pop().unwrap_or_default();
@@ -679,12 +700,67 @@ fn store_image(covers: &Path, bytes: &[u8], ext: &str) -> Option<String> {
 
 /* ---------------- photos d'artistes ---------------- */
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct DzArtistPicture {
+    #[serde(default)]
+    id: u64,
     #[serde(default)]
     name: String,
     #[serde(default)]
     picture_big: Option<String>,
+    #[serde(default)]
+    picture_medium: Option<String>,
+    #[serde(default)]
+    nb_fan: u64,
+}
+
+#[derive(Deserialize)]
+struct DzTopTrack {
+    #[serde(default)]
+    title: String,
+}
+
+/// Photo proposée pour un artiste (fenêtre « Changer la photo »).
+#[derive(Serialize)]
+pub struct ArtistChoice {
+    pub name: String,
+    pub small: String,
+    pub full: String,
+    pub fans: u64,
+}
+
+/// Une vraie photo (Deezer donne une silhouette grise, « /artist// », à défaut).
+fn real_picture(url: &Option<String>) -> Option<String> {
+    url.clone().filter(|u| !u.is_empty() && !u.contains("/artist//"))
+}
+
+/// Titre réduit à l'essentiel pour comparer : sans accents, sans « (feat. …) ».
+fn title_core(title: &str) -> String {
+    let t = fold(title);
+    let cut = t.find(['(', '[']).unwrap_or(t.len());
+    t[..cut].trim().to_string()
+}
+
+/// Parmi des homonymes, celui dont les titres connus de Deezer recoupent le plus ceux
+/// de la bibliothèque ; à égalité, le plus suivi.
+async fn best_namesake(client: &reqwest::Client, list: Vec<DzArtistPicture>, titles: &[String]) -> Option<DzArtistPicture> {
+    if list.len() <= 1 || titles.is_empty() {
+        return list.into_iter().max_by_key(|a| a.nb_fan);
+    }
+    let mine: std::collections::HashSet<String> = titles.iter().map(|t| title_core(t)).filter(|t| !t.is_empty()).collect();
+    let mut best: Option<(usize, u64, DzArtistPicture)> = None;
+    for a in list.into_iter().take(4) {
+        let url = reqwest::Url::parse(&format!("{DEEZER}/artist/{}/top?limit=50", a.id)).ok();
+        let top: Vec<DzTopTrack> = match url {
+            Some(url) => get_json::<DzList<DzTopTrack>>(client, url).await.ok().flatten().map(|l| l.data).unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let hits = top.iter().filter(|t| mine.contains(&title_core(&t.title))).count();
+        if best.as_ref().is_none_or(|(h, f, _)| (hits, a.nb_fan) > (*h, *f)) {
+            best = Some((hits, a.nb_fan, a));
+        }
+    }
+    best.map(|b| b.2)
 }
 
 /// Dossier des photos d'artistes, dans le cache des pochettes.
@@ -697,7 +773,7 @@ pub fn artists_dir(covers: &Path) -> PathBuf {
 /// Photo d'un artiste, cherchée sur Deezer une seule fois puis gardée. Seul un artiste
 /// au nom identique (sans accents ni majuscules) est retenu : mieux vaut pas de photo
 /// que celle d'un homonyme. Un artiste introuvable n'est recherché qu'au bout de 30 jours.
-pub async fn artist_photo(dir: &Path, name: &str) -> Result<Option<PathBuf>, String> {
+pub async fn artist_photo(dir: &Path, name: &str, titles: &[String]) -> Result<Option<PathBuf>, String> {
     let key = fold(name);
     if key.trim().is_empty() {
         return Ok(None);
@@ -720,12 +796,11 @@ pub async fn artist_photo(dir: &Path, name: &str) -> Result<Option<PathBuf>, Str
     }
     let client = crate::lyrics::client()?;
     let list: Vec<DzArtistPicture> = dz_get(&client, "search/artist", name).await?;
-    let picture = list
-        .into_iter()
-        .find(|a| fold(&a.name) == key)
-        .and_then(|a| a.picture_big)
-        // Artiste sans photo : Deezer donne une silhouette grise (« /artist// »).
-        .filter(|url| !url.contains("/artist//"));
+    // Seuls les noms identiques (sans accents ni majuscules) et avec une vraie photo ;
+    // entre homonymes, celui qui a sorti les morceaux de la bibliothèque.
+    let same: Vec<DzArtistPicture> =
+        list.into_iter().filter(|a| fold(&a.name) == key && real_picture(&a.picture_big).is_some()).collect();
+    let picture = best_namesake(&client, same, titles).await.and_then(|a| real_picture(&a.picture_big));
     let found = match picture {
         Some(url) => fetch_image(&client, &url).await?,
         None => None,
@@ -737,6 +812,52 @@ pub async fn artist_photo(dir: &Path, name: &str) -> Result<Option<PathBuf>, Str
     let path = dir.join(format!("{base}.{ext}"));
     crate::store::write_atomic(&path, &bytes).map_err(|e| e.to_string())?;
     Ok(Some(path))
+}
+
+/// Photo déjà sur le disque (trouvée ou choisie), sans rien chercher.
+pub fn artist_photo_on_disk(dir: &Path, name: &str) -> Option<PathBuf> {
+    let base = format!("{:016x}", crate::library::stable_hash(fold(name).as_bytes()));
+    ["jpg", "png", "webp"].iter().map(|e| dir.join(format!("{base}.{e}"))).find(|p| p.is_file())
+}
+
+/// Photos possibles pour un artiste : les noms identiques d'abord, puis les plus suivis.
+pub async fn artist_choices(name: &str) -> Result<Vec<ArtistChoice>, String> {
+    let key = fold(name);
+    let client = crate::lyrics::client()?;
+    let mut list: Vec<DzArtistPicture> = dz_get(&client, "search/artist", name).await?;
+    list.sort_by_key(|a| (fold(&a.name) != key, std::cmp::Reverse(a.nb_fan)));
+    Ok(list
+        .into_iter()
+        .filter_map(|a| {
+            let full = real_picture(&a.picture_big)?;
+            Some(ArtistChoice { small: real_picture(&a.picture_medium).unwrap_or_else(|| full.clone()), full, name: a.name, fans: a.nb_fan })
+        })
+        .collect())
+}
+
+/// Pose la photo choisie (adresse Deezer ou image du disque) : elle remplace la
+/// précédente et ne sera jamais remplacée par une recherche automatique.
+pub async fn set_artist_photo(dir: &Path, name: &str, url: Option<&str>, file: Option<&Path>) -> Result<PathBuf, String> {
+    let key = fold(name);
+    let base = format!("{:016x}", crate::library::stable_hash(key.as_bytes()));
+    let (bytes, ext) = if let Some(file) = file {
+        let bytes = std::fs::read(file).map_err(|e| e.to_string())?;
+        let ext = match file.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+            Some("png") => "png",
+            Some("webp") => "webp",
+            _ => "jpg",
+        };
+        (bytes, ext)
+    } else {
+        let client = crate::lyrics::client()?;
+        fetch_image(&client, url.ok_or("aucune image")?).await?.ok_or("image introuvable")?
+    };
+    for old in ["jpg", "png", "webp", "none"] {
+        let _ = std::fs::remove_file(dir.join(format!("{base}.{old}")));
+    }
+    let path = dir.join(format!("{base}.{ext}"));
+    crate::store::write_atomic(&path, &bytes).map_err(|e| e.to_string())?;
+    Ok(path)
 }
 
 /* ---------------- cache des réponses ---------------- */

@@ -1061,12 +1061,31 @@ async fn cover_candidates(app: tauri::AppHandle, id: String, prefer: Option<Stri
 /// Photo d'un artiste (vue Artistes), si les photos en ligne sont activées.
 /// `None` : pas de photo (coupé, introuvable, ou pas de connexion).
 #[tauri::command]
-async fn artist_photo(app: tauri::AppHandle, name: String) -> Option<String> {
-    if !app.state::<AppSettings>().0.lock().unwrap().artist_photos {
-        return None;
-    }
+async fn artist_photo(app: tauri::AppHandle, name: String, titles: Option<Vec<String>>) -> Option<String> {
     let dir = covers_online::artists_dir(&store::covers_dir(&cache_dir(&app)));
-    covers_online::artist_photo(&dir, &name).await.ok().flatten().map(|p| p.to_string_lossy().into_owned())
+    if !app.state::<AppSettings>().0.lock().unwrap().artist_photos {
+        // Coupé : seule une photo choisie à la main (déjà sur le disque) s'affiche.
+        return covers_online::artist_photo_on_disk(&dir, &name).map(|p| p.to_string_lossy().into_owned());
+    }
+    covers_online::artist_photo(&dir, &name, &titles.unwrap_or_default())
+        .await
+        .ok()
+        .flatten()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Photos possibles pour un artiste (fenêtre « Changer la photo »).
+#[tauri::command]
+async fn artist_photo_choices(name: String) -> Result<Vec<covers_online::ArtistChoice>, String> {
+    covers_online::artist_choices(&name).await
+}
+
+/// Pose la photo choisie : une adresse proposée, ou une image du disque.
+#[tauri::command]
+async fn set_artist_photo(app: tauri::AppHandle, name: String, url: Option<String>, file: Option<String>) -> Result<String, String> {
+    let dir = covers_online::artists_dir(&store::covers_dir(&cache_dir(&app)));
+    let path = covers_online::set_artist_photo(&dir, &name, url.as_deref(), file.as_deref().map(Path::new)).await?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 /// Pose la pochette choisie dans la fenêtre (adresse d'une des propositions).
@@ -1471,8 +1490,45 @@ fn now_playing(app: &tauri::AppHandle, title: String, artist: String, album: Str
             None
         } else {
             let playing = now.as_ref().map(|n| n.playing).unwrap_or(false);
-            Some(discord::NowPlaying { title, artist, album, position_ms: 0, duration_ms, playing })
+            let cover_url = DISCORD_COVERS.lock().ok().and_then(|m| m.get(&(artist.clone(), title.clone())).cloned()).flatten();
+            Some(discord::NowPlaying {
+                title: title.clone(),
+                artist: artist.clone(),
+                album,
+                position_ms: 0,
+                duration_ms,
+                playing,
+                cover_url,
+            })
         };
+    });
+    fetch_discord_cover(app, artist, title, duration_ms);
+}
+
+/// Pochettes en ligne déjà cherchées pour Discord : (artiste, titre) → adresse.
+static DISCORD_COVERS: Mutex<std::collections::BTreeMap<(String, String), Option<String>>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+/// Cherche la pochette du morceau sur Deezer (statut Discord activé seulement), puis
+/// l'ajoute au statut si le morceau joue toujours.
+fn fetch_discord_cover(app: &tauri::AppHandle, artist: String, title: String, duration_ms: u64) {
+    let enabled = app.state::<AppSettings>().0.lock().map(|s| s.discord).unwrap_or(false);
+    let key = (artist.clone(), title.clone());
+    if !enabled || title.is_empty() || DISCORD_COVERS.lock().map(|m| m.contains_key(&key)).unwrap_or(true) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let url = covers_online::public_cover_url(&artist, &title, duration_ms, false).await;
+        if let Ok(mut map) = DISCORD_COVERS.lock() {
+            map.insert(key, url.clone());
+        }
+        let services = app.state::<Services>();
+        push_discord(&services, |now| {
+            if let Some(now) = now.as_mut().filter(|n| n.title == title && n.artist == artist) {
+                now.cover_url = url;
+            }
+        });
     });
 }
 
@@ -2484,6 +2540,8 @@ fn main() {
             player::player_caps,
             set_track_gain,
             artist_photo,
+            artist_photo_choices,
+            set_artist_photo,
             bootstrap,
             get_state,
             cover_candidates,

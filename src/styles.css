@@ -1535,3 +1535,52 @@ kbd {
 }
 .clip-mini:not(.on-stage) .clip-notice { font-size: 11px; padding: 6px 8px; left: 6px; right: 6px; bottom: 6px;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* Changer la pochette depuis « Écouter », photos d'artistes rondes dans le choix */
+.listen-cover-wrap { position: relative; flex: none; }
+.cover-edit {
+  position: absolute; right: 8px; bottom: 8px; width: 32px; height: 32px; border-radius: 50%;
+  display: grid; place-items: center; border: 0; cursor: pointer;
+  background: rgba(8, 8, 12, 0.7); color: #fff; opacity: 0; transition: opacity .15s;
+}
+.listen-cover-wrap:hover .cover-edit, .cover-edit:focus-visible { opacity: 1; }
+.cover-prefer { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cover-img.round { border-radius: 50%; }
+
+/* Contrôles posés sur la vidéo : scène et plein écran seulement */
+.clip-ctl { display: none; }
+.clip-mini.on-stage .clip-ctl, .clip-mini:fullscreen .clip-ctl {
+  display: flex; flex-direction: column; gap: 6px;
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; padding: 26px 14px 10px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.72)); color: #fff;
+  transition: opacity .25s;
+}
+.clip-mini.on-stage .clip-mini-frame { cursor: pointer; }
+.clip-mini.ctl-idle .clip-ctl { opacity: 0; pointer-events: none; }
+.clip-mini.ctl-idle.on-stage .clip-mini-frame, .clip-mini.ctl-idle:fullscreen .clip-mini-frame { cursor: none; }
+.clip-ctl .bar { height: 4px; background: rgba(255, 255, 255, 0.25); cursor: pointer; }
+.clip-ctl .bar i { background: var(--accent); }
+.clip-ctl-row { display: flex; align-items: center; gap: 6px; }
+.clip-ctl .icon-btn { color: #fff; }
+.clip-ctl .icon-btn:hover { background: rgba(255, 255, 255, 0.14); }
+.clip-time { font-size: 12.5px; font-variant-numeric: tabular-nums; opacity: .9; margin-left: 6px; }
+.clip-ctl-grow { flex: 1; }
+.clip-mini.on-stage .clip-notice, .clip-mini:fullscreen .clip-notice { top: 10px; bottom: auto; }
+
+/* Vue Clips selon la disposition : en compacte et en minimaliste, quand un clip joue,
+   il prend la place et les autres clips passent dans un ruban qui défile (sans clip en
+   cours, la grille habituelle reste). */
+body[data-mode="compact"] .clip-frame,
+body[data-mode="compact"] .clip-info { width: min(100%, calc((100vh - 300px) * 16 / 9)); }
+body[data-mode="minimal"] .clip-frame,
+body[data-mode="minimal"] .clip-info { width: min(100%, calc((100vh - 330px) * 16 / 9)); }
+body[data-mode="minimal"] .clip-stage { margin-bottom: 10px; }
+body:not([data-mode="normal"]) .clips-panel:has(.clip-stage:not([hidden])) .clip-scroll {
+  flex: none; overflow-x: auto; overflow-y: hidden; padding-bottom: 10px;
+}
+body:not([data-mode="normal"]) .clips-panel:has(.clip-stage:not([hidden])) .clip-grid { display: flex; gap: 14px; }
+body[data-mode="compact"] .clips-panel:has(.clip-stage:not([hidden])) .clip-card { flex: none; width: 190px; }
+body[data-mode="minimal"] .clips-panel:has(.clip-stage:not([hidden])) .clip-card { flex: none; width: 150px; }
+body[data-mode="minimal"] .clips-panel:has(.clip-stage:not([hidden])) .clip-card-sub { display: none; }
+.clip-ctl .ctl-play { background: rgba(255, 255, 255, 0.16); color: #fff; }
+.clip-ctl .ctl-play:hover { background: rgba(255, 255, 255, 0.28); }

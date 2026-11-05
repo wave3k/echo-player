@@ -604,7 +604,7 @@ function sectionSysteme() {
       ${rowSwitch("Démarrer avec la session", "Écho s'ouvre à l'allumage de l'ordinateur", "autostart", s.autostart)}
       ${rowSwitch("Icône dans la barre du système", "Lecture, suivant, précédent et retour à la fenêtre, depuis la barre", "tray", s.tray)}
       ${rowSwitch("Notification à chaque morceau", "Un petit bandeau quand le titre change et qu'Écho est en arrière-plan", "notify", s.notify)}
-      ${rowSwitch("Statut Discord", "Affiche « Écoute… » avec le titre et l'artiste sur ton profil Discord", "discord", s.discord)}
+      ${rowSwitch("Statut Discord", "Affiche « Écoute… » avec le titre, l'artiste et la pochette sur ton profil Discord. La pochette est cherchée sur Deezer (seuls l'artiste et le titre sont envoyés) ; sans résultat, le logo d'Écho.", "discord", s.discord)}
       ${rowSeg("Quand je ferme la fenêtre", s.tray ? "Ce que fait le bouton de fermeture" : "« Réduire » range Écho dans la barre du système (à activer ci-dessus)", "close", [
         { value: "quit", label: "Quitter" },
         { value: "ask", label: "Demander" },
@@ -1688,9 +1688,69 @@ function paintArtistPhoto(node, a) {
       node.innerHTML = `<span>${escapeHtml(initials(a.name))}</span>`;
     }
   }
-  if (state.settings.artist_photos && !artistPhotos.has(a.key) && !photoWanted.some((w) => w.key === a.key)) {
-    photoWanted.push({ key: a.key, name: a.name });
+  // Réglage coupé : seule une photo choisie à la main revient (rien n'est cherché).
+  if (!artistPhotos.has(a.key) && !photoWanted.some((w) => w.key === a.key)) {
+    const titles = (a.main || []).slice(0, 12).map(trackById).filter(Boolean).map((t) => t.title);
+    photoWanted.push({ key: a.key, name: a.name, titles });
     pumpPhotos();
+  }
+}
+
+/// Fenêtre « Changer la photo » d'un artiste : photos proposées par Deezer (les noms
+/// identiques d'abord), ou une image du disque. Le choix n'est jamais remplacé.
+async function openArtistPhotoPicker(key, name) {
+  const box = document.createElement("div");
+  box.className = "edit-dialog cover-dialog";
+  box.setAttribute("role", "dialog");
+  box.setAttribute("aria-modal", "true");
+  box.innerHTML = `<div class="edit-box cover-box">
+      <div class="edit-head">
+        <div><div class="modal-title">Photo de l'artiste</div><div class="cover-query">${escapeHtml(name)}</div></div>
+        <button type="button" class="icon-btn" data-close title="Fermer" aria-label="Fermer">${icon("close", 16)}</button>
+      </div>
+      <div class="cover-prefer"><button type="button" class="ghost-btn small" data-file>${icon("folder", 14)}Image du disque…</button></div>
+      <div class="cover-grid"><div class="cover-wait"><span class="spinner" aria-hidden="true"></span>Recherche des photos…</div></div>
+      <p class="hint">Photos de Deezer : seul le nom de l'artiste est envoyé. Ton choix n'est jamais remplacé.</p>
+    </div>`;
+  document.body.appendChild(box);
+  const close = () => box.remove();
+  const apply = async (args) => {
+    try {
+      const path = await invoke("set_artist_photo", { name, ...args });
+      const url = convertFileSrc(path) + `?v=${Date.now()}`;
+      artistPhotos.set(key, url);
+      document.querySelectorAll(`[data-artist-photo="${CSS.escape(key)}"]`).forEach((n) => setPhoto(n, url));
+      close();
+      toast("Photo de l'artiste changée.");
+    } catch (err) {
+      toast(String(err));
+    }
+  };
+  box.addEventListener("click", async (e) => {
+    if (e.target === box || e.target.closest("[data-close]")) return close();
+    if (e.target.closest("[data-file]")) {
+      const picked = await openDialog({ multiple: false, title: "Choisir une photo", filters: [{ name: "Images", extensions: ["jpg", "jpeg", "png", "webp"] }] }).catch(() => null);
+      if (picked) apply({ file: typeof picked === "string" ? picked : picked.path, url: null });
+      return;
+    }
+    const choice = e.target.closest("[data-url]");
+    if (choice) apply({ url: choice.dataset.url, file: null });
+  });
+  box.addEventListener("keydown", (e) => e.key === "Escape" && close());
+  box.querySelector("[data-close]").focus();
+  const grid = box.querySelector(".cover-grid");
+  try {
+    const list = await invoke("artist_photo_choices", { name });
+    grid.innerHTML = list.length
+      ? list
+          .map((c) => `<button type="button" class="cover-choice" data-url="${escapeHtml(c.full)}" title="${escapeHtml(c.name)}">
+            <span class="cover-img round" style="background-image:url('${escapeHtml(c.small)}')"></span>
+            <span class="cover-meta"><b>${escapeHtml(c.name)}</b><span>${c.fans.toLocaleString("fr-FR")} fans</span></span>
+          </button>`)
+          .join("")
+      : `<div class="cover-wait">Aucune photo trouvée sur Deezer. Choisis une image du disque.</div>`;
+  } catch {
+    grid.innerHTML = `<div class="cover-wait">Pas de connexion à Deezer. Choisis une image du disque.</div>`;
   }
 }
 
@@ -1700,12 +1760,13 @@ async function pumpPhotos() {
   photoBusy = true;
   try {
     while (photoWanted.length) {
-      const { key, name } = photoWanted.shift();
+      const { key, name, titles } = photoWanted.shift();
       if (artistPhotos.has(key)) continue;
-      const path = await invoke("artist_photo", { name }).catch(() => null);
-      // Réglage coupé entre-temps : rien n'est retenu, on recherchera s'il revient.
-      if (!state.settings.artist_photos) break;
-      const url = path ? convertFileSrc(path) : null;
+      const online = state.settings.artist_photos;
+      const path = await invoke("artist_photo", { name, titles }).catch(() => null);
+      // Sans photo et réglage coupé : on recherchera s'il revient.
+      if (!path && !online) continue;
+      const url = path ? convertFileSrc(path) + `?v=${Date.now()}` : null;
       artistPhotos.set(key, url);
       if (url) document.querySelectorAll(`[data-artist-photo="${CSS.escape(key)}"]`).forEach((n) => setPhoto(n, url));
       await new Promise((r) => setTimeout(r, 120));
@@ -1958,6 +2019,7 @@ function renderArtistPage(box, key) {
             <button type="button" class="play-big" data-browse="play" aria-label="Tout lire" title="Tout lire">${icon("play", 20)}</button>
             <button type="button" class="ghost-btn" data-browse="shuffle">${icon("shuffle", 15)}Aléatoire</button>
             ${clips ? `<button type="button" class="ghost-btn" data-browse="clips">${icon("video", 15)}${clips} clip${clips > 1 ? "s" : ""}</button>` : ""}
+            <button type="button" class="ghost-btn" data-browse="photo" data-name="${escapeHtml(a.name)}" data-key="${escapeHtml(a.key)}">${icon("user", 15)}Changer la photo</button>
           </div>
         </div>
       </div>
@@ -2053,6 +2115,8 @@ function bindBrowse() {
           queueChanged();
           return toast(`${countLabel(add.length)} ajouté${add.length > 1 ? "s" : ""} à la file.`);
         }
+        case "photo":
+          return openArtistPhotoPicker(act.dataset.key, act.dataset.name);
         case "clips": {
           const a = state.libOpen && artistEntries().get(state.libOpen.key);
           if (!a) return;
@@ -2871,13 +2935,14 @@ function updateProgress() {
     }
     setBar(el("comp-bar"), ratio);
     setBar(el("min-bar"), ratio);
+    setBar(el("clip-bar"), ratio);
   }
 
   const nowText = formatTime(now * 1000);
   const totalText = formatTime((dur || 0) * 1000);
   // Pendant un glisser de la barre, le temps affiché est celui du curseur.
-  if (!state.seeking) ["time-now", "comp-now", "min-now-time"].forEach((id) => setText(el(id), nowText));
-  ["time-total", "comp-total", "min-total-time"].forEach((id) => setText(el(id), totalText));
+  if (!state.seeking) ["time-now", "comp-now", "min-now-time", "clip-now"].forEach((id) => setText(el(id), nowText));
+  ["time-total", "comp-total", "min-total-time", "clip-total"].forEach((id) => setText(el(id), totalText));
 
   const playing = !media.paused;
   // Les boutons ne changent qu'au passage lecture ↔ pause, pas à chaque seconde.
@@ -2886,7 +2951,7 @@ function updateProgress() {
     document.querySelectorAll(".ctl-play, .play-big").forEach((b) => b.classList.toggle("is-playing", playing));
     // Infobulle et nom accessible suivent l'état, sur tous les boutons lecture.
     const label = playing ? "Pause" : "Lecture";
-    ["btn-play", "btn-play-big", "comp-play", "min-play"].forEach((id) => {
+    ["btn-play", "btn-play-big", "comp-play", "min-play", "clip-play"].forEach((id) => {
       const b = el(id);
       if (!b) return;
       b.title = label;
@@ -3455,6 +3520,16 @@ async function loadCoverChoices() {
 
 function bindCoverPicker() {
   el("cover-close").addEventListener("click", closeCoverPicker);
+  // Une image du disque : l'éditeur du morceau s'ouvre avec la fenêtre de choix.
+  el("cover-file").addEventListener("click", () => {
+    const track = coverPick && coverPick.track;
+    const fromEditor = coverPick && coverPick.fromEditor;
+    closeCoverPicker();
+    if (!track) return;
+    if (!fromEditor) openEditor(track);
+    el("edit-cover").click();
+  });
+  el("listen-cover-edit").addEventListener("click", () => openCoverPicker(currentTrack()));
   el("cover-dialog").addEventListener("click", (e) => {
     if (e.target === el("cover-dialog")) closeCoverPicker();
   });
@@ -4042,6 +4117,25 @@ function bindClips() {
     if (!mediaEl().paused) video.play().catch(() => {});
   });
   video.addEventListener("dblclick", toggleClipFullscreen);
+  // Contrôles sur la vidéo : visibles au mouvement de la souris, cachés après 2,5 s.
+  const layer = el("clip-mini");
+  let idle = 0;
+  const wake = () => {
+    layer.classList.remove("ctl-idle");
+    clearTimeout(idle);
+    idle = setTimeout(() => {
+      // Pas pendant un réglage de la barre ni la souris sur les contrôles.
+      if (!state.seeking && !el("clip-ctl").matches(":hover")) layer.classList.add("ctl-idle");
+    }, 2500);
+  };
+  layer.addEventListener("mousemove", wake);
+  layer.addEventListener("mouseleave", () => layer.classList.add("ctl-idle"));
+  el("clip-ctl").addEventListener("click", (e) => e.stopPropagation());
+  el("clip-play").addEventListener("click", () => { togglePlay(); wake(); });
+  el("clip-prev").addEventListener("click", () => { step(-1); wake(); });
+  el("clip-next").addEventListener("click", () => { step(1); wake(); });
+  el("clip-fs").addEventListener("click", toggleClipFullscreen);
+  wake();
   el("clip-full").addEventListener("click", toggleClipFullscreen);
   el("clip-grid").addEventListener("click", (e) => {
     const card = e.target.closest("[data-clip-id]");
@@ -4063,8 +4157,11 @@ function bindClips() {
   });
   const mini = el("clip-mini-frame");
   // Un clic sur la mini-fenêtre ouvre les clips (posée sur la scène, il ne fait rien).
+  // Sur la mini-fenêtre, un clic ouvre les clips ; sur la scène ou en plein écran, il
+  // met en pause ou relance, comme sur un lecteur vidéo.
   mini.addEventListener("click", () => {
-    if (!el("clip-mini").classList.contains("on-stage")) openClips();
+    if (!el("clip-mini").classList.contains("on-stage") && !document.fullscreenElement) openClips();
+    else togglePlay();
   });
   // L'emplacement de la scène bouge (fenêtre redimensionnée, sortie du plein écran) :
   // le lecteur suit.
@@ -5683,6 +5780,7 @@ function bindOnce() {
 
   bindBar(el("comp-bar"));
   bindBar(el("min-bar"));
+  bindBar(el("clip-bar"));
 
   // Une rafale de molette ne change de morceau qu'une fois toutes les 350 ms.
   let lastWheelStep = 0;
