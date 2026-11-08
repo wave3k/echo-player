@@ -7,4 +7,8 @@ ignore = [
   "RUSTSEC-2026-0367",
   "RUSTSEC-2026-0368",
   "RUSTSEC-2026-0369",
+  # RUSTSEC-2026-0429 : même crate zip 4.x, même raison. Un plantage de l'extraction sur un
+  # lien symbolique géant exige une archive que seule la clé privée d'Écho peut signer.
+  # Le correctif demande zip >= 9, que tauri-plugin-updater 2.x ne permet pas encore.
+  "RUSTSEC-2026-0429",
 ]
