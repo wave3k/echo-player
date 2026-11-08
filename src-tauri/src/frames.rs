@@ -10,9 +10,6 @@ use std::time::Duration;
 /// Côté de la pochette produite, en pixels.
 const SIDE: usize = 480;
 
-/// Affiche d'un clip (grille des clips) : 16:9, assez net pour une carte de 240 px.
-pub const POSTER: (usize, usize) = (480, 270);
-
 pub enum Frame {
     /// Image JPEG carrée, prise au centre de la vidéo.
     Image(Vec<u8>),

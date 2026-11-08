@@ -362,7 +362,6 @@ function applySettings() {
   if (typeof updateVisual === "function" && state.tracks) {
     visual.colors = null;
     updateVisual();
-    updateClipVideo();
   }
 }
 
@@ -575,11 +574,6 @@ function sectionBiblio() {
       ${rowSwitch("Actualiser au démarrage", "Vérifie la bibliothèque à chaque ouverture", "refresh_on_start", s.refresh_on_start)}
       ${rowSwitch("Ajouter les nouveaux morceaux automatiquement", "Un fichier ajouté, déplacé ou supprimé dans tes dossiers est pris en compte tout seul", "watch", s.watch)}
     </div>
-    ${LINUX_WEBKIT ? `<h4 style="margin-top:18px">Clips trop lourds</h4>
-    <div class="card">
-      ${rowSwitch("Copies légères des clips", "Un clip que la machine n'arrive pas à suivre (4K, AV1…) est copié une fois en 720p, en arrière-plan, puis lu à la place de l'original : plus de saccades ni de clignotements. Le fichier d'origine n'est pas touché.", "lite_clips", s.lite_clips)}
-      ${rowButton("Place des copies légères", `${state.liteBytes == null ? "…" : Math.round(state.liteBytes / 1048576)} Mo sur le disque (6 Go au plus)`, `<button class="ghost-btn" data-action="clear-lite">Vider</button>`)}
-    </div>` : ""}
     <h4 style="margin-top:18px">Doublons</h4>
     <div class="card">
       ${rowButton("Trouver les doublons", "Le même morceau en plusieurs fichiers (MP3 et FLAC, clip téléchargé deux fois…) : choisis lesquels masquer", `<button class="ghost-btn" data-action="duplicates">${icon("search", 15)} Chercher</button>`)}
@@ -918,15 +912,6 @@ function bindSettings(panel) {
         applySnapshot(cleared.snapshot);
         refreshSettingsPanel();
         toast("Les pochettes ont été reconstruites.");
-        break;
-      }
-      case "clear-lite": {
-        state.liteBytes = await invoke("clear_lite_clips").catch(() => state.liteBytes);
-        clipLite.clear();
-        clipLiteFailed.clear();
-        clipLiteAsked.clear();
-        refreshSettingsPanel();
-        toast("Copies légères effacées : elles se referont au besoin.");
         break;
       }
       case "open-config":
@@ -1997,7 +1982,6 @@ function renderArtistPage(box, key) {
   const albums = albumGroups()
     .list.filter((al) => al.artistKey === key)
     .sort((x, y) => (y.year || 0) - (x.year || 0) || COLLATOR.compare(x.name, y.name));
-  const clips = [...main, ...guest].filter((t) => t.video).length;
   const total = artistPlays(a);
   const meta = [
     main.length ? countLabel(main.length) : "",
@@ -2018,7 +2002,6 @@ function renderArtistPage(box, key) {
           <div class="listen-actions">
             <button type="button" class="play-big" data-browse="play" aria-label="Tout lire" title="Tout lire">${icon("play", 20)}</button>
             <button type="button" class="ghost-btn" data-browse="shuffle">${icon("shuffle", 15)}Aléatoire</button>
-            ${clips ? `<button type="button" class="ghost-btn" data-browse="clips">${icon("video", 15)}${clips} clip${clips > 1 ? "s" : ""}</button>` : ""}
             <button type="button" class="ghost-btn" data-browse="photo" data-name="${escapeHtml(a.name)}" data-key="${escapeHtml(a.key)}">${icon("user", 15)}Changer la photo</button>
           </div>
         </div>
@@ -2117,15 +2100,6 @@ function bindBrowse() {
         }
         case "photo":
           return openArtistPhotoPicker(act.dataset.key, act.dataset.name);
-        case "clips": {
-          const a = state.libOpen && artistEntries().get(state.libOpen.key);
-          if (!a) return;
-          openClips();
-          const input = el("clip-search");
-          input.value = `artiste:"${a.name}"`;
-          input.dispatchEvent(new Event("input", { bubbles: true }));
-          return;
-        }
         case "photos":
           saveSettings({ artist_photos: true });
           return renderLibrary();
@@ -2550,9 +2524,7 @@ async function enableNative() {
 let listPlaying = null;
 function renderPlayState() {
   updateVisual();
-  syncClip();
   markPlaylists();
-  if (!clipBusy() && posterWanted.length) pumpPosters();
   const playing = isPlaying();
   if (playing === listPlaying) return;
   listPlaying = playing;
@@ -2935,14 +2907,13 @@ function updateProgress() {
     }
     setBar(el("comp-bar"), ratio);
     setBar(el("min-bar"), ratio);
-    setBar(el("clip-bar"), ratio);
   }
 
   const nowText = formatTime(now * 1000);
   const totalText = formatTime((dur || 0) * 1000);
   // Pendant un glisser de la barre, le temps affiché est celui du curseur.
-  if (!state.seeking) ["time-now", "comp-now", "min-now-time", "clip-now"].forEach((id) => setText(el(id), nowText));
-  ["time-total", "comp-total", "min-total-time", "clip-total"].forEach((id) => setText(el(id), totalText));
+  if (!state.seeking) ["time-now", "comp-now", "min-now-time"].forEach((id) => setText(el(id), nowText));
+  ["time-total", "comp-total", "min-total-time"].forEach((id) => setText(el(id), totalText));
 
   const playing = !media.paused;
   // Les boutons ne changent qu'au passage lecture ↔ pause, pas à chaque seconde.
@@ -2951,7 +2922,7 @@ function updateProgress() {
     document.querySelectorAll(".ctl-play, .play-big").forEach((b) => b.classList.toggle("is-playing", playing));
     // Infobulle et nom accessible suivent l'état, sur tous les boutons lecture.
     const label = playing ? "Pause" : "Lecture";
-    ["btn-play", "btn-play-big", "comp-play", "min-play", "clip-play"].forEach((id) => {
+    ["btn-play", "btn-play-big", "comp-play", "min-play"].forEach((id) => {
       const b = el(id);
       if (!b) return;
       b.title = label;
@@ -3192,7 +3163,6 @@ function renderAll() {
   renderCarousel();
   renderMinimal();
   updateProgress();
-  updateClipVideo();
   markPlaylists();
   // Le panneau du son suit le morceau en cours (son volume propre).
   if (!el("sound-pop").hidden && soundPopFor !== currentId()) renderSoundPop();
@@ -3205,7 +3175,6 @@ function switchView(view) {
   syncSettingsNav();
   if (view === "library") renderLibrary();
   if (view === "playlists") renderPlaylists();
-  updateClipVideo();
   updateVisual();
 }
 
@@ -3225,7 +3194,6 @@ function returnHome(node) {
   else if (node.id === "library-panel") el("view-library").appendChild(node);
   else if (node.id === "queue-box") el("view-listen").appendChild(node);
   else if (node.id === "playlists-panel") el("view-playlists").appendChild(node);
-  else if (node.id === "clips-panel") el("view-clips").appendChild(node);
   else node.remove();
 }
 
@@ -3241,7 +3209,6 @@ function openSheet(node, title, { flush = false } = {}) {
   el("sheet").hidden = false;
   requestAnimationFrame(() => {
     if (node && node.id === "library-panel") renderLibrary();
-    updateClipVideo();
     updateVisual();
   });
 }
@@ -3251,7 +3218,6 @@ function closeSheet() {
   const node = body.firstElementChild;
   if (node) returnHome(node);
   el("sheet").hidden = true;
-  updateClipVideo();
   updateVisual();
 }
 
@@ -3565,621 +3531,6 @@ function bindCoverPicker() {
       btn.classList.remove("busy");
     }
   });
-}
-
-/* ---------------- clips ---------------- */
-
-/// Affiches 16:9 déjà faites (identifiant → adresse), `null` : pas d'affiche (la
-/// pochette sert alors). Faites par le cœur une à la fois, pour les cartes visibles.
-const clipPosters = new Map();
-const posterWanted = [];
-let posterBusy = false;
-let posterObserver = null;
-let clipQuery = "";
-/// Mini-fenêtre fermée par l'utilisateur : elle reste fermée jusqu'à ce qu'il ouvre
-/// un clip ou la section Clips.
-let clipMiniClosed = false;
-/// Clip chargé dans le lecteur vidéo.
-let clipShownId = null;
-let clipSyncTimer = null;
-let clipsShown = "";
-
-function isClip(track) {
-  return !!track && track.video && track.has_audio !== false;
-}
-
-function allClips() {
-  return state.tracks.filter((t) => t.video).sort((a, b) => COLLATOR.compare(a.title, b.title));
-}
-
-function clipTracks() {
-  return searchTracks(allClips(), clipQuery);
-}
-
-/// Le panneau des clips est à l'écran (vue Clips, ou feuille des autres dispositions).
-function clipsPanelShown() {
-  return el("clips-panel").offsetParent !== null;
-}
-
-/// Un clip joue à l'écran : le processeur lui revient en priorité.
-function clipBusy() {
-  return !!clipShownId && !mediaEl().paused;
-}
-
-function paintPoster(node, track) {
-  const url = clipPosters.get(track.id);
-  if (url) {
-    node.style.background = `var(--cover-bg) url("${url}") center / cover no-repeat`;
-    node.classList.add("has-poster");
-    return;
-  }
-  // En attendant l'affiche (ou à défaut) : la pochette, comme dans la bibliothèque.
-  fillCover(node, track, false);
-}
-
-function wantPoster(id) {
-  if (clipPosters.has(id) || posterWanted.includes(id)) return;
-  posterWanted.push(id);
-  pumpPosters();
-}
-
-/// Fabrique les affiches demandées, une à la fois. Chaque affiche décode une image
-/// 4K : rien ne se fait tant qu'un clip joue à l'écran (la file reprend à la pause).
-async function pumpPosters() {
-  if (posterBusy) return;
-  posterBusy = true;
-  try {
-    while (posterWanted.length && !clipBusy()) {
-      const id = posterWanted.shift();
-      if (clipPosters.has(id)) continue;
-      const path = await invoke("clip_poster", { id }).catch(() => undefined);
-      // Échec passager (fichier lent à ouvrir) : rien n'est retenu, on réessaiera.
-      if (path === undefined) continue;
-      const url = path ? convertFileSrc(path) : null;
-      clipPosters.set(id, url);
-      const track = trackById(id);
-      if (!track) continue;
-      document.querySelectorAll(`[data-poster-of="${CSS.escape(id)}"]`).forEach((node) => paintPoster(node, track));
-    }
-  } finally {
-    posterBusy = false;
-  }
-}
-
-/// Les affiches ne sont demandées que pour les cartes qui entrent à l'écran.
-function observePosters(grid) {
-  if (!posterObserver) {
-    posterObserver = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          if (!e.isIntersecting) continue;
-          posterObserver.unobserve(e.target);
-          wantPoster(e.target.dataset.posterOf);
-        }
-      },
-      { root: el("clip-scroll"), rootMargin: "200px 0px" }
-    );
-  }
-  posterObserver.disconnect();
-  grid.querySelectorAll("[data-poster-of]").forEach((node) => {
-    if (!clipPosters.has(node.dataset.posterOf)) posterObserver.observe(node);
-  });
-}
-
-function renderClips() {
-  if (!clipsPanelShown()) return;
-  const list = clipTracks();
-  const current = currentId();
-  const grid = el("clip-grid");
-  const key = `${libraryVersion}|${clipQuery}|${list.length}`;
-  if (key === clipsShown) {
-    // Seul le clip en cours a changé : la carte est marquée sur place (pas de clignotement).
-    grid.querySelectorAll(".clip-card").forEach((card) => {
-      const on = card.dataset.clipId === current;
-      card.classList.toggle("is-current", on);
-      if (on) card.setAttribute("aria-current", "true");
-      else card.removeAttribute("aria-current");
-    });
-    return;
-  }
-  clipsShown = key;
-  if (!list.length) {
-    grid.innerHTML = `<div class="clip-empty">${
-      clipQuery ? "Aucun clip ne correspond à ta recherche." : "Aucun clip pour l'instant. Les vidéos (webm, mp4, mkv) de tes dossiers apparaissent ici."
-    }</div>`;
-    return;
-  }
-  grid.innerHTML = list
-    .map((t) => {
-      const sub = [t.artist || "", t.duration_ms ? formatTime(t.duration_ms) : ""].filter(Boolean).join(" · ");
-      const on = t.id === current;
-      return `<button type="button" class="clip-card${on ? " is-current" : ""}"${on ? ' aria-current="true"' : ""} data-clip-id="${escapeHtml(t.id)}" aria-label="${escapeHtml(`${t.title} — ${t.artist || ""}`)}">
-        <span class="clip-poster" data-poster-of="${escapeHtml(t.id)}"></span>
-        ${t.has_audio === false ? muteBadge(t, "clip-badge") : ""}
-        <span class="clip-card-title">${escapeHtml(t.title)}</span>
-        <span class="clip-card-sub">${escapeHtml(sub || "—")}</span>
-      </button>`;
-    })
-    .join("");
-  grid.querySelectorAll("[data-poster-of]").forEach((node) => {
-    const track = trackById(node.dataset.posterOf);
-    if (track) paintPoster(node, track);
-  });
-  observePosters(grid);
-}
-
-function playClip(id) {
-  const track = trackById(id);
-  if (!track) return;
-  if (track.has_audio === false) {
-    toast(`« ${track.title} » : ${silentReason(track)}`);
-    return;
-  }
-  clipMiniClosed = false;
-  if (currentId() === id) {
-    if (audio.paused) startPlayback();
-  } else {
-    // Tous les clips à la suite (pas seulement les résultats d'une recherche).
-    const ids = allClips().filter(isClip).map((t) => t.id);
-    state.queue = ids.includes(id) ? ids : [id];
-    state.queueIndex = state.queue.indexOf(id);
-    playCurrent();
-  }
-  el("clip-scroll").scrollTo({ top: 0, behavior: state.settings.animations ? "smooth" : "auto" });
-}
-
-/// Où montrer la vidéo : la grande scène, la mini-fenêtre, « de côté » (paroles
-/// ouvertes : la vidéo garde sa place mais ne joue plus), ou nulle part (le lecteur
-/// vidéo est vidé : aucune image décodée pour rien).
-function clipPlace() {
-  const track = currentTrack();
-  if (!isClip(track) || document.hidden) return null;
-  if (lyricsOpen) return "parked";
-  if (clipsPanelShown()) return "stage";
-  if (clipMiniClosed) return null;
-  return "mini";
-}
-
-function updateClipVideo() {
-  const video = el("clip-video");
-  const layer = el("clip-mini");
-  const track = currentTrack();
-  const place = clipPlace();
-  el("clip-stage").hidden = !isClip(track);
-  if (isClip(track)) {
-    setText(el("clip-title"), track.title);
-    setText(el("clip-artist"), track.artist || "—");
-  }
-  // La vidéo quitte la scène : le plein écran (qui ne montrerait plus que du noir) aussi.
-  if (place !== "stage" && document.fullscreenElement) document.exitFullscreen().catch(() => {});
-  renderClips();
-  if (!place) {
-    layer.hidden = true;
-    stopClipSync();
-    if (clipShownId) {
-      clipShownId = null;
-      video.pause();
-      video.removeAttribute("src");
-      video.removeAttribute("poster");
-      video.load();
-    }
-    return;
-  }
-  if (place === "parked") {
-    layer.hidden = true;
-    stopClipSync();
-    video.pause();
-    return;
-  }
-  // Le lecteur ne change jamais de place dans la page : seule sa position change.
-  layer.classList.toggle("on-stage", place === "stage");
-  if (place === "stage") followStage(450);
-  else clearStageGeometry();
-  layer.hidden = false;
-  if (clipShownId !== track.id) {
-    clipShownId = track.id;
-    clipSync.lastFix = 0;
-    // Pendant le chargement, l'affiche (ou la pochette) plutôt qu'un cadre noir.
-    const poster = clipPosters.get(track.id);
-    if (poster) video.poster = poster;
-    else {
-      video.removeAttribute("poster");
-      if (track.cover) {
-        const id = track.id;
-        coverSrc(track.cover).then((url) => {
-          if (url && clipShownId === id && !video.getAttribute("poster")) video.poster = url;
-        });
-      }
-    }
-    setClipSource(video, track);
-  }
-  startClipSync();
-  syncClip();
-  paintClipNotice();
-}
-
-/* ---------------- clips trop lourds ---------------- */
-
-/// Copies légères connues (id → chemin), clips que la machine n'arrive pas à suivre,
-/// copies en cours (id → avancement de 0 à 1) et copies ratées.
-const clipLite = new Map();
-const clipHeavy = new Set();
-const clipLiteProgress = new Map();
-const clipLiteFailed = new Set();
-const clipLiteAsked = new Set();
-/// Taille et cadence de chaque clip (lues dans le fichier), pour savoir combien d'images
-/// la machine devrait afficher.
-const clipProbe = new Map();
-let clipLiteSupported = LINUX_WEBKIT;
-
-/// Pose la source de la vidéo : la copie légère si elle est déjà faite, sinon l'original.
-function setClipSource(video, track) {
-  const id = track.id;
-  resetLagWatch();
-  resetClipSync();
-  if (!clipProbe.has(id)) {
-    clipProbe.set(id, null);
-    invoke("clip_probe", { id }).then((info) => clipProbe.set(id, info || null)).catch(() => {});
-  }
-  if (clipLite.has(id)) {
-    video.src = mediaSrc(clipLite.get(id));
-    return;
-  }
-  // Déjà jugé trop lourd : l'original n'est même pas ouvert, la vignette attend la copie.
-  if (clipHeavy.has(id)) {
-    unloadClipVideo(video);
-    requestLite(id);
-    return;
-  }
-  invoke("clip_lite", { id, start: false })
-    .catch(() => null)
-    .then((info) => {
-      if (clipShownId !== id) return;
-      if (info) clipLiteSupported = info.supported;
-      if (info && info.path) clipLite.set(id, info.path);
-      video.src = mediaSrc(clipLite.get(id) || track.path);
-      syncClip();
-    });
-}
-
-/// La copie légère est prête : elle remplace l'original sans attendre la fin du morceau.
-function useLiteClip(id, path) {
-  clipLite.set(id, path);
-  clipHeavy.delete(id);
-  clipLiteProgress.delete(id);
-  if (clipShownId === id) {
-    const video = el("clip-video");
-    resetClipSync();
-    resetLagWatch();
-    video.src = mediaSrc(path);
-    syncClip();
-  }
-  paintClipNotice();
-}
-
-/// Retard de la vidéo sur le son, mesuré sur quelques secondes, et recalages récents.
-const lagWatch = { since: 0, video: 0, sound: 0, total: 0, dropped: 0, fixes: [] };
-
-/// Images affichées et perdues depuis le chargement (0 si le moteur ne le dit pas).
-function frameStats(video) {
-  const q = typeof video.getVideoPlaybackQuality === "function" ? video.getVideoPlaybackQuality() : null;
-  return q ? { total: q.totalVideoFrames || 0, dropped: q.droppedVideoFrames || 0 } : { total: 0, dropped: 0 };
-}
-
-/// Journal de diagnostic (ECHO_DEBUG=1 dans le terminal).
-let debugOn = false;
-function debugLog(text) {
-  if (debugOn) invoke("debug_log", { text }).catch(() => {});
-}
-
-function resetLagWatch() {
-  lagWatch.since = 0;
-  lagWatch.fixes = [];
-}
-
-/// La machine ne suit pas ce clip : l'image se fige (plus de recalages, donc plus de
-/// clignotements), le son continue, et une copie légère se prépare.
-function markHeavy(id) {
-  if (!id || clipHeavy.has(id)) return;
-  clipHeavy.add(id);
-  // L'original est déchargé : son décodeur (souvent près d'1 Go en 4K) ne prend plus ni
-  // mémoire ni processeur pendant que la copie se fait. La vignette du clip s'affiche.
-  if (clipShownId === id) unloadClipVideo(el("clip-video"));
-  paintClipNotice();
-  requestLite(id);
-}
-
-function unloadClipVideo(video) {
-  video.pause();
-  video.removeAttribute("src");
-  video.load();
-}
-
-/// Lance la copie légère (une fois par clip, et seulement si le réglage le permet).
-function requestLite(id) {
-  if (clipLite.has(id) || clipLiteAsked.has(id) || !state.settings.lite_clips) return;
-  clipLiteAsked.add(id);
-  invoke("clip_lite", { id, start: true })
-    .then((info) => {
-      clipLiteSupported = info.supported;
-      if (info.path) useLiteClip(id, info.path);
-      else paintClipNotice();
-    })
-    .catch(() => {});
-}
-
-/// Mesure faite à chaque passage du recalage, la vidéo en lecture.
-function watchLag(video, target, now) {
-  if (video.paused || video.seeking || clipSync.waiting) {
-    lagWatch.since = 0;
-    return;
-  }
-  const frames = frameStats(video);
-  if (!lagWatch.since) {
-    Object.assign(lagWatch, { since: now, video: video.currentTime, sound: target, ...frames });
-    return;
-  }
-  if (now - lagWatch.since < 4000) return;
-  const sound = target - lagWatch.sound;
-  const pic = video.currentTime - lagWatch.video;
-  const shown = frames.total - lagWatch.total;
-  const lost = frames.dropped - lagWatch.dropped;
-  Object.assign(lagWatch, { since: now, video: video.currentTime, sound: target, ...frames });
-  // Images attendues : la cadence du fichier (30 au plus pour une copie légère).
-  const info = clipProbe.get(clipShownId);
-  const fps = info && info.fps > 0 ? (clipLite.has(clipShownId) ? Math.min(info.fps, 30) : info.fps) : 0;
-  const expected = fps * pic;
-  debugLog(`clip : son ${sound.toFixed(1)} s, image ${pic.toFixed(1)} s, ${shown} images sur ${Math.round(expected)} attendues, ${lost} perdues`);
-  // L'image avance à moins de 80 % du son (le décodeur prend du retard), ou la machine
-  // n'affiche pas les trois quarts des images (le décodeur en saute pour rester à
-  // l'heure : l'image saccade) : trop lourd.
-  if (sound > 2 && pic / sound < 0.8) markHeavy(clipShownId);
-  else if (expected > 20 && shown > 0 && shown < expected * 0.75) markHeavy(clipShownId);
-  else if (shown >= 20 && lost / shown > 0.2) markHeavy(clipShownId);
-}
-
-function paintClipNotice() {
-  const box = el("clip-notice");
-  const id = clipShownId;
-  if (!box) return;
-  if (!id || !clipHeavy.has(id)) {
-    box.hidden = true;
-    return;
-  }
-  const pct = clipLiteProgress.get(id);
-  let text;
-  if (!clipLiteSupported) text = "Clip trop lourd pour cette machine : l'image est figée, le son continue.";
-  else if (clipLite.has(id)) text = "Ce clip reste trop lourd, même en copie légère : l'image est figée.";
-  else if (!state.settings.lite_clips) text = "Clip trop lourd pour cette machine. Active « Copies légères des clips » dans les réglages pour le voir sans saccades.";
-  else if (clipLiteFailed.has(id)) text = "La copie légère de ce clip n'a pas pu être faite : l'image reste figée.";
-  else text = `Clip trop lourd pour cette machine : copie légère en préparation${pct != null ? ` (${Math.round(pct * 100)} %)` : ""}. L'image reprendra toute seule.`;
-  setText(box, text);
-  box.hidden = false;
-}
-
-/// Pose le lecteur exactement sur l'emplacement de la scène.
-function placeOnStage() {
-  const layer = el("clip-mini");
-  if (!layer.classList.contains("on-stage") || document.fullscreenElement) return;
-  const r = el("clip-frame").getBoundingClientRect();
-  if (!r.width || !r.height) {
-    layer.style.visibility = "hidden";
-    return;
-  }
-  layer.style.visibility = "";
-  layer.style.left = `${r.left}px`;
-  layer.style.top = `${r.top}px`;
-  layer.style.width = `${r.width}px`;
-  layer.style.height = `${r.height}px`;
-}
-
-/// Suit l'emplacement pendant une transition (feuille qui glisse, vue qui apparaît).
-let stageFollow = 0;
-function followStage(ms) {
-  const until = performance.now() + ms;
-  cancelAnimationFrame(stageFollow);
-  const tick = () => {
-    placeOnStage();
-    if (performance.now() < until) stageFollow = requestAnimationFrame(tick);
-  };
-  tick();
-}
-
-function clearStageGeometry() {
-  cancelAnimationFrame(stageFollow);
-  const layer = el("clip-mini");
-  for (const k of ["left", "top", "width", "height", "visibility"]) layer.style[k] = "";
-}
-
-/// Cale la vidéo sur le son. La vidéo défile librement : changer sa vitesse ou la
-/// déplacer force WebKit à redécoder depuis l'image clé précédente (très coûteux en
-/// AV1 4K, d'où des saccades). On ne la recale donc que si l'écart se voit (0,2 s),
-/// au plus toutes les 2,5 s, ou tout de suite après un saut demandé (plus d'1 s).
-/// Le temps que prend un recalage est mesuré et compensé au suivant.
-const clipSync = { lastFix: 0, lag: 0.15, fixStarted: 0, waiting: false, holdTimer: 0 };
-
-/// Nouvelle source (autre clip, ou copie légère) : rien de ce qui a été mesuré sur
-/// l'ancienne ne vaut plus (un recalage en 4K est bien plus long qu'en 720p).
-function resetClipSync() {
-  clearTimeout(clipSync.holdTimer);
-  Object.assign(clipSync, { lastFix: 0, lag: 0.15, fixStarted: 0, waiting: false, holdTimer: 0 });
-}
-
-function syncClip() {
-  const video = el("clip-video");
-  if (!clipShownId || clipShownId !== currentId()) return;
-  // Trop lourd : la vignette reste affichée jusqu'à la copie légère.
-  if (clipHeavy.has(clipShownId)) {
-    if (!video.paused) video.pause();
-    // Réglage activé après coup : la copie se lance maintenant.
-    requestLite(clipShownId);
-    return;
-  }
-  if (video.readyState < 1 || video.seeking) return;
-  const media = mediaEl();
-  const target = media.currentTime;
-  if (!isFinite(target)) return;
-  // La vidéo suit la vitesse de la musique (0,85× : l'image ralentit aussi).
-  const rate = soundRate();
-  if (video.playbackRate !== rate) video.playbackRate = rate;
-  const end = isFinite(video.duration) ? video.duration : Infinity;
-  // Le son continue après la fin de l'image (clip coupé) : la dernière image reste.
-  if (target >= end - 0.05) {
-    if (!video.paused) video.pause();
-    return;
-  }
-  const diff = video.currentTime - target;
-  if (media.paused) {
-    if (!video.paused) video.pause();
-    // À l'arrêt, l'image suit les sauts (sans coût tant que rien ne change).
-    if (Math.abs(diff) > 0.25) seekClip(video, target, false);
-    return;
-  }
-  // Décodage en retard (image clé lointaine, processeur pris) : on ne recale pas
-  // pendant qu'il rattrape, sinon chaque recalage recommencerait le travail.
-  if (clipSync.waiting && Math.abs(diff) < 1) return;
-  // En attente du son (vidéo un peu en avance) : elle repart toute seule.
-  if (clipSync.holdTimer) return;
-  const now = performance.now();
-  watchLag(video, target, now);
-  if (clipHeavy.has(clipShownId)) return;
-  // Un peu en avance (recalage qui a visé trop loin) : la vidéo attend le son, sans saut
-  // (un saut redécode depuis l'image clé et peut clignoter).
-  if (diff > 0.2 && diff < 1.5 && !video.paused) {
-    video.pause();
-    clipSync.holdTimer = setTimeout(() => {
-      clipSync.holdTimer = 0;
-      if (!mediaEl().paused && clipShownId === currentId()) video.play().catch(() => {});
-    }, (diff / Math.max(0.25, rate)) * 1000);
-    lagWatch.since = 0;
-    return;
-  }
-  if (Math.abs(diff) > 1 || (Math.abs(diff) > 0.2 && now - clipSync.lastFix > 2500)) {
-    // Trois recalages en 20 s : la vidéo ne tient pas, chaque recalage clignote.
-    // Le premier saut après le chargement (clip lancé en cours de morceau) ne compte pas.
-    lagWatch.fixes = lagWatch.fixes.filter((t) => now - t < 20000);
-    if (clipSync.lastFix) lagWatch.fixes.push(now);
-    if (lagWatch.fixes.length >= 3) {
-      markHeavy(clipShownId);
-      return;
-    }
-    lagWatch.since = 0;
-    seekClip(video, target, true);
-    return;
-  }
-  if (video.paused && !video.ended) video.play().catch(() => {});
-}
-
-function seekClip(video, target, playing) {
-  clipSync.lastFix = performance.now();
-  clipSync.fixStarted = clipSync.lastFix;
-  // En lecture, on vise un peu plus loin : le son avance pendant que la vidéo se recale.
-  const aim = playing ? target + clipSync.lag * soundRate() : target;
-  video.currentTime = isFinite(video.duration) ? Math.min(aim, Math.max(0, video.duration - 0.1)) : aim;
-}
-
-function startClipSync() {
-  if (!clipSyncTimer) clipSyncTimer = setInterval(syncClip, 500);
-}
-
-function stopClipSync() {
-  clearInterval(clipSyncTimer);
-  clipSyncTimer = null;
-}
-
-function toggleClipFullscreen() {
-  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-  else if (!el("clip-stage").hidden && clipsPanelShown()) el("clip-mini").requestFullscreen().catch(() => toast("Plein écran indisponible."));
-}
-
-function openClips() {
-  clipMiniClosed = false;
-  if (document.body.dataset.mode === "normal") {
-    closeSheet();
-    switchView("clips");
-  } else {
-    openSheet(el("clips-panel"), "Clips");
-  }
-  updateClipVideo();
-}
-
-function bindClips() {
-  const video = el("clip-video");
-  video.addEventListener("loadedmetadata", syncClip);
-  video.addEventListener("waiting", () => (clipSync.waiting = true));
-  video.addEventListener("playing", () => (clipSync.waiting = false));
-  // Durée réelle d'un recalage (décodage depuis l'image clé) : visée au suivant.
-  video.addEventListener("seeked", () => {
-    if (!clipSync.fixStarted) return;
-    const took = (performance.now() - clipSync.fixStarted) / 1000;
-    clipSync.fixStarted = 0;
-    clipSync.lag = Math.min(1.5, Math.max(0.05, clipSync.lag * 0.5 + took * 0.5));
-    if (!mediaEl().paused) video.play().catch(() => {});
-  });
-  video.addEventListener("dblclick", toggleClipFullscreen);
-  // Contrôles sur la vidéo : visibles au mouvement de la souris, cachés après 2,5 s.
-  const layer = el("clip-mini");
-  let idle = 0;
-  const wake = () => {
-    layer.classList.remove("ctl-idle");
-    clearTimeout(idle);
-    idle = setTimeout(() => {
-      // Pas pendant un réglage de la barre ni la souris sur les contrôles.
-      if (!state.seeking && !el("clip-ctl").matches(":hover")) layer.classList.add("ctl-idle");
-    }, 2500);
-  };
-  layer.addEventListener("mousemove", wake);
-  layer.addEventListener("mouseleave", () => layer.classList.add("ctl-idle"));
-  el("clip-ctl").addEventListener("click", (e) => e.stopPropagation());
-  el("clip-play").addEventListener("click", () => { togglePlay(); wake(); });
-  el("clip-prev").addEventListener("click", () => { step(-1); wake(); });
-  el("clip-next").addEventListener("click", () => { step(1); wake(); });
-  el("clip-fs").addEventListener("click", toggleClipFullscreen);
-  wake();
-  el("clip-full").addEventListener("click", toggleClipFullscreen);
-  el("clip-grid").addEventListener("click", (e) => {
-    const card = e.target.closest("[data-clip-id]");
-    if (card) playClip(card.dataset.clipId);
-  });
-  let searchTimer = null;
-  el("clip-search").addEventListener("input", (e) => {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => {
-      clipQuery = e.target.value;
-      renderClips();
-    }, 120);
-  });
-  el("clip-mini-open").addEventListener("click", openClips);
-  el("clip-mini-close").addEventListener("click", (e) => {
-    e.stopPropagation();
-    clipMiniClosed = true;
-    updateClipVideo();
-  });
-  const mini = el("clip-mini-frame");
-  // Un clic sur la mini-fenêtre ouvre les clips (posée sur la scène, il ne fait rien).
-  // Sur la mini-fenêtre, un clic ouvre les clips ; sur la scène ou en plein écran, il
-  // met en pause ou relance, comme sur un lecteur vidéo.
-  mini.addEventListener("click", () => {
-    if (!el("clip-mini").classList.contains("on-stage") && !document.fullscreenElement) openClips();
-    else togglePlay();
-  });
-  // L'emplacement de la scène bouge (fenêtre redimensionnée, sortie du plein écran) :
-  // le lecteur suit.
-  new ResizeObserver(() => placeOnStage()).observe(el("clip-frame"));
-  window.addEventListener("resize", () => placeOnStage());
-  document.addEventListener("fullscreenchange", () => {
-    if (!document.fullscreenElement) followStage(300);
-  });
-  mini.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      openClips();
-    }
-  });
-  el("dock-clips").addEventListener("click", openClips);
-  el("min-clips").addEventListener("click", openClips);
-  // Fenêtre cachée ou réduite : plus d'images décodées, elles reviennent au retour.
-  document.addEventListener("visibilitychange", updateClipVideo);
 }
 
 /* ---------------- doublons ---------------- */
@@ -4640,8 +3991,6 @@ function setSound(patch) {
     if (reset) reset.disabled = !!preset && preset.id === "normal";
     el("sound-pop").querySelectorAll("[data-preset]").forEach((b) => b.classList.toggle("on", !!preset && preset.id === b.dataset.preset));
   }
-  // La vidéo d'un clip suit la nouvelle vitesse sans attendre.
-  syncClip();
 }
 
 /// Vitesse au clavier (touches à droite du P : ^ et $ en AZERTY, [ et ] en QWERTY).
@@ -5459,11 +4808,6 @@ async function extractFrames() {
   let missing = 0;
   try {
     for (;;) {
-      // Un clip joue à l'écran : les pochettes attendront (chacune décode une image 4K).
-      if (clipBusy()) {
-        scheduleFrames();
-        break;
-      }
       const track = state.tracks.find((t) => t.video && !t.cover && !t.no_frame && !frameTried.has(t.id));
       if (!track) break;
       frameTried.add(track.id);
@@ -5666,7 +5010,6 @@ function bindOnce() {
   document.addEventListener("pointerdown", () => (keyboardFocus = false), true);
   bindEditor();
   bindCoverPicker();
-  bindClips();
   bindDuplicates();
   bindPlaylists();
   bindQueue();
@@ -5780,7 +5123,6 @@ function bindOnce() {
 
   bindBar(el("comp-bar"));
   bindBar(el("min-bar"));
-  bindBar(el("clip-bar"));
 
   // Une rafale de molette ne change de morceau qu'une fois toutes les 350 ms.
   let lastWheelStep = 0;
@@ -5967,8 +5309,6 @@ function bindOnce() {
       nudgeSpeed(e.code === "BracketLeft" ? -0.05 : 0.05);
     } else if (e.code === "KeyL" && !e.ctrlKey && !e.metaKey && !e.altKey) {
       toggleLyrics();
-    } else if (e.code === "KeyF" && !e.ctrlKey && !e.metaKey && !e.altKey && (document.fullscreenElement || (clipShownId && clipsPanelShown()))) {
-      toggleClipFullscreen();
     } else if (e.code === "Escape") {
       if (!el("modal").hidden && modalCancel) modalCancel();
       else if (lyricsOpen) toggleLyrics(false);
@@ -6070,25 +5410,6 @@ async function bindBackendEvents() {
     }
   });
   // Pochettes trouvées en ligne : posées sur place.
-  // Copies légères des clips : avancement, copie prête, échec.
-  await listen("clip-lite-progress", (event) => {
-    const { id, done } = event.payload || {};
-    clipLiteProgress.set(id, done);
-    if (id === clipShownId) paintClipNotice();
-  });
-  await listen("clip-lite-ready", (event) => {
-    const { id, path } = event.payload || {};
-    if (path) useLiteClip(id, path);
-    invoke("lite_clips_size").then((n) => (state.liteBytes = n)).catch(() => {});
-  });
-  await listen("clip-lite-failed", (event) => {
-    const { id } = event.payload || {};
-    clipLiteFailed.add(id);
-    clipLiteProgress.delete(id);
-    if (id === clipShownId) paintClipNotice();
-  });
-  if (LINUX_WEBKIT) invoke("lite_clips_size").then((n) => (state.liteBytes = n)).catch(() => {});
-  invoke("debug_enabled").then((on) => (debugOn = !!on)).catch(() => {});
   await listen("tracks-updated", (event) => {
     for (const track of event.payload || []) replaceTrack(track);
   });
@@ -6154,7 +5475,6 @@ function toggleLyrics(force) {
   lyricsOpen = open;
   el("lyrics").hidden = !open;
   ["btn-lyrics", "comp-lyrics", "min-lyrics"].forEach((id) => el(id) && el(id).classList.toggle("on", open));
-  updateClipVideo();
   updateVisual();
   if (open) {
     loadLyrics();
@@ -6519,12 +5839,7 @@ async function start() {
   el("dock-playlists").innerHTML = icon("playlist", 19);
   el("min-playlists").innerHTML = icon("playlist", 18);
   el("btn-love").innerHTML = icon("heart", 18);
-  el("dock-clips").innerHTML = icon("video", 19);
-  el("min-clips").innerHTML = icon("video", 18);
   el("min-library").innerHTML = icon("album", 18);
-  el("clip-full").innerHTML = icon("expand", 17);
-  el("clip-mini-open").innerHTML = icon("expand", 15);
-  el("clip-mini-close").innerHTML = icon("close", 15);
   el("dock-volume").innerHTML = icon("volume_high", 19);
   el("min-theme").innerHTML = icon("moon", 18);
   el("min-settings").innerHTML = icon("settings", 18);

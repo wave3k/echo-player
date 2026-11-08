@@ -23,9 +23,6 @@
         <button class="nav-item" data-view="library" aria-label="Bibliothèque">
           <span data-icon="library" data-size="17"></span><span>Bibliothèque</span>
         </button>
-        <button class="nav-item" data-view="clips" aria-label="Clips">
-          <span data-icon="video" data-size="17"></span><span>Clips</span>
-        </button>
         <button class="nav-item" data-view="playlists" aria-label="Playlists">
           <span data-icon="playlist" data-size="17"></span><span>Playlists</span>
         </button>
@@ -134,34 +131,6 @@
           </div>
           <!-- Albums et artistes : la grille, ou la page d'un album ou d'un artiste -->
           <div class="lib-browse" id="lib-browse" hidden></div>
-        </div>
-      </section>
-
-      <!-- Clips : la vidéo du morceau en cours, calée sur le son, et la grille des clips -->
-      <section class="view" id="view-clips">
-        <div class="clips-panel" id="clips-panel">
-          <div class="view-head">
-            <h2 class="view-title">Clips</h2>
-            <div class="controls">
-              <label class="search">
-                <span data-icon="search" data-size="15"></span>
-                <input type="search" id="clip-search" aria-label="Rechercher un clip" placeholder="Rechercher un clip…" />
-              </label>
-            </div>
-          </div>
-          <div class="clip-stage" id="clip-stage" hidden>
-            <div class="clip-frame" id="clip-frame"></div>
-            <div class="clip-info">
-              <div class="clip-text">
-                <div class="clip-title" id="clip-title"></div>
-                <div class="clip-artist" id="clip-artist"></div>
-              </div>
-              <button type="button" class="icon-btn" id="clip-full" title="Plein écran (F)" aria-label="Plein écran"></button>
-            </div>
-          </div>
-          <div class="clip-scroll" id="clip-scroll">
-            <div class="clip-grid" id="clip-grid"></div>
-          </div>
         </div>
       </section>
 
@@ -287,7 +256,6 @@
         <button aria-label="Rechercher" class="icon-btn" id="dock-search" title="Rechercher"></button>
         <button aria-label="Bibliothèque" class="icon-btn" id="dock-library" title="Bibliothèque"></button>
         <button aria-label="Playlists" class="icon-btn" id="dock-playlists" title="Playlists"></button>
-        <button aria-label="Clips" class="icon-btn" id="dock-clips" title="Clips"></button>
         <button aria-label="Réglages" class="icon-btn" id="dock-settings" title="Réglages"></button>
         <button aria-label="Couper le son" class="icon-btn" id="dock-volume" title="Couper le son"></button>
       </div>
@@ -303,7 +271,6 @@
         <div class="min-actions">
           <button aria-label="Clair ou sombre" class="icon-btn" id="min-theme" title="Clair ou sombre"></button>
           <button aria-label="Albums et artistes" class="icon-btn" id="min-library" title="Albums et artistes"></button>
-          <button aria-label="Clips" class="icon-btn" id="min-clips" title="Clips"></button>
           <button aria-label="Playlists" class="icon-btn" id="min-playlists" title="Playlists"></button>
           <button aria-label="Réglages" class="icon-btn" id="min-settings" title="Réglages"></button>
         </div>
@@ -410,35 +377,6 @@
           <button type="submit" class="primary-btn" id="edit-save">Enregistrer</button>
         </div>
       </form>
-    </div>
-
-    <!-- Le lecteur vidéo, unique et jamais déplacé dans la page (un déplacement faisait
-         alterner des images noires) : en mini-fenêtre, ou posé sur la grande scène. -->
-    <div class="clip-mini" id="clip-mini" hidden>
-      <div class="clip-mini-frame" id="clip-mini-frame" role="button" tabindex="0" aria-label="Ouvrir les clips">
-        <!-- La vidéo n'a jamais de son : la musique vient du lecteur, la vidéo s'y cale. -->
-        <video id="clip-video" muted playsinline preload="metadata" disablepictureinpicture disableremoteplayback aria-hidden="true"></video>
-        <div class="clip-notice" id="clip-notice" role="status" hidden></div>
-        <!-- Contrôles posés sur la vidéo (scène et plein écran) : apparaissent au mouvement. -->
-        <div class="clip-ctl" id="clip-ctl">
-          <div class="bar" id="clip-bar"><i></i></div>
-          <div class="clip-ctl-row">
-            <button type="button" class="icon-btn" id="clip-prev" title="Précédent" aria-label="Précédent"><span data-icon="prev" data-size="18"></span></button>
-            <button type="button" class="icon-btn ctl-play" id="clip-play" title="Lecture" aria-label="Lecture">
-              <span data-icon="play" data-size="20" class="i-play"></span>
-              <span data-icon="pause" data-size="20" class="i-pause"></span>
-            </button>
-            <button type="button" class="icon-btn" id="clip-next" title="Suivant" aria-label="Suivant"><span data-icon="next" data-size="18"></span></button>
-            <span class="clip-time"><span id="clip-now">0:00</span> / <span id="clip-total">0:00</span></span>
-            <span class="clip-ctl-grow"></span>
-            <button type="button" class="icon-btn" id="clip-fs" title="Plein écran (F)" aria-label="Plein écran"><span data-icon="expand" data-size="17"></span></button>
-          </div>
-        </div>
-      </div>
-      <div class="clip-mini-bar">
-        <button type="button" class="icon-btn" id="clip-mini-open" title="Ouvrir les clips" aria-label="Ouvrir les clips"></button>
-        <button type="button" class="icon-btn" id="clip-mini-close" title="Masquer la vidéo" aria-label="Masquer la vidéo"></button>
-      </div>
     </div>
 
     <!-- Doublons : le même morceau en plusieurs fichiers, à masquer (rien n'est supprimé) -->

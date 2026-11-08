@@ -1207,88 +1207,6 @@ body[data-anim="off"] .lyr-line { transition: none; }
 .cover-meta b { font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
 .cover-meta span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ---------- 19. Clips ---------- */
-
-.clips-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; width: 100%; }
-.clip-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 22px; }
-.sheet-body > .clips-panel { flex: 1; min-height: 0; }
-.sheet .clips-panel .view-title { display: none; }
-.sheet .clips-panel .view-head { justify-content: flex-end; }
-
-.clip-stage { flex: none; margin-bottom: 18px; }
-.clip-stage[hidden] { display: none; }
-/* Emplacement de la scène : le lecteur vidéo vient se poser dessus. */
-.clip-frame {
-  position: relative; width: min(100%, calc((100vh - 400px) * 16 / 9)); aspect-ratio: 16 / 9;
-  min-width: 240px; margin: 0 auto; border-radius: var(--radius-md); overflow: hidden;
-  background: #000; box-shadow: var(--glow);
-}
-.clip-frame video, .clip-mini-frame video {
-  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000;
-}
-/* Le lecteur posé sur la scène : mêmes coins, ni barre ni animation, au-dessus des
-   feuilles (la scène peut être dans une feuille) mais sous menus et dialogues. */
-.clip-mini.on-stage {
-  right: auto; bottom: auto; z-index: 41; border: 0; box-shadow: none; animation: none;
-}
-.clip-mini.on-stage .clip-mini-bar { display: none; }
-.clip-mini.on-stage .clip-mini-frame { width: 100%; height: 100%; aspect-ratio: auto; cursor: default; }
-.clip-mini:fullscreen { inset: 0; width: 100vw !important; height: 100vh !important; border-radius: 0; }
-.clip-mini:fullscreen .clip-mini-frame { width: 100%; height: 100%; aspect-ratio: auto; }
-.clip-mini:fullscreen .clip-mini-bar { display: none; }
-.clip-info {
-  display: flex; align-items: center; gap: 12px;
-  width: min(100%, calc((100vh - 400px) * 16 / 9)); min-width: 240px; margin: 12px auto 0;
-}
-.clip-text { flex: 1; min-width: 0; }
-.clip-title { font-size: 1.05rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.clip-artist { font-size: .85rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.clip-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 18px 16px; }
-.clip-empty { grid-column: 1 / -1; padding: 40px 12px; text-align: center; color: var(--muted); font-size: .9rem; }
-.clip-card {
-  display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 6px;
-  border-radius: var(--radius-md); text-align: left; color: var(--text); transition: background .15s ease;
-}
-.clip-card:hover, .clip-card:focus-visible { background: var(--hover); }
-.clip-poster {
-  position: relative; display: block; width: 100%; aspect-ratio: 16 / 9; margin-bottom: 6px;
-  border-radius: var(--radius-soft); background: var(--cover-bg) center / cover no-repeat;
-}
-/* En attendant l'affiche, la pochette carrée reste lisible : centrée, sans être étirée. */
-.clip-poster:not(.has-poster) { background-size: contain !important; }
-.clip-card.is-current .clip-poster { outline: 2px solid var(--accent); outline-offset: 2px; }
-.clip-card.is-current .clip-card-title { color: var(--accent); }
-.clip-card-title { font-size: .88rem; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.clip-card-sub { font-size: .78rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.clip-card { position: relative; }
-/* Posé sur l'affiche (en haut à gauche), hors de sa zone : le dessin de l'affiche ne l'efface pas. */
-.clip-badge {
-  position: absolute; left: 14px; top: 14px; padding: 3px 8px; border-radius: 999px;
-  font-size: .7rem; color: #fff; background: rgba(0, 0, 0, .65);
-}
-
-/* Mini-fenêtre : au-dessus de la barre de lecture, à droite. */
-.clip-mini {
-  /* Sous les feuilles (40), menus et fenêtres de dialogue : elle ne cache jamais un réglage. */
-  position: fixed; right: 18px; bottom: 96px; z-index: 36; width: 300px;
-  border-radius: var(--radius-md); overflow: hidden; background: #000;
-  border: 1px solid var(--line2); box-shadow: 0 18px 44px rgba(0, 0, 0, .45);
-}
-.clip-mini[hidden] { display: none; }
-.clip-mini:not([hidden]) { animation: pop .22s cubic-bezier(.2, .7, .2, 1); }
-body[data-mode="compact"] .clip-mini { bottom: 86px; }
-body[data-mode="minimal"] .clip-mini { bottom: 92px; }
-.clip-mini-frame { position: relative; width: 100%; aspect-ratio: 16 / 9; cursor: pointer; }
-.clip-mini-bar {
-  position: absolute; top: 6px; right: 6px; display: flex; gap: 4px;
-  opacity: 0; transition: opacity .15s ease;
-}
-.clip-mini:hover .clip-mini-bar, .clip-mini:focus-within .clip-mini-bar { opacity: 1; }
-.clip-mini-bar .icon-btn { width: 28px; height: 28px; color: #fff; background: rgba(0, 0, 0, .55); }
-.clip-mini-bar .icon-btn:hover { background: rgba(0, 0, 0, .8); }
-@media (max-width: 560px) { .clip-mini { width: 200px; right: 10px; } }
-
 /* ---------- 20. Favoris, listes automatiques, doublons ---------- */
 
 .ctl-love { width: 34px; height: 34px; flex: none; }
@@ -1526,16 +1444,6 @@ kbd {
   .lib-tabs { order: 3; width: 100%; }
 }
 
-/* Clip trop lourd : message posé sur l'image figée */
-.clip-notice {
-  position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 2;
-  padding: 8px 12px; border-radius: 10px; font-size: 12.5px; line-height: 1.4;
-  background: rgba(8, 8, 12, 0.78); color: #f2f3f8; pointer-events: none;
-  backdrop-filter: none;
-}
-.clip-mini:not(.on-stage) .clip-notice { font-size: 11px; padding: 6px 8px; left: 6px; right: 6px; bottom: 6px;
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-
 /* Changer la pochette depuis « Écouter », photos d'artistes rondes dans le choix */
 .listen-cover-wrap { position: relative; flex: none; }
 .cover-edit {
@@ -1546,41 +1454,3 @@ kbd {
 .listen-cover-wrap:hover .cover-edit, .cover-edit:focus-visible { opacity: 1; }
 .cover-prefer { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .cover-img.round { border-radius: 50%; }
-
-/* Contrôles posés sur la vidéo : scène et plein écran seulement */
-.clip-ctl { display: none; }
-.clip-mini.on-stage .clip-ctl, .clip-mini:fullscreen .clip-ctl {
-  display: flex; flex-direction: column; gap: 6px;
-  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; padding: 26px 14px 10px;
-  background: linear-gradient(transparent, rgba(0, 0, 0, 0.72)); color: #fff;
-  transition: opacity .25s;
-}
-.clip-mini.on-stage .clip-mini-frame { cursor: pointer; }
-.clip-mini.ctl-idle .clip-ctl { opacity: 0; pointer-events: none; }
-.clip-mini.ctl-idle.on-stage .clip-mini-frame, .clip-mini.ctl-idle:fullscreen .clip-mini-frame { cursor: none; }
-.clip-ctl .bar { height: 4px; background: rgba(255, 255, 255, 0.25); cursor: pointer; }
-.clip-ctl .bar i { background: var(--accent); }
-.clip-ctl-row { display: flex; align-items: center; gap: 6px; }
-.clip-ctl .icon-btn { color: #fff; }
-.clip-ctl .icon-btn:hover { background: rgba(255, 255, 255, 0.14); }
-.clip-time { font-size: 12.5px; font-variant-numeric: tabular-nums; opacity: .9; margin-left: 6px; }
-.clip-ctl-grow { flex: 1; }
-.clip-mini.on-stage .clip-notice, .clip-mini:fullscreen .clip-notice { top: 10px; bottom: auto; }
-
-/* Vue Clips selon la disposition : en compacte et en minimaliste, quand un clip joue,
-   il prend la place et les autres clips passent dans un ruban qui défile (sans clip en
-   cours, la grille habituelle reste). */
-body[data-mode="compact"] .clip-frame,
-body[data-mode="compact"] .clip-info { width: min(100%, calc((100vh - 300px) * 16 / 9)); }
-body[data-mode="minimal"] .clip-frame,
-body[data-mode="minimal"] .clip-info { width: min(100%, calc((100vh - 330px) * 16 / 9)); }
-body[data-mode="minimal"] .clip-stage { margin-bottom: 10px; }
-body:not([data-mode="normal"]) .clips-panel:has(.clip-stage:not([hidden])) .clip-scroll {
-  flex: none; overflow-x: auto; overflow-y: hidden; padding-bottom: 10px;
-}
-body:not([data-mode="normal"]) .clips-panel:has(.clip-stage:not([hidden])) .clip-grid { display: flex; gap: 14px; }
-body[data-mode="compact"] .clips-panel:has(.clip-stage:not([hidden])) .clip-card { flex: none; width: 190px; }
-body[data-mode="minimal"] .clips-panel:has(.clip-stage:not([hidden])) .clip-card { flex: none; width: 150px; }
-body[data-mode="minimal"] .clips-panel:has(.clip-stage:not([hidden])) .clip-card-sub { display: none; }
-.clip-ctl .ctl-play { background: rgba(255, 255, 255, 0.16); color: #fff; }
-.clip-ctl .ctl-play:hover { background: rgba(255, 255, 255, 0.28); }

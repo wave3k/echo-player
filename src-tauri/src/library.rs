@@ -81,11 +81,6 @@ pub fn frame_name(id: &str, mtime: u64) -> String {
     format!("still-{:016x}-{mtime}.jpg", stable_hash(id.as_bytes()))
 }
 
-/// Affiche 16:9 d'un clip (grille des clips) : change avec le fichier.
-pub fn poster_name(id: &str, mtime: u64) -> String {
-    format!("poster-{:016x}-{mtime}.jpg", stable_hash(id.as_bytes()))
-}
-
 /// Pochettes « frame-… » des versions 1.1.0 : souvent noires (vidéos AV1), on les refait.
 pub fn is_stale_frame(name: &str) -> bool {
     name.starts_with("frame-")

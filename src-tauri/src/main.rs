@@ -20,8 +20,6 @@ mod store;
 mod thumbs;
 mod titles;
 mod updates;
-#[cfg(target_os = "linux")]
-mod video_lite;
 mod watch;
 
 use library::Track;
@@ -609,10 +607,6 @@ async fn set_settings(app: tauri::AppHandle, mut new_settings: store::Settings) 
     apply_services(&app);
     player::configure(&app, &new_settings);
     kick_online_covers(&app);
-    #[cfg(target_os = "linux")]
-    if !new_settings.lite_clips {
-        stop_lite_clips();
-    }
 
     if formats_changed {
         Some(offload(move || scan_with_events(&app)).await)
@@ -1141,197 +1135,6 @@ async fn audio_source(app: tauri::AppHandle, id: String) -> Option<String> {
     Some(track.path)
 }
 
-/// Copie légère d'un clip (Linux) : prête, en préparation, ou rien.
-#[derive(Serialize)]
-struct LiteState {
-    path: Option<String>,
-    pending: bool,
-    supported: bool,
-}
-
-#[derive(Serialize, Clone)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-struct LiteEvent {
-    id: String,
-    path: Option<String>,
-    done: f32,
-}
-
-#[cfg(target_os = "linux")]
-struct LiteJob {
-    id: String,
-    path: PathBuf,
-    mtime: u64,
-}
-
-/// Copies à faire, une à la fois ; la dernière demandée passe en premier (c'est le
-/// clip qu'on regarde).
-#[cfg(target_os = "linux")]
-struct LiteQueue {
-    jobs: Vec<LiteJob>,
-    current: Option<String>,
-    worker: bool,
-}
-
-#[cfg(target_os = "linux")]
-static LITE: Mutex<LiteQueue> = Mutex::new(LiteQueue { jobs: Vec::new(), current: None, worker: false });
-
-/// Copie légère d'un clip trop lourd pour la machine. `start` : la lancer si elle
-/// manque (et si le réglage le permet).
-#[tauri::command]
-async fn clip_lite(app: tauri::AppHandle, id: String, start: bool) -> LiteState {
-    let none = LiteState { path: None, pending: false, supported: cfg!(target_os = "linux") };
-    let track = {
-        let state = app.state::<AppData>();
-        let data = state.0.lock().unwrap();
-        data.tracks.iter().find(|t| t.id == id).cloned()
-    };
-    let Some(track) = track.filter(|t| t.video) else { return none };
-    #[cfg(target_os = "linux")]
-    {
-        let cache = cache_dir(&app);
-        let path = PathBuf::from(&track.path);
-        if let Some(done) = video_lite::existing(&path, track.mtime, &cache) {
-            return LiteState { path: Some(done.to_string_lossy().into_owned()), pending: false, supported: true };
-        }
-        let enabled = app.state::<AppSettings>().0.lock().unwrap().lite_clips;
-        let mut queue = LITE.lock().unwrap_or_else(|e| e.into_inner());
-        let queued = queue.current.as_deref() == Some(id.as_str()) || queue.jobs.iter().any(|j| j.id == id);
-        if start && enabled && !queued {
-            queue.jobs.push(LiteJob { id: id.clone(), path, mtime: track.mtime });
-            if !queue.worker {
-                queue.worker = true;
-                spawn_lite_worker(app.clone());
-            }
-        }
-        LiteState { path: None, pending: queued || (start && enabled), supported: true }
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (&app, &track, start);
-        none
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn spawn_lite_worker(app: tauri::AppHandle) {
-    std::thread::spawn(move || {
-        video_lite::lower_priority();
-        let cache = cache_dir(&app);
-        loop {
-            let job = {
-                let mut queue = LITE.lock().unwrap_or_else(|e| e.into_inner());
-                match queue.jobs.pop() {
-                    Some(job) => {
-                        queue.current = Some(job.id.clone());
-                        job
-                    }
-                    None => {
-                        queue.current = None;
-                        queue.worker = false;
-                        break;
-                    }
-                }
-            };
-            video_lite::CANCEL.store(false, std::sync::atomic::Ordering::Relaxed);
-            let tell = app.clone();
-            let id = job.id.clone();
-            let progress = move |done: f32| {
-                let _ = tell.emit("clip-lite-progress", LiteEvent { id: id.clone(), path: None, done });
-            };
-            let made = video_lite::make(&job.path, job.mtime, &cache, &progress);
-            release_memory();
-            let path = made.map(|p| p.to_string_lossy().into_owned());
-            let name = if path.is_some() { "clip-lite-ready" } else { "clip-lite-failed" };
-            let _ = app.emit(name, LiteEvent { id: job.id, path, done: 1.0 });
-        }
-    });
-}
-
-/// Arrête la copie en cours et oublie celles qui attendaient.
-#[cfg(target_os = "linux")]
-fn stop_lite_clips() {
-    LITE.lock().unwrap_or_else(|e| e.into_inner()).jobs.clear();
-    video_lite::CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// Taille et cadence de la vidéo d'un clip (Linux), pour savoir combien d'images la
-/// machine devrait afficher. `None` : inconnu.
-#[derive(Serialize, Default)]
-struct ClipProbe {
-    width: i32,
-    height: i32,
-    fps: f64,
-}
-
-#[tauri::command]
-async fn clip_probe(app: tauri::AppHandle, id: String) -> Option<ClipProbe> {
-    let path = {
-        let state = app.state::<AppData>();
-        let data = state.0.lock().unwrap();
-        data.tracks.iter().find(|t| t.id == id && t.video).map(|t| PathBuf::from(&t.path))
-    }?;
-    #[cfg(target_os = "linux")]
-    {
-        let p = offload(move || video_lite::probe(&path)).await?;
-        Some(ClipProbe { width: p.width, height: p.height, fps: p.fps })
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = path;
-        None
-    }
-}
-
-/// Journal de diagnostic de l'interface, écrit seulement avec ECHO_DEBUG=1.
-#[tauri::command]
-fn debug_log(text: String) {
-    if std::env::var_os("ECHO_DEBUG").is_some() {
-        eprintln!("[interface] {text}");
-    }
-}
-
-#[tauri::command]
-fn debug_enabled() -> bool {
-    std::env::var_os("ECHO_DEBUG").is_some()
-}
-
-/// Place prise par les copies légères des clips, en octets.
-#[tauri::command]
-fn lite_clips_size(app: tauri::AppHandle) -> u64 {
-    #[cfg(target_os = "linux")]
-    return video_lite::size(&cache_dir(&app));
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = app;
-        0
-    }
-}
-
-/// Efface les copies légères (elles se refont à la demande).
-#[tauri::command]
-async fn clear_lite_clips(app: tauri::AppHandle) -> u64 {
-    #[cfg(target_os = "linux")]
-    {
-        stop_lite_clips();
-        let cache = cache_dir(&app);
-        offload(move || {
-            // La copie en cours s'arrête d'abord (au plus une demi-seconde).
-            while LITE.lock().map(|q| q.current.is_some()).unwrap_or(false) {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            let _ = std::fs::remove_dir_all(video_lite::cache_dir(&cache));
-            0
-        })
-        .await
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = app;
-        0
-    }
-}
-
 /// Cherche une nouvelle version (bouton « Vérifier maintenant »).
 #[tauri::command]
 async fn check_update(app: tauri::AppHandle) -> updates::Status {
@@ -1705,11 +1508,6 @@ async fn grab_frame(app: tauri::AppHandle, id: String) -> Result<Grabbed, String
     }
 }
 
-/// Affiches de clips en cours de fabrication : une à la fois (une image 4K décodée
-/// coûte cher), les demandes suivantes attendent leur tour.
-#[cfg(target_os = "linux")]
-static POSTER_LOCK: Mutex<()> = Mutex::new(());
-
 /// Exécute un travail lourd et sans urgence (image d'un clip) sur un fil de priorité
 /// basse : la lecture et l'interface passent toujours avant.
 #[cfg(target_os = "linux")]
@@ -1726,54 +1524,6 @@ fn low_priority<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T 
         .expect("fil des images")
         .join()
         .unwrap_or_else(|e| std::panic::resume_unwind(e))
-}
-
-/// Affiche 16:9 d'un clip pour la grille des clips (chemin sur le disque), faite au
-/// premier besoin puis gardée. `None` : pas d'image (ou système autre que Linux,
-/// où la grille montre la pochette). `Err` : échec passager, à redemander plus tard.
-#[tauri::command]
-async fn clip_poster(app: tauri::AppHandle, id: String) -> Result<Option<String>, String> {
-    #[cfg(target_os = "linux")]
-    {
-        let (path, mtime) = {
-            let state = app.state::<AppData>();
-            let data = state.0.lock().unwrap();
-            let Some(t) = data.tracks.iter().find(|t| t.id == id && t.video) else { return Ok(None) };
-            (PathBuf::from(&t.path), t.mtime)
-        };
-        let covers = store::covers_dir(&cache_dir(&app));
-        let name = library::poster_name(&id, mtime);
-        let dest = covers.join(&name);
-        let none = covers.join(format!("{name}.none"));
-        offload_heavy(move || {
-            let _guard = POSTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            if dest.is_file() {
-                return Ok(Some(dest.to_string_lossy().into_owned()));
-            }
-            if none.is_file() {
-                return Ok(None);
-            }
-            let (w, h) = frames::POSTER;
-            match low_priority(move || frames::grab_sized(&path, w, h)) {
-                frames::Frame::Image(bytes) => {
-                    store::write_atomic(&dest, &bytes).map_err(|e| e.to_string())?;
-                    Ok(Some(dest.to_string_lossy().into_owned()))
-                }
-                frames::Frame::None => {
-                    let _ = std::fs::write(&none, b"");
-                    Ok(None)
-                }
-                frames::Frame::Undecodable => Ok(None),
-                frames::Frame::Later => Err("plus tard".into()),
-            }
-        })
-        .await
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (app, id);
-        Ok(None)
-    }
 }
 
 /// Durée trouvée par le lecteur quand les tags n'en donnaient pas.
@@ -2470,7 +2220,8 @@ fn main() {
                 let cache = cache_dir(&handle);
                 std::thread::spawn(move || {
                     audio_only::prune(&cache);
-                    video_lite::prune(&cache);
+                    // Copies légères des anciens clips : plus utilisées, on libère la place.
+                    let _ = std::fs::remove_dir_all(cache.join("video"));
                     store::shrink_covers_dir(&store::covers_dir(&cache));
                 });
             }
@@ -2547,7 +2298,6 @@ fn main() {
             get_state,
             cover_candidates,
             use_online_cover,
-            clip_poster,
             get_stats,
             set_favorite,
             find_duplicates,
@@ -2572,12 +2322,6 @@ fn main() {
             check_update,
             get_lyrics,
             audio_source,
-            clip_lite,
-            clip_probe,
-            debug_log,
-            debug_enabled,
-            lite_clips_size,
-            clear_lite_clips,
             save_lyrics_sync,
             install_update,
             restart_to_update,
