@@ -458,6 +458,10 @@ fn limit_allocator() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     unsafe {
         libc::mallopt(libc::M_ARENA_MAX, 2);
+        // Les blocs de plus de 64 Ko vont dans leur propre zone et repartent au système
+        // dès qu'ils sont libérés ; le haut du tas est rendu au-delà de 64 Ko libres.
+        libc::mallopt(libc::M_MMAP_THRESHOLD, 64 * 1024);
+        libc::mallopt(libc::M_TRIM_THRESHOLD, 64 * 1024);
     }
 }
 
@@ -2053,12 +2057,13 @@ fn queue_thumbs(app: &tauri::AppHandle, items: Vec<(String, PathBuf)>) {
 
 /// Réglages du moteur d'affichage à poser avant d'ouvrir la fenêtre.
 fn prepare_webview_env() {
-    // Pilote NVIDIA propriétaire : le rendu DMA-BUF de WebKitGTK donne souvent une
-    // fenêtre vide. Ailleurs il est gardé : sans lui, une vidéo 4K coûte presque un cœur
-    // de plus (mesuré sur un i5 de 7e génération). Un réglage déjà posé est respecté.
+    // Rendu DMA-BUF de WebKitGTK coupé : il demandait de charger les pilotes graphiques
+    // dans le processus d'affichage (des dizaines de Mo de plus) et ne servait qu'aux
+    // vidéos 4K, que l'app ne lit plus ; avec le pilote NVIDIA propriétaire, il donnait
+    // même une fenêtre vide. ECHO_GPU_COMPOSITING=1 le garde, comme un réglage déjà posé.
     #[cfg(target_os = "linux")]
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
-        && Path::new("/proc/driver/nvidia/version").exists()
+        && std::env::var_os("ECHO_GPU_COMPOSITING").is_none()
     {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
