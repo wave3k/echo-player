@@ -139,6 +139,7 @@ Quelques choix de conception :
 - **Le démarrage est rapide.** La bibliothèque est d'abord lue depuis le cache, puis rafraîchie en arrière-plan. Un seul scan tourne à la fois.
 - **Les pochettes sont lues sur le disque.** Elles passent par le protocole d'asset de Tauri, limité aux dossiers de musique et au cache, et ne sont jamais encodées en base64.
 - **L'interface reste réactive.** Les listes sont virtualisées, le tri est mémorisé, et les travaux lourds tournent hors du thread principal.
+- **Peu de mémoire.** Écho ne lit que de la musique : pas de vidéo, pochettes réduites à 600 px (et à 128 px dans les listes), rendu DMA-BUF de WebKit coupé, et la page est détruite quand la fenêtre se ferme dans la zone de notification. Mesuré sur un i5 de 7ᵉ génération, avec 93 morceaux : environ 300 Mo de mémoire réellement utilisée au repos, dont une bonne part de bibliothèques partagées (WebKit, GTK, GStreamer). Chaque morceau de la bibliothèque coûte environ 1,8 Ko de plus. `ECHO_GPU_COMPOSITING=1` rétablit la composition et le rendu DMA-BUF de WebKit.
 
 ## Développement
 
