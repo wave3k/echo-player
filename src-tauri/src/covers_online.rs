@@ -690,6 +690,11 @@ fn image_host(url: &reqwest::Url) -> bool {
 
 /// Range l'image dans le cache des pochettes, sous un nom tiré de son contenu.
 fn store_image(covers: &Path, bytes: &[u8], ext: &str) -> Option<String> {
+    let shrunk = crate::store::shrink_image(bytes, crate::store::COVER_MAX);
+    let (bytes, ext): (&[u8], &str) = match &shrunk {
+        Some((small, e)) => (small.as_slice(), e),
+        None => (bytes, ext),
+    };
     let name = format!("{:016x}.{ext}", crate::library::stable_hash(bytes));
     let dest = covers.join(&name);
     if !dest.is_file() {
@@ -851,6 +856,10 @@ pub async fn set_artist_photo(dir: &Path, name: &str, url: Option<&str>, file: O
     } else {
         let client = crate::lyrics::client()?;
         fetch_image(&client, url.ok_or("aucune image")?).await?.ok_or("image introuvable")?
+    };
+    let (bytes, ext) = match crate::store::shrink_image(&bytes, crate::store::COVER_MAX) {
+        Some((small, e)) => (small, e),
+        None => (bytes, ext),
     };
     for old in ["jpg", "png", "webp", "none"] {
         let _ = std::fs::remove_file(dir.join(format!("{base}.{old}")));

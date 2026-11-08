@@ -341,6 +341,11 @@ fn save_cover(data: &[u8], mime: &str, covers_dir: &Path, covers: &mut HashMap<S
         "image/webp" => "webp",
         _ => "jpg",
     };
+    let shrunk = crate::store::shrink_image(data, crate::store::COVER_MAX);
+    let (data, ext): (&[u8], &str) = match &shrunk {
+        Some((small, e)) => (small.as_slice(), e),
+        None => (data, ext),
+    };
     let name = format!("{:016x}.{}", stable_hash(data), ext);
     let dest = covers_dir.join(&name);
     if !covers.contains_key(&name) {

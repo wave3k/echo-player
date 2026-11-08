@@ -233,6 +233,47 @@ pub fn covers_dir(cache_dir: &Path) -> PathBuf {
 
 /// Écrit d'abord dans un fichier temporaire puis le renomme : une coupure pendant
 /// l'écriture laisse l'ancien fichier intact au lieu d'un fichier à moitié écrit.
+/// Réduit une image dont le grand côté dépasse `max` px, en JPEG. `None` si elle est déjà
+/// assez petite ou illisible : on garde alors l'original. Une grande pochette, décodée en
+/// entier par le moteur d'affichage, pèse plusieurs Mo en mémoire.
+pub fn shrink_image(bytes: &[u8], max: u32) -> Option<(Vec<u8>, &'static str)> {
+    let img = image::load_from_memory(bytes).ok()?;
+    if img.width() <= max && img.height() <= max {
+        return None;
+    }
+    let small = img.thumbnail(max, max).to_rgb8();
+    let mut out = Vec::new();
+    small
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Jpeg)
+        .ok()?;
+    Some((out, "jpg"))
+}
+
+/// Taille des pochettes gardées en grand (les vignettes servent pour les listes).
+pub const COVER_MAX: u32 = 600;
+
+/// Réduit les pochettes JPEG déjà en cache, au démarrage. Le nom reste le même (les
+/// morceaux le référencent) : seul le contenu rétrécit. PNG et WebP sont laissés tels quels.
+pub fn shrink_covers_dir(dir: &Path) {
+    let Ok(read) = std::fs::read_dir(dir) else { return };
+    for entry in read.flatten() {
+        let path = entry.path();
+        let is_jpg = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("jpg"));
+        if !is_jpg || !path.is_file() {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        if bytes.len() < 200_000 {
+            continue;
+        }
+        if let Some((small, _)) = shrink_image(&bytes, COVER_MAX) {
+            if small.len() < bytes.len() {
+                let _ = write_atomic(&path, &small);
+            }
+        }
+    }
+}
+
 /// Le nom temporaire est propre à chaque écriture : deux fils qui écrivent le même
 /// fichier ne se marchent pas dessus.
 pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
@@ -642,4 +683,35 @@ pub fn sanitize_playlists(list: Vec<Playlist>) -> Vec<Playlist> {
             p
         })
         .collect()
+}
+
+#[cfg(test)]
+mod shrink_tests {
+    use super::*;
+
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(w, h, image::Rgb([200, 40, 90]));
+        let mut out = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+        out
+    }
+
+    #[test]
+    fn une_grande_pochette_est_reduite_en_jpeg() {
+        let (small, ext) = shrink_image(&png(2000, 1000), COVER_MAX).expect("réduite");
+        assert_eq!(ext, "jpg");
+        let dims = image::load_from_memory(&small).unwrap();
+        assert_eq!((dims.width(), dims.height()), (600, 300));
+        assert!(small.len() < png(2000, 1000).len());
+    }
+
+    #[test]
+    fn une_petite_image_est_gardee_telle_quelle() {
+        assert!(shrink_image(&png(300, 300), COVER_MAX).is_none());
+    }
+
+    #[test]
+    fn un_fichier_illisible_est_garde() {
+        assert!(shrink_image(b"pas une image", COVER_MAX).is_none());
+    }
 }

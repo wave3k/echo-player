@@ -2471,6 +2471,7 @@ fn main() {
                 std::thread::spawn(move || {
                     audio_only::prune(&cache);
                     video_lite::prune(&cache);
+                    store::shrink_covers_dir(&store::covers_dir(&cache));
                 });
             }
 
